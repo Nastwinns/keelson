@@ -7,7 +7,7 @@ on:
     paths:
       - "demo/**"
       - "crates/hawser/**"
-      - "crates/keel-tui/**"
+      - "crates/haw-tui/**"
 
 permissions:
   contents: write

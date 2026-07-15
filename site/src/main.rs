@@ -3,7 +3,7 @@
 //! A standalone showcase: real ratatui widgets, real Ratzilla DOM backend, a
 //! scripted fleet of repos cycling through sync/dirty/drift states so the
 //! page demonstrates the TUI's look without needing a real git backend
-//! (which can't run inside a wasm sandbox). Colors mirror `keel-tui`'s theme.
+//! (which can't run inside a wasm sandbox). Colors mirror `haw-tui`'s theme.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -278,7 +278,7 @@ fn draw_fleet(frame: &mut ratzilla::ratatui::Frame, area: Rect, tick: u32) {
 fn draw_status(frame: &mut ratzilla::ratatui::Frame, area: Rect, tick: u32) {
     let messages = [
         "→ haw sync --stack gateway",
-        "wrote keel.lock (4 repos pinned)",
+        "wrote haw.lock (4 repos pinned)",
         "→ haw change start FEAT-42 --repos kernel,hal",
         "changeset `FEAT-42` started across 2 repo(s)",
         "ready — press ? for help",

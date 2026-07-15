@@ -61,7 +61,7 @@ fn workspace(root: &Path) -> PathBuf {
          [stack.gateway]\nrepos = [\"kernel\", \"hal\"]\n",
         root = root.display().to_string().replace('\\', "/"),
     );
-    std::fs::write(ws.join("keel.toml"), manifest).unwrap();
+    std::fs::write(ws.join("haw.toml"), manifest).unwrap();
     ws
 }
 
@@ -101,7 +101,7 @@ fn golden_tree_output() {
     assert_eq!(code, 0);
     assert_eq!(
         normalize(&out, tmp.path()),
-        "keel.toml\n\
+        "haw.toml\n\
          └─ gateway\n\
          \x20  ├─ kernel  main  (<LAB>/kernel)\n\
          \x20  └─ hal     main  (<LAB>/hal)\n"
@@ -140,7 +140,7 @@ fn golden_sync_output() {
     assert_eq!(code, 0);
     assert_eq!(
         normalize(&out, tmp.path()),
-        "wrote keel.lock (2 repos pinned)\n\
+        "wrote haw.lock (2 repos pinned)\n\
          \x20 ✓ kernel  cloned\n\
          \x20 ✓ hal     cloned\n\
          synced stack `gateway` (2/2 repos)\n"
@@ -155,7 +155,7 @@ fn status_json_schema_is_stable() {
     let (out, code) = haw(&ws, &["status", "--format", "json"]);
     assert_eq!(code, 0);
     let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
-    assert_eq!(parsed["schema"], "keel.status/1");
+    assert_eq!(parsed["schema"], "haw.status/1");
     let repos = parsed["repos"].as_array().expect("repos array");
     assert_eq!(repos.len(), 2);
     for repo in repos {
@@ -181,11 +181,11 @@ fn lockfile_is_deterministic_and_lf_only() {
 
     let (_, code) = haw(&ws, &["lock"]);
     assert_eq!(code, 0);
-    let first = std::fs::read(ws.join("keel.lock")).unwrap();
+    let first = std::fs::read(ws.join("haw.lock")).unwrap();
 
     let (_, code) = haw(&ws, &["lock"]);
     assert_eq!(code, 0);
-    let second = std::fs::read(ws.join("keel.lock")).unwrap();
+    let second = std::fs::read(ws.join("haw.lock")).unwrap();
 
     assert_eq!(first, second, "same inputs must produce identical bytes");
     let text = String::from_utf8(first).expect("lockfile is UTF-8");

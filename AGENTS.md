@@ -28,7 +28,7 @@ Hedging: "I think" → state directly. "It seems like" → state directly. "migh
 
 ## Project specifics
 
-- All business logic in `keel-core`; CLI and TUI stay thin. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- All business logic in `haw-core`; CLI and TUI stay thin. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `unsafe_code = forbid`, `unwrap_used`/`expect_used = warn` workspace-wide — respect them.
 - Determinism is a hard requirement (cert evidence): no wall-clock, no unordered iteration in
   serialization. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) §8.

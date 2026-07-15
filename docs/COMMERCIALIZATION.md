@@ -62,8 +62,8 @@ is *convenience or scale* can live in Core/Team.
 Safety programs freeze a tool version for **years** and re-qualify rarely. The support policy
 *is* a product feature.
 
-- **SemVer** for the binary; a separate, explicit **format version** for `keel.toml` and
-  `keel.lock` (they are interfaces — see §4).
+- **SemVer** for the binary; a separate, explicit **format version** for `haw.toml` and
+  `haw.lock` (they are interfaces — see §4).
 - **LTS branches:** designated LTS releases with a committed support window (e.g. 3–5 years),
   security backports, and a **frozen Qualification Kit** pinned to that exact version.
 - **Errata channel** per LTS: known limitations, security advisories, and their fixes,
@@ -75,11 +75,11 @@ Safety programs freeze a tool version for **years** and re-qualify rarely. The s
 
 ## 4. Format stability contract
 
-`keel.toml` and `keel.lock` are the durable interface — customers commit them for a decade.
+`haw.toml` and `haw.lock` are the durable interface — customers commit them for a decade.
 
 - Versioned schema with a `schema`/format field; documented migration path forward-only.
 - **Backward-compatible reads** within a major format version; breaking changes bump the
-  format major and ship a `keel migrate`.
+  format major and ship a `haw migrate`.
 - Canonical, byte-stable serialization of the lock (prereq for signing + determinism).
 - Published JSON Schemas for `--format json` outputs, versioned independently.
 

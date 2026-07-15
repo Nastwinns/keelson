@@ -32,8 +32,8 @@ Store under `media/` in the repo. The gif is the hero; everything else is second
 | Asset | Size | Use | Tool |
 |-------|------|-----|------|
 | `media/haw-tui.gif` | ~1200×700, <5 MB, <20 s loop | r/commandline, r/rust, README top | **vhs** (charmbracelet) |
-| `media/keel-tree.png` | terminal screenshot | inline in posts | native screenshot |
-| `media/keel-status.png` | terminal screenshot | inline | native |
+| `media/haw-tree.png` | terminal screenshot | inline in posts | native screenshot |
+| `media/haw-status.png` | terminal screenshot | inline | native |
 | `media/social-card.png` | 1200×630 | HN/X link preview | any |
 
 **Make the gif reproducible with `vhs`** (a tape file → identical gif every time):
@@ -45,7 +45,7 @@ Set FontSize 16
 Set Width 1200
 Set Height 700
 Set Theme "Catppuccin Mocha"
-Type "keel"          Enter   Sleep 2s      # cockpit opens
+Type "haw"          Enter   Sleep 2s      # cockpit opens
 Type "j"  Sleep 400ms  Type "j"  Sleep 800ms  # move cursor
 Type "s"  Sleep 2s                          # sync the cursor repo
 Type "c"  Sleep 1500ms                      # change menu
@@ -82,7 +82,7 @@ Best windows (weekday mornings US-Eastern unless noted):
 |-----|-------|--------|-----------|
 | **r/rust** | a Rust CLI+TUI you built; gitoxide, no unsafe | gif + short "why" + repo | Post in the weekly thread first if unsure |
 | **r/commandline** | k9s-style multi-repo cockpit | **gif first**, one line of text | No gif = ignored |
-| **r/ROS** + **r/robotics** | end the `vcstool`/`wstool` multi-repo mess | technical, show a `ros2.repos`→`keel.toml` import | Frame as helpful, not an ad |
+| **r/ROS** + **r/robotics** | end the `vcstool`/`wstool` multi-repo mess | technical, show a `ros2.repos`→`haw.toml` import | Frame as helpful, not an ad |
 | **r/embedded** | `west`/`repo` refugees: lockfile, no Python, no detached HEAD | technical, concrete pain | Zero marketing tone or instant downvote |
 | **r/devops** | reproducible multi-repo composition + CI | use the self-promo thread if the sub has one | Strict on promo; check rules |
 | **r/opensource** | project launch, MIT/Apache, contributions welcome | launch post + gif | Fine for a genuine launch |
@@ -142,7 +142,7 @@ Replace `<REPO_URL>` and attach the gif. Keep bodies short — Reddit rewards br
 
 ### r/devops
 
-> **Title:** keel — reproducible multi-repo composition with a committed lockfile (Rust)
+> **Title:** haw — reproducible multi-repo composition with a committed lockfile (Rust)
 >
 > A manifest + lockfile so `haw sync --locked` reproduces the exact multi-repo tree in CI,
 > `haw verify` gates drift, `--format json` for pipelines. Cross-repo PR/MR orchestration on
@@ -160,7 +160,7 @@ Replace `<REPO_URL>` and attach the gif. Keep bodies short — Reddit rewards br
 
 > **Title:** Show HN: Keelson – reproducible multi-repo composition and PR orchestration in Rust
 >
-> (Body, 3–4 sentences: the problem, what keel does, why Rust/gitoxide/lockfile, link + gif.
+> (Body, 3–4 sentences: the problem, what haw does, why Rust/gitoxide/lockfile, link + gif.
 > Answer every comment fast. Post Tue–Thu ~8–10am ET.)
 
 Also: submit to **This Week in Rust** (free Rust reach), **lobste.rs** (tags `rust`,

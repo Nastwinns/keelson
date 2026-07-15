@@ -48,8 +48,8 @@ brew install keelson            # macOS / Linuxbrew
 scoop install keelson           # Windows
 
 # bootstrap a workspace from a manifest, then materialize a stack
-haw init keel.toml
-haw sync                       # clones every repo, writes keel.lock
+haw init haw.toml
+haw sync                       # clones every repo, writes haw.lock
 ```
 
 ## Demos
@@ -80,7 +80,7 @@ A typical session — compose, inspect, branch across repos:
 
 ```console
 $ haw tree
-keel.toml
+haw.toml
 ├─ gateway
 │  ├─ kernel    v6.1.2       (git@gitlab.company.com:firmware/kernel.git)
 │  ├─ hal       main         (git@gitlab.company.com:firmware/hal.git)
@@ -110,7 +110,7 @@ One manifest declares **repos** (the Git repositories) and composes them into **
 repo to an exact SHA.
 
 ```
-              keel.toml  (intent)                 keel.lock  (pinned SHAs, committed)
+              haw.toml  (intent)                 haw.lock  (pinned SHAs, committed)
                    │                                        │
       ┌────────────┼────────────┐                          ▼
       ▼            ▼            ▼                   reproducible on any machine / CI
@@ -162,11 +162,11 @@ branches, no detached HEAD). A repo can be shared by several stacks.
 **Stack** — a named composition: a set of repos at chosen revisions. Checking out a
 stack materializes the union of its repos at the paths the manifest declares.
 
-**Manifest** (`keel.toml`) — human-authored intent: remotes, repos, stacks, overlays.
+**Manifest** (`haw.toml`) — human-authored intent: remotes, repos, stacks, overlays.
 TOML, for the same reasons Cargo uses it: no indentation traps, no YAML type coercion
 ("Norway problem"), stable serde ecosystem, clean diffs in review.
 
-**Lockfile** (`keel.lock`) — machine-generated, committed: every repo resolved to an
+**Lockfile** (`haw.lock`) — machine-generated, committed: every repo resolved to an
 exact SHA. This is the reproducibility + audit guarantee (a real argument in
 automotive/avionics) that `repo` and `west` lack.
 
@@ -182,8 +182,8 @@ repos, with N linked PR/MRs and an aggregated status.
 
 ```
 mystack/
-├── keel.toml           # manifest (intent)
-├── keel.lock           # lockfile (resolved SHAs, committed)
+├── haw.toml           # manifest (intent)
+├── haw.lock           # lockfile (resolved SHAs, committed)
 ├── kernel/             # real, complete git repo
 ├── hal/                # real, complete git repo
 └── app-mqtt/           # real, complete git repo
@@ -248,9 +248,9 @@ rev = "main"                      # `haw sync --overlay dev`: kernel follows mai
 ```
 haw                              Open the TUI cockpit (no subcommand)
 ├── init <manifest-url|path>     Bootstrap a workspace from a manifest
-├── sync [--stack S]             Clone/pull repos to the state in keel.lock
+├── sync [--stack S]             Clone/pull repos to the state in haw.lock
 │                                (resolves + writes lock if absent)  [--shared]
-├── lock                         Resolve every repo's rev to a SHA -> keel.lock
+├── lock                         Resolve every repo's rev to a SHA -> haw.lock
 ├── pin / unpin                  Pin lock to current checkouts / restore to manifest revs
 ├── switch <stack>               Materialize a different stack in the workspace
 ├── status                       Aggregated fleet status (dirty/ahead/behind per repo)
@@ -260,9 +260,9 @@ haw                              Open the TUI cockpit (no subcommand)
 ├── repo   add|remove|list       Edit repos in the manifest
 ├── stack  add|remove|list       Edit stacks in the manifest
 │
-├── verify                       Assert tree == keel.lock; exit 3 on drift (CI gate)
+├── verify                       Assert tree == haw.lock; exit 3 on drift (CI gate)
 ├── build / test                 Run each repo's declared build/test command, in parallel
-├── hooks  install|list          Git integrity pre-commit + lifecycle hooks (.keel/hooks)
+├── hooks  install|list          Git integrity pre-commit + lifecycle hooks (.haw/hooks)
 ├── evidence                     Bundle manifest+lock+audit+status for audits
 │
 ├── change                       Cross-repo feature ("changeset") workflow
@@ -281,7 +281,7 @@ haw                              Open the TUI cockpit (no subcommand)
 │   ├── cleanup                  Seal the merge; fast-forward target; drop temp branches
 │   └── abort                    Undo the planned merge, restore the target branch
 │
-├── import --from <west.yml|default.xml>   Convert a west/repo manifest to keel.toml
+├── import --from <west.yml|default.xml>   Convert a west/repo manifest to haw.toml
 └── dash                         Open the fleet dashboard (same as bare `haw`)
 ```
 
@@ -358,19 +358,19 @@ reusing the exact same Rust core. The TUI ships first: one binary, low cost, on-
 Illustrative output for the shipped commands (Phase 1). Colorized on a TTY, plain when piped.
 
 ```console
-$ haw init keel.toml
-initialized workspace from keel.toml
+$ haw init haw.toml
+initialized workspace from haw.toml
 next: haw sync
 
 $ haw sync
-wrote keel.lock (3 repos pinned)
+wrote haw.lock (3 repos pinned)
   ✓ kernel    cloned
   ✓ hal       cloned
   ✓ app-mqtt  cloned
 synced stack `gateway` (3/3 repos)
 
 $ haw tree
-keel.toml
+haw.toml
 └─ gateway
    ├─ kernel    v6.1.2       (git@gitlab.company.com:firmware/kernel.git)
    ├─ hal       main         (git@gitlab.company.com:firmware/hal.git)
@@ -389,13 +389,13 @@ $ haw run 'git fetch --tags'
 ran in 3/3 repos
 
 $ haw lock
-wrote keel.lock (3 repos pinned)
+wrote haw.lock (3 repos pinned)
   kernel    a1b2c3d4e5f6  <- v6.1.2
   hal       9f8e7d6c5b4a  <- main
   app-mqtt  4d5e6f7a8b9c  <- release/2.x
 
 $ haw pin                       # snapshot current checkouts (no network)
-pinned keel.lock to current HEADs (3 repos)
+pinned haw.lock to current HEADs (3 repos)
 
 $ haw change start FEAT-42 --repos kernel,app-mqtt
 changeset `FEAT-42` started across 2 repo(s):
@@ -425,9 +425,9 @@ lifecycle against real git repos, plus:
 - **Golden CLI-output tests** (`crates/hawser/tests/golden.rs`) — drive the real `haw`
   binary and snapshot `tree`/`status`/`sync` output, the `--format json` schema, and the
   `--verify` exit-3 CI gate.
-- **Determinism tests** — `keel.lock` is byte-identical run-to-run and LF-only; the CI
+- **Determinism tests** — `haw.lock` is byte-identical run-to-run and LF-only; the CI
   matrix makes that a cross-OS guarantee (certification evidence, [COMPLIANCE §8](docs/COMPLIANCE.md)).
-- **Cockpit logic tests** (`crates/keel-tui`) — filter-by-name-or-group, cursor clamping,
+- **Cockpit logic tests** (`crates/haw-tui`) — filter-by-name-or-group, cursor clamping,
   view navigation, and the command bar (incl. the `:change status` non-mutation guard).
 
 ## Status

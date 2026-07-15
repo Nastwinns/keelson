@@ -5,13 +5,13 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use keel_core::git::GitBackend;
-use keel_core::manifest::{ManifestLoader, TomlLoader, edit, import};
-use keel_core::workspace::{MANIFEST_FILE, RepoStatus, SyncOutcome, Workspace, sync_repo};
-use keel_core::{audit, change, hooks, resolver, snapshot};
-use keel_forge::{PrState, Tokens, orchestrate};
-use keel_git::ShellGit;
-use keel_git::parallel::fan_out;
+use haw_core::git::GitBackend;
+use haw_core::manifest::{ManifestLoader, TomlLoader, edit, import};
+use haw_core::workspace::{MANIFEST_FILE, RepoStatus, SyncOutcome, Workspace, sync_repo};
+use haw_core::{audit, change, hooks, resolver, snapshot};
+use haw_forge::{PrState, Tokens, orchestrate};
+use haw_git::ShellGit;
+use haw_git::parallel::fan_out;
 use serde_json::json;
 
 /// Minimal ANSI painter: colored on a TTY, plain under `NO_COLOR` or when
@@ -86,8 +86,8 @@ impl Palette {
     about = "The beam that binds the repos",
     after_help = "\
 Examples:
-  $ haw init keel.toml           bootstrap a workspace from a manifest
-  $ haw sync                     clone/update every repo, writing keel.lock
+  $ haw init haw.toml           bootstrap a workspace from a manifest
+  $ haw sync                     clone/update every repo, writing haw.lock
   $ haw tree                     print the stack -> repo composition
   $ haw status                   dirty/drift/ahead-behind per repo
   $ haw change start FEAT-42     branch across every affected repo
@@ -97,7 +97,7 @@ Run `haw <command> --help` for that command's own examples."
 )]
 struct Cli {
     /// Path to the manifest.
-    #[arg(long, global = true, default_value = "keel.toml")]
+    #[arg(long, global = true, default_value = "haw.toml")]
     manifest: PathBuf,
 
     /// No subcommand opens the TUI cockpit (same as `haw dash`).
@@ -110,23 +110,23 @@ enum Command {
     /// Bootstrap a workspace from a manifest file or URL.
     #[command(after_help = "\
 Examples:
-  $ haw init keel.toml                                 from a local file
-  $ haw init https://example.com/fleet/keel.toml       from a URL
-  $ haw --manifest custom.toml init keel.toml           bootstrap under a custom filename")]
+  $ haw init haw.toml                                 from a local file
+  $ haw init https://example.com/fleet/haw.toml       from a URL
+  $ haw --manifest custom.toml init haw.toml           bootstrap under a custom filename")]
     Init {
-        /// Path or http(s) URL of an existing keel.toml.
+        /// Path or http(s) URL of an existing haw.toml.
         source: String,
     },
-    /// Clone/update repos to the state in keel.lock (writes it if absent).
+    /// Clone/update repos to the state in haw.lock (writes it if absent).
     #[command(after_help = "\
 Examples:
   $ haw sync                          clone/update every repo in the current stack
   $ haw sync --stack gateway          sync one specific stack
-  $ haw sync --locked                 CI gate: fail unless keel.lock already exists
+  $ haw sync --locked                 CI gate: fail unless haw.lock already exists
   $ haw sync --shared                 clone via a local mirror cache (git alternates)
   $ haw sync --group firmware -j 4    only `firmware`-grouped repos, 4 parallel jobs")]
     Sync {
-        /// CI contract: fail unless keel.lock exists (no rev resolution).
+        /// CI contract: fail unless haw.lock exists (no rev resolution).
         #[arg(long)]
         locked: bool,
         #[arg(long = "stack", alias = "product")]
@@ -143,29 +143,29 @@ Examples:
         #[arg(long, short = 'j')]
         jobs: Option<usize>,
     },
-    /// Resolve every repo's rev to a SHA and (re)write keel.lock.
+    /// Resolve every repo's rev to a SHA and (re)write haw.lock.
     #[command(after_help = "\
 Examples:
-  $ haw lock                    resolve every repo's manifest rev -> keel.lock
+  $ haw lock                    resolve every repo's manifest rev -> haw.lock
   $ haw lock --overlay dev       resolve using the `dev` overlay's rev overrides")]
     Lock {
         #[arg(long)]
         overlay: Vec<String>,
     },
-    /// Pin keel.lock to each repo's current HEAD (no network).
+    /// Pin haw.lock to each repo's current HEAD (no network).
     #[command(
         alias = "freeze",
         after_help = "\
 Examples:
-  $ haw pin       snapshot every repo's current checkout into keel.lock (no network)"
+  $ haw pin       snapshot every repo's current checkout into haw.lock (no network)"
     )]
     Pin,
-    /// Restore keel.lock to the manifest revs (same as `haw lock`).
+    /// Restore haw.lock to the manifest revs (same as `haw lock`).
     #[command(
         alias = "unfreeze",
         after_help = "\
 Examples:
-  $ haw unpin                    restore keel.lock to the manifest's declared revs
+  $ haw unpin                    restore haw.lock to the manifest's declared revs
   $ haw unpin --overlay dev       ...using the `dev` overlay's rev overrides"
     )]
     Unpin {
@@ -191,14 +191,14 @@ Examples:
 Examples:
   $ haw status                       branch/head/dirty/drift for every repo
   $ haw status --group firmware       only `firmware`-grouped repos
-  $ haw status --format json          machine-readable (schema keel.status/1)
+  $ haw status --format json          machine-readable (schema haw.status/1)
   $ haw status --verify               exit 3 if anything is missing, dirty, or drifted (CI gate)"
     )]
     Status {
         /// Only repos in these groups (repeatable).
         #[arg(long = "group")]
         groups: Vec<String>,
-        /// `text` (default) or `json` (schema keel.status/1).
+        /// `text` (default) or `json` (schema haw.status/1).
         #[arg(long, default_value = "text")]
         format: String,
         /// Exit 3 when any repo is missing, dirty, or drifted (CI gate).
@@ -223,14 +223,14 @@ Examples:
   $ haw tree                       every stack -> repo composition
   $ haw tree --stack gateway        just one stack
   $ haw tree --overlay dev          composition after applying the `dev` overlay
-  $ haw tree --format json          machine-readable (schema keel.tree/1)"
+  $ haw tree --format json          machine-readable (schema haw.tree/1)"
     )]
     Tree {
         #[arg(long = "stack", alias = "product")]
         stack: Option<String>,
         #[arg(long)]
         overlay: Vec<String>,
-        /// `text` (default) or `json` (schema keel.tree/1).
+        /// `text` (default) or `json` (schema haw.tree/1).
         #[arg(long, default_value = "text")]
         format: String,
     },
@@ -268,13 +268,13 @@ Run `haw change <subcommand> --help` for that subcommand's own examples.")]
         #[command(subcommand)]
         command: ChangeCommand,
     },
-    /// Assert the on-disk tree matches keel.lock; exit 3 on drift (CI gate).
+    /// Assert the on-disk tree matches haw.lock; exit 3 on drift (CI gate).
     #[command(after_help = "\
 Examples:
-  $ haw verify                    exit 3 if any repo drifted from keel.lock (CI gate)
-  $ haw verify --format json       machine-readable (schema keel.status/1)")]
+  $ haw verify                    exit 3 if any repo drifted from haw.lock (CI gate)
+  $ haw verify --format json       machine-readable (schema haw.status/1)")]
     Verify {
-        /// `text` (default) or `json` (schema keel.status/1).
+        /// `text` (default) or `json` (schema haw.status/1).
         #[arg(long, default_value = "text")]
         format: String,
     },
@@ -302,7 +302,7 @@ Examples:
         #[arg(long, short = 'j')]
         jobs: Option<usize>,
     },
-    /// Manage lifecycle hooks (.keel/hooks) and git integrity hooks.
+    /// Manage lifecycle hooks (.haw/hooks) and git integrity hooks.
     #[command(after_help = "\
 Examples:
   $ haw hooks install       write a pre-commit hook (runs `haw verify`) in every repo
@@ -321,7 +321,7 @@ Examples:
         #[arg(long, default_value = "haw-evidence.tar.gz")]
         out: PathBuf,
     },
-    /// Convert a west.yml or repo default.xml manifest to keel.toml.
+    /// Convert a west.yml or repo default.xml manifest to haw.toml.
     #[command(after_help = "\
 Examples:
   $ haw import --from west.yml            convert a west manifest
@@ -369,7 +369,7 @@ Examples:
     /// List the lifecycle hooks the workspace defines.
     #[command(after_help = "\
 Examples:
-  $ haw hooks list       show pre-sync/post-sync/... hooks declared in keel.toml")]
+  $ haw hooks list       show pre-sync/post-sync/... hooks declared in haw.toml")]
     List,
 }
 
@@ -511,7 +511,7 @@ Examples:
     /// List recorded changesets.
     #[command(after_help = "\
 Examples:
-  $ haw change list       show every changeset id recorded in .keel/changesets")]
+  $ haw change list       show every changeset id recorded in .haw/changesets")]
     List,
 }
 
@@ -528,7 +528,7 @@ Examples:
         /// Repo to merge in (default: the only repo, else required).
         #[arg(long)]
         repo: Option<String>,
-        /// Integration branch name (default: keel/merge/<source>).
+        /// Integration branch name (default: haw/merge/<source>).
         #[arg(long)]
         into: Option<String>,
     },
@@ -728,7 +728,7 @@ fn run() -> Result<ExitCode> {
 /// including the bare `dash`/TUI entrypoint — honors it, not just `tree`.
 static MANIFEST_ARG: OnceLock<PathBuf> = OnceLock::new();
 
-/// Resolve `--manifest` (default `keel.toml`) against the current directory.
+/// Resolve `--manifest` (default `haw.toml`) against the current directory.
 fn manifest_path() -> Result<PathBuf> {
     let manifest = MANIFEST_ARG
         .get()
@@ -777,7 +777,7 @@ fn init(source: &str) -> Result<()> {
         }
         std::fs::read_to_string(path)?
     };
-    text.parse::<keel_core::manifest::Manifest>()
+    text.parse::<haw_core::manifest::Manifest>()
         .with_context(|| format!("{source} is not a valid manifest"))?;
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -799,12 +799,12 @@ fn sync(
     let ws = open_workspace()?;
     let stack = ws.pick_stack(stack)?;
     if locked && !ws.lock_path().exists() {
-        bail!("--locked: no keel.lock — commit one (haw lock) before running CI syncs");
+        bail!("--locked: no haw.lock — commit one (haw lock) before running CI syncs");
     }
     hooks::fire(&ws, hooks::Hook::PreSync, &json!({"stack": stack}))?;
     let backend = ShellGit;
     let cache_root = if shared {
-        let root = keel_git::default_cache_root().context("no cache directory on this platform")?;
+        let root = haw_git::default_cache_root().context("no cache directory on this platform")?;
         println!("sharing objects via {}", root.display());
         Some(root)
     } else {
@@ -812,10 +812,10 @@ fn sync(
     };
     let plan = ws.plan_sync(&stack, overlays, groups, cache_root.as_deref(), &backend)?;
     if plan.wrote_lock {
-        println!("wrote keel.lock ({} repos pinned)", plan.tasks.len());
+        println!("wrote haw.lock ({} repos pinned)", plan.tasks.len());
         record(&ws, "lock.write", None, None, None);
     } else if !overlays.is_empty() {
-        println!("note: keel.lock exists — overlays ignored (run `haw lock` to re-resolve)");
+        println!("note: haw.lock exists — overlays ignored (run `haw lock` to re-resolve)");
     }
 
     let results = fan_out(&plan.tasks, default_jobs(jobs), |task| {
@@ -877,7 +877,7 @@ fn lock(overlays: &[String]) -> Result<()> {
     println!(
         "{}",
         c.bold(&format!(
-            "wrote keel.lock ({} repos pinned)",
+            "wrote haw.lock ({} repos pinned)",
             lockfile.repos.len()
         ))
     );
@@ -908,7 +908,7 @@ fn pin() -> Result<()> {
     println!(
         "{}",
         c.bold(&format!(
-            "pinned keel.lock to current HEADs ({} repos)",
+            "pinned haw.lock to current HEADs ({} repos)",
             lockfile.repos.len()
         ))
     );
@@ -931,7 +931,7 @@ fn pin() -> Result<()> {
 
 fn unpin(overlays: &[String]) -> Result<()> {
     lock(overlays)?;
-    println!("restored keel.lock to the manifest revs");
+    println!("restored haw.lock to the manifest revs");
     Ok(())
 }
 
@@ -1044,7 +1044,7 @@ fn stack_remove(name: &str) -> Result<()> {
 
 fn status_json(statuses: &[RepoStatus]) -> serde_json::Value {
     json!({
-        "schema": "keel.status/1",
+        "schema": "haw.status/1",
         "repos": statuses.iter().map(|s| json!({
             "name": s.name,
             "path": s.path.to_string_lossy(),
@@ -1167,7 +1167,7 @@ fn tree(path: &Path, stack: Option<&str>, overlays: &[String], format: &str) -> 
         }
         println!(
             "{}",
-            serde_json::to_string_pretty(&json!({"schema": "keel.tree/1", "stacks": stacks}))?
+            serde_json::to_string_pretty(&json!({"schema": "haw.tree/1", "stacks": stacks}))?
         );
         return Ok(());
     }
@@ -1533,8 +1533,8 @@ fn merge_repo(ws: &Workspace, repo: Option<&str>) -> Result<(String, PathBuf)> {
 fn merge_plan(source: &str, repo: Option<&str>, into: Option<&str>) -> Result<()> {
     let ws = open_workspace()?;
     let (name, path) = merge_repo(&ws, repo)?;
-    let plan = keel_merge::plan(
-        &keel_merge::git::GitMerge,
+    let plan = haw_merge::plan(
+        &haw_merge::git::GitMerge,
         &path,
         &ws.state_dir(),
         &name,
@@ -1571,11 +1571,11 @@ fn merge_resolve(slice: &str, repo: Option<&str>, take: Option<TakeSide>) -> Res
     let ws = open_workspace()?;
     let (name, path) = merge_repo(&ws, repo)?;
     let side = take.map(|t| match t {
-        TakeSide::Ours => keel_merge::Side::Ours,
-        TakeSide::Theirs => keel_merge::Side::Theirs,
+        TakeSide::Ours => haw_merge::Side::Ours,
+        TakeSide::Theirs => haw_merge::Side::Theirs,
     });
-    let plan = keel_merge::resolve(
-        &keel_merge::git::GitMerge,
+    let plan = haw_merge::resolve(
+        &haw_merge::git::GitMerge,
         &path,
         &ws.state_dir(),
         &name,
@@ -1597,7 +1597,7 @@ fn merge_resolve(slice: &str, repo: Option<&str>, take: Option<TakeSide>) -> Res
 fn merge_status(repo: Option<&str>) -> Result<()> {
     let ws = open_workspace()?;
     let (name, _) = merge_repo(&ws, repo)?;
-    let Some(plan) = keel_merge::load_plan(&ws.state_dir(), &name)? else {
+    let Some(plan) = haw_merge::load_plan(&ws.state_dir(), &name)? else {
         println!("no merge planned for `{name}` — start one with `haw merge plan <source>`");
         return Ok(());
     };
@@ -1627,8 +1627,8 @@ fn merge_status(repo: Option<&str>) -> Result<()> {
 fn merge_cleanup(repo: Option<&str>, message: Option<&str>) -> Result<()> {
     let ws = open_workspace()?;
     let (name, path) = merge_repo(&ws, repo)?;
-    let report = keel_merge::cleanup(
-        &keel_merge::git::GitMerge,
+    let report = haw_merge::cleanup(
+        &haw_merge::git::GitMerge,
         &path,
         &ws.state_dir(),
         &name,
@@ -1659,7 +1659,7 @@ fn merge_cleanup(repo: Option<&str>, message: Option<&str>) -> Result<()> {
 fn merge_abort(repo: Option<&str>) -> Result<()> {
     let ws = open_workspace()?;
     let (name, path) = merge_repo(&ws, repo)?;
-    let plan = keel_merge::abort(&keel_merge::git::GitMerge, &path, &ws.state_dir(), &name)?;
+    let plan = haw_merge::abort(&haw_merge::git::GitMerge, &path, &ws.state_dir(), &name)?;
     record(&ws, "merge.abort", Some(&name), None, Some(&plan.source));
     println!(
         "aborted merge of `{}`; back on `{}`",
@@ -1721,7 +1721,7 @@ fn change_list() -> Result<()> {
 fn verify(format: &str) -> Result<ExitCode> {
     let ws = open_workspace()?;
     if !ws.lock_path().exists() {
-        bail!("no keel.lock to verify against — run `haw lock` first");
+        bail!("no haw.lock to verify against — run `haw lock` first");
     }
     let statuses = ws.status(&[], &ShellGit)?;
     let offenders: Vec<&RepoStatus> = statuses
@@ -1745,16 +1745,13 @@ fn verify(format: &str) -> Result<ExitCode> {
     }
     if offenders.is_empty() {
         if format != "json" {
-            println!(
-                "verified: tree matches keel.lock ({} repos)",
-                statuses.len()
-            );
+            println!("verified: tree matches haw.lock ({} repos)", statuses.len());
         }
         Ok(ExitCode::SUCCESS)
     } else {
         if format != "json" {
             eprintln!(
-                "verify failed: {} repo(s) diverge from keel.lock",
+                "verify failed: {} repo(s) diverge from haw.lock",
                 offenders.len()
             );
         }
@@ -1821,7 +1818,7 @@ fn build_or_test(build: bool, groups: &[String], jobs: Option<usize>) -> Result<
 fn hooks_install() -> Result<()> {
     let ws = open_workspace()?;
     let backend = ShellGit;
-    let script = "#!/bin/sh\n# installed by `haw hooks install`\nhaw verify || {\n  echo 'keel: tree diverges from keel.lock (run haw sync or haw pin)' >&2\n  exit 1\n}\n";
+    let script = "#!/bin/sh\n# installed by `haw hooks install`\nhaw verify || {\n  echo 'haw: tree diverges from haw.lock (run haw sync or haw pin)' >&2\n  exit 1\n}\n";
     let mut installed = 0usize;
     for (name, repo) in &ws.manifest.repos {
         let path = ws.root.join(repo.checkout_path(name));
@@ -1881,7 +1878,7 @@ fn evidence(out: &Path) -> Result<()> {
 
     std::fs::copy(ws.manifest_path(), staging.join(MANIFEST_FILE))?;
     if ws.lock_path().exists() {
-        std::fs::copy(ws.lock_path(), staging.join("keel.lock"))?;
+        std::fs::copy(ws.lock_path(), staging.join("haw.lock"))?;
     }
     let audit_log = ws.state_dir().join("audit.jsonl");
     if audit_log.exists() {
@@ -1895,8 +1892,8 @@ fn evidence(out: &Path) -> Result<()> {
     std::fs::write(
         staging.join("tool.json"),
         serde_json::to_string_pretty(&json!({
-            "schema": "keel.evidence/1",
-            "tool": "keel",
+            "schema": "haw.evidence/1",
+            "tool": "haw",
             "version": env!("CARGO_PKG_VERSION"),
         }))?,
     )?;
@@ -1930,7 +1927,7 @@ fn plugin(args: &[String]) -> Result<ExitCode> {
     let binary = format!("haw-{name}");
     let context = match open_workspace() {
         Ok(ws) => json!({
-            "schema": "keel.plugin/1",
+            "schema": "haw.plugin/1",
             "root": ws.root.to_string_lossy(),
             "stack": ws.current_stack(),
             "repos": ws.manifest.repos.iter().map(|(repo_name, repo)| json!({
@@ -1940,13 +1937,13 @@ fn plugin(args: &[String]) -> Result<ExitCode> {
                 "groups": repo.groups,
             })).collect::<Vec<_>>(),
         }),
-        Err(_) => json!({"schema": "keel.plugin/1"}),
+        Err(_) => json!({"schema": "haw.plugin/1"}),
     };
 
     use std::io::Write;
     let mut child = std::process::Command::new(&binary)
         .args(rest)
-        .env("KEEL_JSON", context.to_string())
+        .env("HAW_JSON", context.to_string())
         .stdin(std::process::Stdio::piped())
         .spawn()
         .with_context(|| format!("no built-in `{name}` and no `{binary}` on PATH"))?;
@@ -1980,7 +1977,7 @@ fn import_manifest(from: &Path) -> Result<()> {
     Ok(())
 }
 
-/// TUI controller: adapts cockpit actions to `keel-core`/`keel-forge`.
+/// TUI controller: adapts cockpit actions to `haw-core`/`haw-forge`.
 /// Runs on the TUI worker thread.
 struct CliController;
 
@@ -2020,7 +2017,7 @@ fn render_changeset(
     ws: &Workspace,
     id: &str,
     prs: Option<Vec<orchestrate::RepoPrStatus>>,
-) -> std::io::Result<keel_tui::ChangesetSummary> {
+) -> std::io::Result<haw_tui::ChangesetSummary> {
     let statuses = change::status(ws, &ShellGit, id).map_err(std::io::Error::other)?;
     let changeset = change::Changeset::load(ws, id).map_err(std::io::Error::other)?;
     let repos = statuses
@@ -2054,13 +2051,13 @@ fn render_changeset(
                 .repos
                 .get(&s.name)
                 .and_then(|repo| repo.clone_url(&ws.manifest.remotes))
-                .map(|url| match keel_forge::detect(&url) {
-                    keel_forge::ForgeKind::GitHub => "github".to_string(),
-                    keel_forge::ForgeKind::GitLab => "gitlab".to_string(),
-                    keel_forge::ForgeKind::Unknown => "—".to_string(),
+                .map(|url| match haw_forge::detect(&url) {
+                    haw_forge::ForgeKind::GitHub => "github".to_string(),
+                    haw_forge::ForgeKind::GitLab => "gitlab".to_string(),
+                    haw_forge::ForgeKind::Unknown => "—".to_string(),
                 })
                 .unwrap_or_else(|| "—".to_string());
-            keel_tui::ChangeRepoRow {
+            haw_tui::ChangeRepoRow {
                 name: s.name,
                 branch: s.branch,
                 on_branch: s.on_branch,
@@ -2072,7 +2069,7 @@ fn render_changeset(
             }
         })
         .collect();
-    Ok(keel_tui::ChangesetSummary {
+    Ok(haw_tui::ChangesetSummary {
         id: id.to_string(),
         repos,
     })
@@ -2101,8 +2098,8 @@ fn tree_text(ws: &Workspace) -> String {
     out
 }
 
-impl keel_tui::Controller for CliController {
-    fn snapshot(&mut self) -> std::io::Result<keel_tui::Snapshot> {
+impl haw_tui::Controller for CliController {
+    fn snapshot(&mut self) -> std::io::Result<haw_tui::Snapshot> {
         let ws = self.workspace()?;
         let statuses = ws.status(&[], &ShellGit).map_err(std::io::Error::other)?;
         let fleet = ws
@@ -2134,12 +2131,12 @@ impl keel_tui::Controller for CliController {
         let mut merges = Vec::new();
         for name in ws.manifest.repos.keys() {
             if let Some(plan) =
-                keel_merge::load_plan(&ws.state_dir(), name).map_err(std::io::Error::other)?
+                haw_merge::load_plan(&ws.state_dir(), name).map_err(std::io::Error::other)?
             {
                 let resolved = plan.slices.iter().filter(|s| s.resolved).count();
                 merges.push((
                     name.clone(),
-                    keel_tui::MergeBadge {
+                    haw_tui::MergeBadge {
                         source: plan.source,
                         resolved,
                         total: plan.slices.len(),
@@ -2147,7 +2144,7 @@ impl keel_tui::Controller for CliController {
                 ));
             }
         }
-        Ok(keel_tui::Snapshot {
+        Ok(haw_tui::Snapshot {
             root_label: ws.root.display().to_string(),
             stacks: ws.manifest.stacks.keys().cloned().collect(),
             current_stack: ws.current_stack(),
@@ -2160,7 +2157,7 @@ impl keel_tui::Controller for CliController {
         })
     }
 
-    fn changeset_prs(&mut self, id: &str) -> std::io::Result<keel_tui::ChangesetSummary> {
+    fn changeset_prs(&mut self, id: &str) -> std::io::Result<haw_tui::ChangesetSummary> {
         let ws = self.workspace()?;
         let changeset = change::Changeset::load(&ws, id).map_err(std::io::Error::other)?;
         let prs = if changeset.repos.iter().any(|r| r.pr_number.is_some()) {
@@ -2195,7 +2192,7 @@ impl keel_tui::Controller for CliController {
         lockfile
             .save(&ws.lock_path())
             .map_err(std::io::Error::other)?;
-        Ok(format!("pinned keel.lock ({} repos)", lockfile.repos.len()))
+        Ok(format!("pinned haw.lock ({} repos)", lockfile.repos.len()))
     }
 
     fn lock(&mut self) -> std::io::Result<String> {
@@ -2206,7 +2203,7 @@ impl keel_tui::Controller for CliController {
         lockfile
             .save(&ws.lock_path())
             .map_err(std::io::Error::other)?;
-        Ok(format!("wrote keel.lock ({} repos)", lockfile.repos.len()))
+        Ok(format!("wrote haw.lock ({} repos)", lockfile.repos.len()))
     }
 
     fn run_cmd(&mut self, cmd: &str) -> std::io::Result<String> {
@@ -2292,8 +2289,8 @@ impl keel_tui::Controller for CliController {
     fn merge_cleanup(&mut self, repo: &str) -> std::io::Result<String> {
         let ws = self.workspace()?;
         let (name, path) = merge_repo(&ws, Some(repo)).map_err(std::io::Error::other)?;
-        let report = keel_merge::cleanup(
-            &keel_merge::git::GitMerge,
+        let report = haw_merge::cleanup(
+            &haw_merge::git::GitMerge,
             &path,
             &ws.state_dir(),
             &name,
@@ -2312,7 +2309,7 @@ impl keel_tui::Controller for CliController {
     fn merge_abort(&mut self, repo: &str) -> std::io::Result<String> {
         let ws = self.workspace()?;
         let (name, path) = merge_repo(&ws, Some(repo)).map_err(std::io::Error::other)?;
-        let plan = keel_merge::abort(&keel_merge::git::GitMerge, &path, &ws.state_dir(), &name)
+        let plan = haw_merge::abort(&haw_merge::git::GitMerge, &path, &ws.state_dir(), &name)
             .map_err(std::io::Error::other)?;
         Ok(format!(
             "aborted merge of `{}`; back on `{}`",
@@ -2323,7 +2320,7 @@ impl keel_tui::Controller for CliController {
 
 fn dash() -> Result<()> {
     open_workspace()?;
-    if let Some(path) = keel_tui::run(Box::new(CliController))? {
+    if let Some(path) = haw_tui::run(Box::new(CliController))? {
         println!("{}", path.display());
     }
     Ok(())

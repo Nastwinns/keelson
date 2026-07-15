@@ -1,0 +1,22 @@
+[package]
+name = "haw-forge"
+description = "Keelson PR/MR orchestration behind the Forge trait (GitHub, GitLab)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+haw-core.workspace = true
+octocrab.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

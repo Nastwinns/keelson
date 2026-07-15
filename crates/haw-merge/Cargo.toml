@@ -1,0 +1,19 @@
+[package]
+name = "haw-merge"
+description = "Keelson optional parallel collaborative merge slicing (Phase 6)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -13,7 +13,7 @@ Goal: a lexicon a new user understands without a glossary, and options that fix 
 | **changeset** | one feature across N repos (branch + PR/MRs) | `topic`, `issue` |
 | **group** | free-form label on a repo, used to filter commands | kept from `repo` tool, now actually wired |
 | **rev** | what you ask for: branch, tag, or SHA — kind auto-detected | `revision`, `refspec` |
-| **lock / pin** | resolved SHA in `keel.lock` | `freeze` (planned rename: `haw pin` / `haw unpin`) |
+| **lock / pin** | resolved SHA in `haw.lock` | `freeze` (planned rename: `haw pin` / `haw unpin`) |
 | **drift** | HEAD differs from the locked SHA | — |
 
 Old spellings (`brick`, `product`, `bricks`, `--product`, `--bricks`) parse forever as
@@ -27,13 +27,13 @@ aliases so nothing breaks.
 | Verb | Does | Alias (accepted) |
 |------|------|------------------|
 | `haw init <path>` | bootstrap a workspace from a manifest | — |
-| `haw sync` | materialize the tree to `keel.lock` (writes lock if absent) | — |
+| `haw sync` | materialize the tree to `haw.lock` (writes lock if absent) | — |
 | `haw tree` | print the stack → repo tree | `graph` |
 | `haw status` | fleet status: branch, head, dirty, drift per repo | `st` |
 | `haw run '<cmd>'` | run a command in every repo, in parallel (positional) | `forall` (with `-c`) |
-| `haw lock` | resolve every repo's rev → SHA into `keel.lock` | — |
-| `haw pin` | pin `keel.lock` to current checkouts (no network) | `freeze` |
-| `haw unpin` | restore `keel.lock` to manifest revs | `unfreeze` |
+| `haw lock` | resolve every repo's rev → SHA into `haw.lock` | — |
+| `haw pin` | pin `haw.lock` to current checkouts (no network) | `freeze` |
+| `haw unpin` | restore `haw.lock` to manifest revs | `unfreeze` |
 | `haw switch <stack>` | record a stack as current and sync it | — |
 | `haw repo add\|remove\|list` | edit the repos of the manifest | `brick` |
 | `haw stack add\|remove\|list` | edit the stacks of the manifest | `product` |
@@ -48,15 +48,15 @@ via the `forall` alias. Running `haw` with no subcommand opens the dashboard (li
 
 - One field: `rev = "main" | "v6.1.2" | "<40-hex sha>"`. No `type =` key; the kind is
   detected (`refs/heads` > peeled tag > tag > full SHA).
-- Display: SHAs are shown 8 chars everywhere; `keel.lock` stores the full 40.
-- Never detached: branch revs check out on a same-name branch, tags/SHAs on `keel/<rev>`.
+- Display: SHAs are shown 8 chars everywhere; `haw.lock` stores the full 40.
+- Never detached: branch revs check out on a same-name branch, tags/SHAs on `haw/<rev>`.
 
 ## Groups (implemented)
 
 - `groups = ["firmware", "ci"]` on a repo.
 - `haw sync --group firmware`, `haw status --group ci`, `haw forall --group firmware -c ...`
   (repeatable; empty filter = everything; a filter excludes ungrouped repos).
-- Groups are recorded in `keel.lock` so filtering works offline.
+- Groups are recorded in `haw.lock` so filtering works offline.
 
 ## Options grid
 
@@ -122,7 +122,7 @@ CLI command it runs, so the TUI doubles as a way to discover the CLI.
 - `deps = [...]` on a repo — `change land` merges in stable topological order.
 - `haw verify`, `haw sync --locked`, `--format json` on status/tree, exit 3 on drift.
 - `haw build` / `haw test` (per-repo commands in the manifest), lifecycle hooks in
-  `.keel/hooks/`, `haw hooks install`, `haw evidence`, `haw-<name>` plugins.
+  `.haw/hooks/`, `haw hooks install`, `haw evidence`, `haw-<name>` plugins.
 - Lexicon nuance: `--slug` on `repo add` accepts `--repo` as alias; `haw run` takes the
   command positionally (`forall -c` still works).
 - TUI `g` (goto) quits and prints the repo path — `cd "$(haw dash)"` — instead of

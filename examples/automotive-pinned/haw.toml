@@ -1,0 +1,37 @@
+# Automotive-style example: everything pinned to tags/SHAs for a
+# reproducible, auditable baseline (commit haw.lock next to this file).
+# `deps` drives the merge order of `haw change land`.
+
+[remote.internal]
+url = "git@gitlab.company.com:platform"
+forge = "gitlab"
+
+[repo.bsw]
+remote = "internal"
+repo = "bsw.git"
+rev = "R23-11.2"
+groups = ["autosar"]
+
+[repo.mcal]
+remote = "internal"
+repo = "mcal.git"
+rev = "8f4e2a91c6b3d7e0f1a5b9c8d2e6f3a7b1c4d8e2"
+groups = ["autosar"]
+
+[repo.ecu-gateway]
+remote = "internal"
+repo = "ecu-gateway.git"
+rev = "v2.4.0"
+deps = ["bsw", "mcal"]
+
+[repo.ecu-body]
+remote = "internal"
+repo = "ecu-body.git"
+rev = "v1.9.3"
+deps = ["bsw", "mcal"]
+
+[stack.gateway-ecu]
+repos = ["bsw", "mcal", "ecu-gateway"]
+
+[stack.body-ecu]
+repos = ["bsw", "mcal", "ecu-body"]

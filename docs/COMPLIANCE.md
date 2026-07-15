@@ -6,7 +6,7 @@ automotive, industrial, medical). These buyers cannot adopt an SCM tool unless i
 and is **data-protection clean**. This document specifies what Keelson must provide, per
 domain, and maps each requirement to a technical feature and a delivery phase.
 
-Terminology: "the tool" = the `haw` binary + `keel-core`. "The applicant" = the customer's
+Terminology: "the tool" = the `haw` binary + `haw-core`. "The applicant" = the customer's
 safety/security team who owns the certification argument. Keelson supplies **evidence and a
 qualification kit**; the applicant owns the final determination in their plan (PSAC, safety
 plan, SEooC assumptions).
@@ -22,7 +22,7 @@ most important sentence for qualification: it bounds the tool's failure modes to
 "selects/records the wrong source set" — not "emits wrong object code".
 
 Consequences of that scope:
-- The tool's output (`keel.lock` + materialized tree) is **verifiable independently** by the
+- The tool's output (`haw.lock` + materialized tree) is **verifiable independently** by the
   downstream build + review, which lowers required qualification rigor.
 - The evidence it produces (baseline, SBOM, provenance) is consumed by the customer's SCM,
   safety, and security processes — Keelson is an *evidence producer*, not an authority.
@@ -83,7 +83,7 @@ standard; the *artifacts* Keelson must supply are largely shared (§2.6).
 7. **Per-standard mapping tables** (DO-330 / ISO 26262-8 / IEC 61508 / EN 50128 / ASPICE).
 
 > Determinism is a hard requirement for all of the above: same inputs ⇒ byte-identical
-> `keel.lock` and tree selection, on every OS. No wall-clock, no map iteration order, no
+> `haw.lock` and tree selection, on every OS. No wall-clock, no map iteration order, no
 > network nondeterminism in resolution. See §8.
 
 ---
@@ -93,7 +93,7 @@ standard; the *artifacts* Keelson must supply are largely shared (§2.6).
 The commercial and certification wedge. Keelson turns "trust our process" into "here is the
 signed, reproducible baseline".
 
-- **`keel.lock` = the configuration baseline.** Every repo pinned to an exact object id.
+- **`haw.lock` = the configuration baseline.** Every repo pinned to an exact object id.
   Committed, diff-reviewable, machine-verifiable.
 - **Deterministic resolution.** Documented, versioned resolution algorithm (see
   `resolver/mod.rs`); overlay precedence is total and stable.
@@ -169,7 +169,7 @@ crypto, be FIPS-swappable, be secret-hygienic.
   crypto-agility audits and FIPS/Common-Criteria conversations.
 
 ### 5.6 Secret handling
-- Forge tokens and credentials are **never** written to `keel.toml`, `keel.lock`, logs, or
+- Forge tokens and credentials are **never** written to `haw.toml`, `haw.lock`, logs, or
   workspace state. Source them from the OS keychain, `git credential` helpers, or a secrets
   manager (Vault) via env/helper. **Redact** any credential-shaped string in logs and errors.
 
@@ -255,7 +255,7 @@ What must be *built* to make the above real. Phases refer to `ARCHITECTURE.md §
 
 | Feature                                        | Enables                                  | Phase |
 |------------------------------------------------|------------------------------------------|-------|
-| `keel.lock` + deterministic resolution         | Baseline evidence, qualification         | 1     |
+| `haw.lock` + deterministic resolution         | Baseline evidence, qualification         | 1     |
 | Drift detection (`status`/`verify`)            | Config verification activity             | 1     |
 | `--format json` + stable schemas + exit codes  | Auditability, CI evidence capture        | 1     |
 | Canonical/byte-stable lock serialization       | Signed baseline, determinism             | 1     |

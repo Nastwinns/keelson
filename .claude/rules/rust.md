@@ -13,9 +13,9 @@ paths:
 - Must pass before any commit: `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
 - Errors: `thiserror` typed enums in library crates; `anyhow` only in binaries
-  (`keel-cli`, `xtask`).
+  (`hawser`, `xtask`).
 - No `unwrap()`/`expect()` in library code paths; tests may (allowed per-file).
-- All business logic in `keel-core`. `keel-cli` and `keel-tui` stay thin: parse args,
+- All business logic in `haw-core`. `hawser` and `haw-tui` stay thin: parse args,
   call core, render. No domain decisions in front-ends.
 - Formats and forges behind traits (`ManifestLoader`, `Forge`); new format/forge = new impl.
 - Cross-platform: `PathBuf`/`Path` only, never hard-coded `/`. No symlinks in any

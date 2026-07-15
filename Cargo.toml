@@ -10,11 +10,11 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/balin/keelson"
 
 [workspace.dependencies]
-keel-core = { path = "crates/keel-core", version = "0.1.0" }
-keel-git = { path = "crates/keel-git", version = "0.1.0" }
-keel-forge = { path = "crates/keel-forge", version = "0.1.0" }
-keel-merge = { path = "crates/keel-merge", version = "0.1.0" }
-keel-tui = { path = "crates/keel-tui", version = "0.1.0" }
+haw-core = { path = "crates/haw-core", version = "0.1.0" }
+haw-git = { path = "crates/haw-git", version = "0.1.0" }
+haw-forge = { path = "crates/haw-forge", version = "0.1.0" }
+haw-merge = { path = "crates/haw-merge", version = "0.1.0" }
+haw-tui = { path = "crates/haw-tui", version = "0.1.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

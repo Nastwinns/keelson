@@ -793,16 +793,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
+name = "haw-core"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "toml_edit",
+]
+
+[[package]]
+name = "haw-forge"
+version = "0.1.0"
+dependencies = [
+ "haw-core",
+ "octocrab",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "haw-git"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "haw-core",
+ "tempfile",
+]
+
+[[package]]
+name = "haw-merge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "haw-tui"
+version = "0.1.0"
+dependencies = [
+ "haw-core",
+ "ratatui",
+]
+
+[[package]]
 name = "hawser"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "keel-core",
- "keel-forge",
- "keel-git",
- "keel-merge",
- "keel-tui",
+ "haw-core",
+ "haw-forge",
+ "haw-git",
+ "haw-merge",
+ "haw-tui",
  "reqwest",
  "serde_json",
  "tempfile",
@@ -1183,61 +1238,6 @@ dependencies = [
  "signature",
  "simple_asn1",
  "zeroize",
-]
-
-[[package]]
-name = "keel-core"
-version = "0.1.0"
-dependencies = [
- "indexmap",
- "quick-xml",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror",
- "toml",
- "toml_edit",
-]
-
-[[package]]
-name = "keel-forge"
-version = "0.1.0"
-dependencies = [
- "keel-core",
- "octocrab",
- "reqwest",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "keel-git"
-version = "0.1.0"
-dependencies = [
- "directories",
- "keel-core",
- "tempfile",
-]
-
-[[package]]
-name = "keel-merge"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tempfile",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "keel-tui"
-version = "0.1.0"
-dependencies = [
- "keel-core",
- "ratatui",
 ]
 
 [[package]]

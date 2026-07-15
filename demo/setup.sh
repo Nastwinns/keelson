@@ -2,7 +2,7 @@
 # Builds a throwaway multi-repo workspace for the VHS demos (demo/*.tape).
 # Sourced by the tapes so the `cd` into the workspace persists.
 
-DEMO_LAB="/tmp/keel-demo"
+DEMO_LAB="/tmp/haw-demo"
 rm -rf "$DEMO_LAB"
 export GIT_AUTHOR_NAME="Keelson Demo" GIT_AUTHOR_EMAIL="demo@keelson.dev"
 export GIT_COMMITTER_NAME="Keelson Demo" GIT_COMMITTER_EMAIL="demo@keelson.dev"
@@ -19,7 +19,7 @@ done
 
 mkdir -p "$DEMO_LAB/gateway"
 cd "$DEMO_LAB/gateway" || exit 1
-cat > keel.toml <<MANIFEST
+cat > haw.toml <<MANIFEST
 [repo.kernel]
 url = "$DEMO_LAB/kernel"
 rev = "main"

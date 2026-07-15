@@ -3,7 +3,7 @@
 ## 1. Crate architecture (Cargo workspace)
 
 A workspace of small crates so the core stays reusable by the CLI, the TUI, and later a
-Tauri GUI. The golden rule: **all business logic lives in `keel-core`; the CLI and TUI are
+Tauri GUI. The golden rule: **all business logic lives in `haw-core`; the CLI and TUI are
 thin front-ends.** Formats and forges sit behind traits so a format or API change is an
 impl swap, not a rewrite.
 
@@ -11,44 +11,44 @@ impl swap, not a rewrite.
 keelson/
 ├── Cargo.toml                     # [workspace]
 ├── crates/
-│   ├── keel-core/                 # domain logic, no I/O opinions leaked
+│   ├── haw-core/                 # domain logic, no I/O opinions leaked
 │   │   ├── manifest/              # serde structs + `ManifestLoader` trait
 │   │   │   ├── model.rs           #   Manifest, Repo, Stack, Remote, Overlay
 │   │   │   ├── toml_loader.rs     #   default loader
 │   │   │   └── import/            #   west.yml + repo default.xml -> model
-│   │   ├── lock/                  # keel.lock read/write, resolve, drift detection
+│   │   ├── lock/                  # haw.lock read/write, resolve, drift detection
 │   │   ├── workspace/             # on-disk layout, stack materialization
 │   │   ├── resolver/              # manifest + overlays -> concrete repo set
 │   │   └── change/                # changeset model (feature across repos)
 │   │
-│   ├── keel-git/                  # git operations abstraction
+│   ├── haw-git/                  # git operations abstraction
 │   │   ├── introspect.rs          #   gitoxide: status, ahead/behind, current SHA
 │   │   ├── ops.rs                 #   shell-out: clone, fetch, checkout, --reference
 │   │   └── parallel.rs            #   tokio-driven fan-out across repos
 │   │
-│   ├── keel-forge/                # PR/MR orchestration
+│   ├── haw-forge/                # PR/MR orchestration
 │   │   ├── mod.rs                 #   `Forge` trait: open_pr, pr_status, merge_pr
 │   │   ├── github.rs              #   octocrab
 │   │   ├── gitlab.rs              #   gitlab crate / REST
 │   │   └── detect.rs              #   remote URL -> which forge
 │   │
-│   ├── keel-merge/                # optional: mergetopus-style slicing (later phase)
+│   ├── haw-merge/                # optional: mergetopus-style slicing (later phase)
 │   │
 │   ├── hawser/                  # clap-based binary `haw` (thin over core)
-│   └── keel-tui/                  # ratatui dashboard (thin over core)
+│   └── haw-tui/                  # ratatui dashboard (thin over core)
 └── xtask/                         # release/packaging automation
 ```
 
 ### Why these boundaries
 
-- **`keel-core` knows nothing about clap, ratatui, or a terminal.** It exposes an API
+- **`haw-core` knows nothing about clap, ratatui, or a terminal.** It exposes an API
   (`Workspace::sync`, `Changeset::start`, …). This is what lets the TUI and a future Tauri
   GUI reuse everything.
 - **`ManifestLoader` trait** — TOML is the reference format, but `import` produces the same
   in-memory model from west/repo files. Supporting another format later = new impl.
 - **`Forge` trait** — GitHub and GitLab differ enough (PR vs MR, review APIs) that a common
   trait with two impls keeps `change` logic forge-agnostic.
-- **`keel-git` splits introspect (gitoxide) from ops (shell-out).** gitoxide is fast and
+- **`haw-git` splits introspect (gitoxide) from ops (shell-out).** gitoxide is fast and
   native for reads; heavy/rare mutating operations shell out to the user's `git` for
   correctness and to avoid gitoxide's still-maturing high-level clone/push APIs.
 
@@ -79,17 +79,17 @@ keelson/
 ## 4. Data flow: `haw sync`
 
 ```
-read keel.toml ──▶ resolver (apply overlays, pick stack)
+read haw.toml ──▶ resolver (apply overlays, pick stack)
                         │
                         ▼
-              does keel.lock exist?
+              does haw.lock exist?
                  │              │
                 yes             no
                  │              │
     for each repo:      resolve each rev ──▶ SHA
     target = lock SHA          │
                  │             ▼
-                 │        write keel.lock
+                 │        write haw.lock
                  └──────┬───────┘
                         ▼
         tokio fan-out over repos (parallel):
@@ -105,12 +105,12 @@ read keel.toml ──▶ resolver (apply overlays, pick stack)
 ```
 change start FEAT-123 --repos kernel,app-mqtt
         │
-        ▼  keel-core/change: create branch feat/123 in each listed repo (real branch)
+        ▼  haw-core/change: create branch feat/123 in each listed repo (real branch)
         ▼  record changeset (which repos, which branch) in workspace state
 
 change request
         │
-        ▼  keel-forge/detect: per repo, GitHub or GitLab?
+        ▼  haw-forge/detect: per repo, GitHub or GitLab?
         ▼  Forge::open_pr on each -> collect PR/MR URLs, cross-link them in descriptions
 
 change status
@@ -134,7 +134,7 @@ Two design decisions shape this plan:
    what makes the first release defensible.
 2. **The TUI ships in v0.1**, not as a late phase. The fleet dashboard is the most visible
    differentiator and the cheapest way to make the double-layer value legible. It is a thin
-   front-end over `keel-core`, so building it early also validates that the core API is
+   front-end over `haw-core`, so building it early also validates that the core API is
    genuinely UI-agnostic.
 
 Each phase still ends with a usable binary. Ship early, narrow, correct.
@@ -144,7 +144,7 @@ Each phase still ends with a usable binary. Ship early, narrow, correct.
 
 ### Phase 0 — Skeleton (week 1) — ✅ shipped
 - Cargo workspace, the crate boundaries above, CI matrix (Linux/macOS/Windows) from day one.
-- `keel-core::manifest` serde model + TOML loader + round-trip tests.
+- `haw-core::manifest` serde model + TOML loader + round-trip tests.
 - `haw --version`, `haw graph` (parse manifest, print stack→repo tree).
 - **Deliverable:** parses a manifest, prints the composition. Nothing clones yet.
 
@@ -154,14 +154,14 @@ The MVP deliberately cuts a thin vertical slice through **both** layers plus the
 rather than completing one layer fully. Scope each item to the minimum that proves value.
 
 *Composition (minimal):*
-- `keel-git`: clone (shell-out), fetch, checkout as a real branch; gitoxide introspection.
+- `haw-git`: clone (shell-out), fetch, checkout as a real branch; gitoxide introspection.
 - `haw init`, `haw sync`, `haw lock`, `haw status`.
-- `keel.lock` generation + drift detection. Parallel sync via tokio.
+- `haw.lock` generation + drift detection. Parallel sync via tokio.
 - Stacks modeled and parsed; `haw switch <stack>` for the single-stack common case.
   (Overlays and `--shared` object sharing deferred to Phase 2 — not needed to prove value.)
 
 *MR orchestration (minimal):*
-- `keel-forge`: `Forge` trait + URL→forge detection + **GitHub (octocrab) first**, GitLab
+- `haw-forge`: `Forge` trait + URL→forge detection + **GitHub (octocrab) first**, GitLab
   stubbed behind the same trait.
 - `haw change start` (branch across repos) and `haw change status` (aggregated view).
   `request` and `land` land in Phase 3; `start`+`status` alone already beat manual `cd`-ing.
@@ -234,7 +234,7 @@ CI system** — those arrive as hooks, per-repo commands, or plugins.
   spec: [CLI-DESIGN.md](CLI-DESIGN.md). Landed incrementally across Phases 1–2, cosmetic.
 - **Golden CLI-output tests** (Phase 2): snapshot `tree`/`status`/`lock` output so lexicon or
   format changes surface in review.
-- **Determinism tests** (Phase 1→2): assert `keel.lock` is byte-identical across
+- **Determinism tests** (Phase 1→2): assert `haw.lock` is byte-identical across
   Linux/macOS/Windows for identical inputs — a hard certification requirement
   ([COMPLIANCE.md §8](COMPLIANCE.md)).
 
@@ -269,26 +269,26 @@ gitoxide-native Rust core.
 Decisions the plan left open, fixed during Phase 1. Each one is reversible behind a
 trait or a file format version.
 
-- **DR-1 — Lock covers the whole manifest, not one stack.** `keel.lock` pins every
+- **DR-1 — Lock covers the whole manifest, not one stack.** `haw.lock` pins every
   repo; `sync --stack` consumes a subset. Switching stacks never rewrites the lock.
 - **DR-2 — Overlays only apply at lock time.** `haw lock --overlay dev` re-resolves;
   `haw sync` with an existing lock ignores overlays (and says so). Lock stays the single
   source of truth for reproducibility.
 - **DR-3 — Branch policy, never detached.** A branch rev checks out on a local branch of
-  the same name; tags and SHAs check out on `keel/<rev>`. The lock records the branch
+  the same name; tags and SHAs check out on `haw/<rev>`. The lock records the branch
   (`branch` field) so re-syncs need no network. `checkout -B` is guarded: local commits
   not contained in the target abort the sync (`GitError::LocalCommits`).
 - **DR-4 — Rev resolution without cloning** uses `git ls-remote --heads --tags` (peeled
   `^{}` entries win for annotated tags). Full 40-hex revs pass through unresolved.
 - **DR-5 — Reads shell out too, for now.** `gix` is deferred: the `GitBackend` trait in
-  `keel-core::git` is the seam, `keel-git::ShellGit` the only impl. Swapping reads to
+  `haw-core::git` is the seam, `haw-git::ShellGit` the only impl. Swapping reads to
   gitoxide later touches one crate, zero callers. Keeps Phase 1's dep tree small.
 - **DR-6 — Threads, not tokio, for fan-out.** Git work is process-spawning; a bounded
-  `std::thread::scope` pool (`keel-git::parallel::fan_out`) suffices and stays sync.
+  `std::thread::scope` pool (`haw-git::parallel::fan_out`) suffices and stays sync.
   tokio arrives with the async forge APIs (octocrab) in Phase 3.
-- **DR-7 — Workspace state lives in `.keel/`** (uncommitted): `stack` records the
+- **DR-7 — Workspace state lives in `.haw/`** (uncommitted): `stack` records the
   current stack; `changesets/<id>.toml` records changeset membership + branches.
-- **DR-8 — keel-core depends on nothing that does I/O by policy**, but performs manifest,
+- **DR-8 — haw-core depends on nothing that does I/O by policy**, but performs manifest,
   lock, and state file I/O itself (it owns those formats). Network/git I/O stays behind
   `GitBackend`.
 - **DR-9 — Lockfile is versioned** (`version = 1`); unknown versions are a hard error,
@@ -298,7 +298,7 @@ trait or a file format version.
   overrides the heuristic for hosts it misses (shipped in Phase 3).
 - **DR-11 — Forge clients: octocrab's generic verbs + reqwest, sync trait.** GitHub goes
   through `octocrab` driven by a private current-thread tokio runtime; GitLab uses
-  `reqwest` (blocking, REST v4). The `Forge` trait stays synchronous, so `keel-core` and
+  `reqwest` (blocking, REST v4). The `Forge` trait stays synchronous, so `haw-core` and
   the CLI never see an async runtime. Generic JSON verbs (get/post/patch/put) are used
   instead of octocrab's typed builders to stay stable across its releases.
 - **DR-12 — Snapshots capture the whole workspace.** `haw change snapshot save`
@@ -309,15 +309,15 @@ trait or a file format version.
   optional `deps = [...]` gives the product→repo graph real edges; land performs a
   stable topological sort over the changeset members and stops at the first failure.
 - **DR-14 — OAuth device flow is deferred.** Token resolution today: env
-  (`KEEL_GITHUB_TOKEN`/`GITHUB_TOKEN`/`GH_TOKEN`, `KEEL_GITLAB_TOKEN`/`GITLAB_TOKEN`,
-  `KEEL_FORGE_TOKEN`) then a logged-in `gh` CLI. `keel auth login` + OS keychain
+  (`HAW_GITHUB_TOKEN`/`GITHUB_TOKEN`/`GH_TOKEN`, `HAW_GITLAB_TOKEN`/`GITLAB_TOKEN`,
+  `HAW_FORGE_TOKEN`) then a logged-in `gh` CLI. `haw auth login` + OS keychain
   (EXTENDING §2.2) needs a keyring dependency and interactive UX — postponed until the
   CLI's audience demands it; air-gapped and CI environments are already covered.
 - **DR-15 — Collaborative merge is single-worktree and incremental.** The Phase 6
-  `keel-merge` crate is self-contained (its own `MergeBackend` trait + shell-out impl,
-  mirroring how `keel-forge` owns its API clients) rather than extending `GitBackend`. The
+  `haw-merge` crate is self-contained (its own `MergeBackend` trait + shell-out impl,
+  mirroring how `haw-forge` owns its API clients) rather than extending `GitBackend`. The
   merge is one real `git merge` on an integration branch, resolved slice by slice in place;
   slices partition the conflicting paths by top-level component, so they are disjoint and
-  need no recombination. State lives in `.keel/merge/<repo>.toml`. Per-slice `git worktree`
+  need no recombination. State lives in `.haw/merge/<repo>.toml`. Per-slice `git worktree`
   parallelism is a future enhancement, not required by the model. The target branch only
   fast-forwards onto the integration branch at `cleanup`, keeping the operation abortable.
