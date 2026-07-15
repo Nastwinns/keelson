@@ -114,10 +114,22 @@ command bar whose verbs mirror the CLI (learn one, know both).
 Command bar mirrors the verbs table above, so nothing new to learn. The bar echoes the exact
 CLI command it runs, so the TUI doubles as a way to discover the CLI.
 
+## Shipped since this design was written
+
+- `keel pin` / `keel unpin` (aliases `freeze`/`unfreeze`).
+- `--label <L>` on `change start`, forwarded to PR/MRs at `change request`.
+- `forge = "github" | "gitlab"` key on `[remote.X]` for hosts the URL heuristic misses.
+- `deps = [...]` on a repo — `change land` merges in stable topological order.
+- `keel verify`, `keel sync --locked`, `--format json` on status/tree, exit 3 on drift.
+- `keel build` / `keel test` (per-repo commands in the manifest), lifecycle hooks in
+  `.keel/hooks/`, `keel hooks install`, `keel evidence`, `keel-<name>` plugins.
+- Lexicon nuance: `--slug` on `repo add` accepts `--repo` as alias; `keel run` takes the
+  command positionally (`forall -c` still works).
+- TUI `g` (goto) quits and prints the repo path — `cd "$(keel dash)"` — instead of
+  spawning a nested shell.
+
 ## Planned (not yet implemented)
 
-- `keel pin` / `keel unpin` — friendlier `freeze`/`unfreeze` (Phase 2).
-- `--label <L>` on `change start` — forwarded to PR/MRs at `change request` (Phase 3).
-- `forge = "github" | "gitlab"` key on `[remote.X]` for hosts the URL heuristic misses.
-- `deps = [...]` on a repo — required before `change land` can claim topological order.
 - Tag conveniences: `keel lock --as-of <tag>`; `keel status` marking `rev` kind (branch/tag/sha).
+- `keel auth login` — OAuth device flow + OS keychain (see ARCHITECTURE DR-14).
+- TUI: mouse support, themes beyond `NO_COLOR`, live ahead/behind refresh.

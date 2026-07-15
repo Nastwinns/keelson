@@ -236,6 +236,11 @@ keel                             Open the TUI cockpit (no subcommand)
 ├── repo   add|remove|list       Edit repos in the manifest
 ├── stack  add|remove|list       Edit stacks in the manifest
 │
+├── verify                       Assert tree == keel.lock; exit 3 on drift (CI gate)
+├── build / test                 Run each repo's declared build/test command, in parallel
+├── hooks  install|list          Git integrity pre-commit + lifecycle hooks (.keel/hooks)
+├── evidence                     Bundle manifest+lock+audit+status for audits
+│
 ├── change                       Cross-repo feature ("changeset") workflow
 │   ├── start <id> [--repos ..]  Create one branch across the affected repos
 │   │                            [--skip-branch] adopt each repo's current branch instead
@@ -376,13 +381,13 @@ changeset `FEAT-42`
 REPO      BRANCH           ON IT  DIRTY  HEAD      PR
 kernel    change/FEAT-42   yes    -      a1b2c3d4  —
 app-mqtt  change/FEAT-42   yes    yes    4d5e6f7a  —
-(PR/MR state arrives with `change request` — Phase 3)
+(no PR/MRs yet — open them with `keel change request FEAT-42`)
 ```
 
 ## Testing
 
 ```bash
-cargo test --workspace        # unit + integration; 24 tests, all green
+cargo test --workspace        # unit + integration; 43 tests, all green
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -397,8 +402,12 @@ precedence, lockfile read/write, changeset start/status. Planned (see roadmap):
 
 ## Status
 
-Phase 1 (double-layer MVP): manifest model, `sync`/`lock`/`status`/`switch`, cross-repo
-changesets, read-only TUI, CI matrix. See the docs below for the plan and the roadmap.
+Phases 0-5 of [the plan](docs/ARCHITECTURE.md#6-implementation-plan-phased) are
+implemented: composition (`sync`/`lock`/`pin`/`switch`, overlays, `--shared`), the full
+changeset lifecycle (`start`/`request`/`land`/`goto`, snapshots) on GitHub **and** GitLab,
+the interactive TUI cockpit, `import` from west/repo manifests, CI gates (`verify`,
+`--locked`, `--format json`), lifecycle hooks, plugins, and packaging. Phase 6
+(collaborative merge) stays demand-driven.
 
 ## Documentation
 

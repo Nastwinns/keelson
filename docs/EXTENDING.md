@@ -173,8 +173,11 @@ build:
 
 ## 4. Where this lands in the plan
 
-Additions to the phased plan in [ARCHITECTURE.md §6](ARCHITECTURE.md). Nothing here is built
-yet; each item is scoped to keep core small and push integrations to the edges.
+Additions to the phased plan in [ARCHITECTURE.md §6](ARCHITECTURE.md); each item is scoped
+to keep core small and push integrations to the edges. Status as of 2026-07-15: everything
+below is shipped except the OAuth device-flow login (deferred — ARCHITECTURE DR-14) and
+the full `keel evidence` SBOM/provenance payload (today's bundle: manifest, lock, audit
+log, status JSON, tool record).
 
 | Capability                                   | Layer            | Phase |
 |----------------------------------------------|------------------|-------|
@@ -182,7 +185,7 @@ yet; each item is scoped to keep core small and push integrations to the edges.
 | `--format json` + stable schemas/exit codes  | core             | 1→3   |
 | Forge transport (git-native, zero config)    | keel-git         | 1     |
 | Forge API tokens (env / gh-glab reuse)        | keel-forge       | 1 (GH), 3 (GL) |
-| OAuth device-flow login + keychain           | keel-forge       | 3     |
+| OAuth device-flow login + keychain           | keel-forge       | deferred (DR-14) |
 | Self-hosted forge base URL                   | keel-forge       | 3     |
 | Lifecycle hooks (`pre/post-sync`, …)         | core + `keel hooks` | 4  |
 | `keel hooks install` (stale-lock pre-commit) | core             | 4     |

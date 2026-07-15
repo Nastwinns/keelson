@@ -139,13 +139,16 @@ Two design decisions shape this plan:
 
 Each phase still ends with a usable binary. Ship early, narrow, correct.
 
-### Phase 0 — Skeleton (week 1)
+> **Status (2026-07-15): Phases 0–5 are implemented** (Phase 6 stays demand-driven).
+> Per-phase deltas vs the original plan are recorded in §9's decision records.
+
+### Phase 0 — Skeleton (week 1) — ✅ shipped
 - Cargo workspace, the crate boundaries above, CI matrix (Linux/macOS/Windows) from day one.
 - `keel-core::manifest` serde model + TOML loader + round-trip tests.
 - `keel --version`, `keel graph` (parse manifest, print stack→repo tree).
 - **Deliverable:** parses a manifest, prints the composition. Nothing clones yet.
 
-### Phase 1 — Double-layer MVP (weeks 2–6) — *the whole point, minimally*
+### Phase 1 — Double-layer MVP (weeks 2–6) — *the whole point, minimally* — ✅ shipped
 
 The MVP deliberately cuts a thin vertical slice through **both** layers plus the TUI,
 rather than completing one layer fully. Scope each item to the minimum that proves value.
@@ -172,14 +175,14 @@ rather than completing one layer fully. Scope each item to the minimum that prov
   start a feature branch across its repos, and see the whole fleet + changeset in a TUI.
   No competitor ships this combination.
 
-### Phase 2 — Composition depth (weeks 7–8)
+### Phase 2 — Composition depth (weeks 7–8) — ✅ shipped (freeze/unfreeze shipped as `pin`/`unpin` + aliases)
 - Overlays / profile inheritance in the resolver (grit-style, kills manifest duplication).
 - `--shared` object sharing via `git clone --reference` (text file, **no symlinks**).
 - `keel freeze` / `unfreeze`; `stack`/`repo` add/remove editing the manifest.
 - **Deliverable:** the stacks×repos model at full power, incl. shared repos and DRY
   manifests for large (50+ repo) trees.
 
-### Phase 3 — MR orchestration depth (weeks 9–11) — *closing the RepoFleet gap*
+### Phase 3 — MR orchestration depth (weeks 9–11) — ✅ shipped (see DR-11/DR-13)
 - GitLab impl fully behind the `Forge` trait (MRs, approvals, pipelines).
 - `keel change request` (open cross-linked PR/MRs on both forges) and `keel change land`
   (merge in topological order from the stack→repo graph).
@@ -190,7 +193,7 @@ rather than completing one layer fully. Scope each item to the minimum that prov
 - **Deliverable:** full cross-repo feature lifecycle on GitHub *and* GitLab, with
   composition underneath — strictly a superset of RepoFleet.
 
-### Phase 4 — TUI actions & polish (week 12) — *a k9s-grade cockpit*
+### Phase 4 — TUI actions & polish (week 12) — ✅ shipped
 - Promote the read-only TUI to interactive: keyboard-driven sync, switch, `pin`, change
   start/request/land, goto.
 - **Design bar (non-negotiable): match [`k9s`](https://k9scli.io).** Keyboard-first + modal:
@@ -199,7 +202,7 @@ rather than completing one layer fully. Scope each item to the minimum that prov
   Mouse optional, never required. Open with a bare `keel` or `keel dash`.
 - **Deliverable:** the fleet cockpit becomes a polished control surface, not just a viewer.
 
-### Phase 5 — Migration & distribution (week 13)
+### Phase 5 — Migration & distribution (week 13) — ✅ shipped (`keel import`, packaging/, examples/, `cargo xtask dist`)
 - `keel import --from west.yml | default.xml` (convert existing manifests).
 - Homebrew tap + Scoop bucket + `cargo install` (match RepoFleet's distribution channels).
 - Docs, an embedded/BSP example, an automotive-style pinned-manifest example.
@@ -286,5 +289,22 @@ trait or a file format version.
 - **DR-9 — Lockfile is versioned** (`version = 1`); unknown versions are a hard error,
   schema evolution goes through explicit migration.
 - **DR-10 — Forge detection is hostname-substring** (`github`/`gitlab`), which covers
-  self-hosted GitLab; anything else will need an explicit `forge =` key on the remote
-  (Phase 3).
+  self-hosted GitLab; an explicit `forge = "github" | "gitlab"` key on `[remote.X]`
+  overrides the heuristic for hosts it misses (shipped in Phase 3).
+- **DR-11 — Forge clients: octocrab's generic verbs + reqwest, sync trait.** GitHub goes
+  through `octocrab` driven by a private current-thread tokio runtime; GitLab uses
+  `reqwest` (blocking, REST v4). The `Forge` trait stays synchronous, so `keel-core` and
+  the CLI never see an async runtime. Generic JSON verbs (get/post/patch/put) are used
+  instead of octocrab's typed builders to stay stable across its releases.
+- **DR-12 — Snapshots capture the whole workspace.** `keel change snapshot save`
+  records every repo's branch + HEAD (not just the changeset's members): a feature's
+  state includes where the rest of the fleet stood. Restore refuses on dirty repos and
+  never touches the network.
+- **DR-13 — `change land` order is manifest `deps`, then changeset order.** A repo's
+  optional `deps = [...]` gives the product→repo graph real edges; land performs a
+  stable topological sort over the changeset members and stops at the first failure.
+- **DR-14 — OAuth device flow is deferred.** Token resolution today: env
+  (`KEEL_GITHUB_TOKEN`/`GITHUB_TOKEN`/`GH_TOKEN`, `KEEL_GITLAB_TOKEN`/`GITLAB_TOKEN`,
+  `KEEL_FORGE_TOKEN`) then a logged-in `gh` CLI. `keel auth login` + OS keychain
+  (EXTENDING §2.2) needs a keyring dependency and interactive UX — postponed until the
+  CLI's audience demands it; air-gapped and CI environments are already covered.
