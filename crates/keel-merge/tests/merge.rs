@@ -35,9 +35,7 @@ fn write(repo: &Path, rel: &str, body: &str) {
 /// two directories, so merging `feature` into `main` conflicts in `src/` and
 /// `docs/`.
 fn conflicting_repo(root: &Path) -> PathBuf {
-    let repo = root.join("repo");
-    std::fs::create_dir_all(&repo).unwrap();
-    git(&repo, &["init", "-b", "main"]);
+    let repo = init_repo(root);
 
     write(&repo, "src/lib.rs", "fn main() {}\n");
     write(&repo, "docs/readme.md", "hello\n");
@@ -253,10 +251,20 @@ fn branch_exists(repo: &Path, name: &str) -> bool {
         .success()
 }
 
-fn root_repo(root: &Path) -> PathBuf {
+/// `git init` plus a repo-local identity, so keel's own git invocations
+/// (which inherit no test env) work on CI runners without a global config.
+fn init_repo(root: &Path) -> PathBuf {
     let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-b", "main"]);
+    git(&repo, &["config", "user.email", "test@keelson.dev"]);
+    git(&repo, &["config", "user.name", "Keelson Test"]);
+    git(&repo, &["config", "commit.gpgsign", "false"]);
+    repo
+}
+
+fn root_repo(root: &Path) -> PathBuf {
+    let repo = init_repo(root);
     write(&repo, "src/lib.rs", "fn main() {}\n");
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-m", "base"]);
