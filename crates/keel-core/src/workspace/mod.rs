@@ -28,7 +28,7 @@ pub enum WorkspaceError {
     },
     #[error("unknown stack `{0}`")]
     UnknownStack(String),
-    #[error("no stack selected; pass --stack or `keel switch` (available: {available})")]
+    #[error("no stack selected; pass --stack or `haw switch` (available: {available})")]
     StackRequired { available: String },
 }
 
@@ -43,9 +43,9 @@ pub enum SyncError {
     Lock(#[from] LockError),
     #[error(transparent)]
     Workspace(#[from] WorkspaceError),
-    #[error("repo `{0}` is not in {LOCK_FILE}; run `keel lock` to regenerate it")]
+    #[error("repo `{0}` is not in {LOCK_FILE}; run `haw lock` to regenerate it")]
     MissingLockEntry(String),
-    #[error("repo `{0}` is not cloned; run `keel sync` first")]
+    #[error("repo `{0}` is not cloned; run `haw sync` first")]
     NotCloned(String),
 }
 
@@ -91,7 +91,7 @@ pub enum SyncOutcome {
     AlreadySynced,
 }
 
-/// Observed state of one repo, for `keel status` and the TUI.
+/// Observed state of one repo, for `haw status` and the TUI.
 #[derive(Debug, Clone)]
 pub struct RepoStatus {
     pub name: String,
@@ -150,7 +150,7 @@ impl Workspace {
         }
     }
 
-    /// The stack recorded by the last `keel switch`, if any.
+    /// The stack recorded by the last `haw switch`, if any.
     pub fn current_stack(&self) -> Option<String> {
         std::fs::read_to_string(self.state_dir().join("stack"))
             .ok()
@@ -224,7 +224,7 @@ impl Workspace {
     }
 
     /// Snapshot the workspace: a lockfile pinning every repo to its current
-    /// HEAD (and current branch). No network. `keel unpin` (= `keel lock`)
+    /// HEAD (and current branch). No network. `haw unpin` (= `haw lock`)
     /// restores the lock to the manifest revs.
     pub fn pin(&self, backend: &dyn GitBackend) -> Result<Lockfile, SyncError> {
         let mut repos = match self.read_lock()? {

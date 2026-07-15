@@ -47,19 +47,19 @@ pub enum MergeError {
     Parse(#[source] Box<toml::de::Error>),
     #[error("could not serialize merge plan")]
     Serialize(#[from] toml::ser::Error),
-    #[error("unsupported merge plan version {0}; upgrade keel")]
+    #[error("unsupported merge plan version {0}; upgrade haw")]
     UnsupportedVersion(u32),
     #[error("{path} has uncommitted changes; commit or stash them first")]
     Dirty { path: PathBuf },
     #[error("{0} is on a detached HEAD; check out a branch first")]
     Detached(PathBuf),
-    #[error("a merge is already planned for `{0}`; run `keel merge cleanup` or `abort` first")]
+    #[error("a merge is already planned for `{0}`; run `haw merge cleanup` or `abort` first")]
     PlanExists(String),
-    #[error("no merge planned for `{0}`; run `keel merge plan <source>` first")]
+    #[error("no merge planned for `{0}`; run `haw merge plan <source>` first")]
     NoPlan(String),
     #[error("slice `{0}` is not in the plan")]
     UnknownSlice(String),
-    #[error("no merge in progress; the plan is stale — run `keel merge abort`")]
+    #[error("no merge in progress; the plan is stale — run `haw merge abort`")]
     NoMergeInProgress,
     #[error("`{incoming}` is already merged into `{target}`; nothing to do")]
     NothingToMerge { incoming: String, target: String },

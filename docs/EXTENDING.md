@@ -25,8 +25,8 @@ Four layers, cheapest first. Reach for the lowest one that solves the problem.
 The universal escape hatch. Parallel command execution across every repo (group-filterable).
 
 ```bash
-keel run 'git fetch --tags'
-keel run --group firmware 'cmake --build build'
+haw run 'git fetch --tags'
+haw run --group firmware 'cmake --build build'
 ```
 No plugin needed for the 80% case: "do X in every repo".
 
@@ -36,15 +36,15 @@ in the manifest) and receive context via env + stdin JSON.
 
 | Hook | Fires |
 |------|-------|
-| `pre-sync` / `post-sync` | before/after a `keel sync` |
+| `pre-sync` / `post-sync` | before/after a `haw sync` |
 | `pre-lock` / `post-lock` | around lockfile (re)generation |
-| `post-switch` | after `keel switch <stack>` |
+| `post-switch` | after `haw switch <stack>` |
 | `post-change-start` | after a changeset branch is created |
 
 Example — install a git hook that rejects a commit when `keel.lock` is stale (the "git-way"
 integrity guarantee):
 ```bash
-keel hooks install    # writes a pre-commit that runs `keel verify --lock`
+haw hooks install    # writes a pre-commit that runs `haw verify --lock`
 ```
 
 ### 1.3 Per-repo commands in the manifest
@@ -60,7 +60,7 @@ test   = "ctest --test-dir build"
 ```
 keel stays build-system-agnostic: CMake, Bazel, Meson, Cargo, Make — all just strings.
 
-### 1.4 Subcommand plugins — `keel-<name>` on PATH
+### 1.4 Subcommand plugins — `haw-<name>` on PATH
 The git / cargo / kubectl pattern. `keel foo …` that isn't a built-in execs `keel-foo` from
 PATH, forwarding args and the workspace context (via env + `KEEL_JSON` on stdin). The
 community ships `keel-jira`, `keel-bazel`, `keel-sbom-scan` without touching core.
@@ -91,7 +91,7 @@ keel shells out to the user's `git`, so it inherits existing git auth automatica
 - **HTTPS** via `git credential` helpers (Git Credential Manager, `osxkeychain`, `cache`).
 
 Works with **any** host — GitHub, GitLab, Gitea, Bitbucket, self-hosted, plain SSH — with no
-integration. If `git clone` works, `keel sync` works. This is exactly how `repo` and `west`
+integration. If `git clone` works, `haw sync` works. This is exactly how `repo` and `west`
 authenticate: they don't.
 
 ### 2.2 Forge API (open/read PR-MR, CI status) — token, only when used
@@ -121,15 +121,15 @@ keel is designed to be driven by pipelines, not just humans.
 
 ### 3.1 Reproducible checkout
 ```bash
-keel sync --locked      # materialize the exact keel.lock tree; fail if lock is missing/stale
-keel verify             # assert on-disk tree == lock (drift gate); non-zero on drift
+haw sync --locked      # materialize the exact keel.lock tree; fail if lock is missing/stale
+haw verify             # assert on-disk tree == lock (drift gate); non-zero on drift
 ```
 `--locked` is the CI contract: no rev resolution, no network nondeterminism — the committed
 lock is law. Deterministic on Linux/macOS/Windows (COMPLIANCE §8).
 
 ### 3.2 Gates via JSON + exit codes
 ```bash
-keel status --format json | jq -e '.repos[] | select(.dirty or .drift)' && exit 1 || true
+haw status --format json | jq -e '.repos[] | select(.dirty or .drift)' && exit 1 || true
 ```
 Stable exit codes: `0` ok, distinct non-zero for drift / verify failure / signature failure.
 
@@ -139,33 +139,33 @@ interactive login in pipelines. Transport uses the runner's SSH key or a deploy 
 
 ### 3.4 Object-sharing cache (fast CI)
 ```bash
-keel sync --locked --shared   # git alternates against a warm mirror cache; text file, no symlinks
+haw sync --locked --shared   # git alternates against a warm mirror cache; text file, no symlinks
 ```
 Cache the mirror between runs to avoid re-cloning large repo trees.
 
 ### 3.5 Evidence in the release pipeline
 ```bash
-keel evidence --out keel-evidence.tar.zst   # baseline + SBOM + provenance + tool config record
+haw evidence --out keel-evidence.tar.zst   # baseline + SBOM + provenance + tool config record
 ```
 Attach to the release for the certification data package (COMPLIANCE §3, §4).
 
 ### 3.6 GitHub Actions (sketch)
 ```yaml
 - uses: actions/checkout@v4
-- run: cargo install keel-cli
-- run: keel sync --locked --shared
+- run: cargo install hawser
+- run: haw sync --locked --shared
   env: { GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} }
-- run: keel verify
-- run: keel run --group firmware 'cmake --build build --preset release'
+- run: haw verify
+- run: haw run --group firmware 'cmake --build build --preset release'
 ```
 
 ### 3.7 GitLab CI (sketch)
 ```yaml
 build:
   script:
-    - keel sync --locked
-    - keel verify
-    - keel run 'make'
+    - haw sync --locked
+    - haw verify
+    - haw run 'make'
   variables: { GITLAB_TOKEN: $CI_JOB_TOKEN }
 ```
 
@@ -176,7 +176,7 @@ build:
 Additions to the phased plan in [ARCHITECTURE.md §6](ARCHITECTURE.md); each item is scoped
 to keep core small and push integrations to the edges. Status as of 2026-07-15: everything
 below is shipped except the OAuth device-flow login (deferred — ARCHITECTURE DR-14) and
-the full `keel evidence` SBOM/provenance payload (today's bundle: manifest, lock, audit
+the full `haw evidence` SBOM/provenance payload (today's bundle: manifest, lock, audit
 log, status JSON, tool record).
 
 | Capability                                   | Layer            | Phase |
@@ -187,13 +187,13 @@ log, status JSON, tool record).
 | Forge API tokens (env / gh-glab reuse)        | keel-forge       | 1 (GH), 3 (GL) |
 | OAuth device-flow login + keychain           | keel-forge       | deferred (DR-14) |
 | Self-hosted forge base URL                   | keel-forge       | 3     |
-| Lifecycle hooks (`pre/post-sync`, …)         | core + `keel hooks` | 4  |
-| `keel hooks install` (stale-lock pre-commit) | core             | 4     |
+| Lifecycle hooks (`pre/post-sync`, …)         | core + `haw hooks` | 4  |
+| `haw hooks install` (stale-lock pre-commit) | core             | 4     |
 | Per-repo `build`/`test` commands in manifest | manifest model   | 4     |
-| Subcommand plugins (`keel-<name>` on PATH)   | keel-cli dispatch| 5     |
+| Subcommand plugins (`haw-<name>` on PATH)   | hawser dispatch| 5     |
 | Plugin stdin/stdout JSON contract            | core             | 5     |
-| `keel verify` drift gate (CI)                | core             | 1→2   |
-| `keel evidence` bundle                       | core             | 3     |
+| `haw verify` drift gate (CI)                | core             | 1→2   |
+| `haw evidence` bundle                       | core             | 3     |
 | `--shared` object-sharing cache              | keel-git         | 2     |
 
 Guiding constraint: **the core never grows a hard dependency on a specific build tool,

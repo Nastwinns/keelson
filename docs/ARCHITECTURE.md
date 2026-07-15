@@ -34,7 +34,7 @@ keelson/
 │   │
 │   ├── keel-merge/                # optional: mergetopus-style slicing (later phase)
 │   │
-│   ├── keel-cli/                  # clap-based binary `keel` (thin over core)
+│   ├── hawser/                  # clap-based binary `haw` (thin over core)
 │   └── keel-tui/                  # ratatui dashboard (thin over core)
 └── xtask/                         # release/packaging automation
 ```
@@ -76,7 +76,7 @@ keelson/
 - Assume `git` is on PATH (reasonable on Windows); gitoxide covers the read side natively.
 - CI matrix builds all three OSes from day one (like mergetopus does).
 
-## 4. Data flow: `keel sync`
+## 4. Data flow: `haw sync`
 
 ```
 read keel.toml ──▶ resolver (apply overlays, pick stack)
@@ -100,7 +100,7 @@ read keel.toml ──▶ resolver (apply overlays, pick stack)
               report drift (local SHA != lock)
 ```
 
-## 5. Data flow: `keel change` (the RepoFleet-beating part)
+## 5. Data flow: `haw change` (the RepoFleet-beating part)
 
 ```
 change start FEAT-123 --repos kernel,app-mqtt
@@ -145,7 +145,7 @@ Each phase still ends with a usable binary. Ship early, narrow, correct.
 ### Phase 0 — Skeleton (week 1) — ✅ shipped
 - Cargo workspace, the crate boundaries above, CI matrix (Linux/macOS/Windows) from day one.
 - `keel-core::manifest` serde model + TOML loader + round-trip tests.
-- `keel --version`, `keel graph` (parse manifest, print stack→repo tree).
+- `haw --version`, `haw graph` (parse manifest, print stack→repo tree).
 - **Deliverable:** parses a manifest, prints the composition. Nothing clones yet.
 
 ### Phase 1 — Double-layer MVP (weeks 2–6) — *the whole point, minimally* — ✅ shipped
@@ -155,19 +155,19 @@ rather than completing one layer fully. Scope each item to the minimum that prov
 
 *Composition (minimal):*
 - `keel-git`: clone (shell-out), fetch, checkout as a real branch; gitoxide introspection.
-- `keel init`, `keel sync`, `keel lock`, `keel status`.
+- `haw init`, `haw sync`, `haw lock`, `haw status`.
 - `keel.lock` generation + drift detection. Parallel sync via tokio.
-- Stacks modeled and parsed; `keel switch <stack>` for the single-stack common case.
+- Stacks modeled and parsed; `haw switch <stack>` for the single-stack common case.
   (Overlays and `--shared` object sharing deferred to Phase 2 — not needed to prove value.)
 
 *MR orchestration (minimal):*
 - `keel-forge`: `Forge` trait + URL→forge detection + **GitHub (octocrab) first**, GitLab
   stubbed behind the same trait.
-- `keel change start` (branch across repos) and `keel change status` (aggregated view).
+- `haw change start` (branch across repos) and `haw change status` (aggregated view).
   `request` and `land` land in Phase 3; `start`+`status` alone already beat manual `cd`-ing.
 
 *TUI (minimal):*
-- `keel tui`: read-only ratatui fleet dashboard — stack→repo tree, per-repo state
+- `haw tui`: read-only ratatui fleet dashboard — stack→repo tree, per-repo state
   (branch, SHA, dirty, ahead/behind, drift-vs-lock), and the changeset view. Actions
   (sync/switch/start) added in Phase 4; a read-only cockpit is already the visual hook.
 
@@ -178,16 +178,16 @@ rather than completing one layer fully. Scope each item to the minimum that prov
 ### Phase 2 — Composition depth (weeks 7–8) — ✅ shipped (freeze/unfreeze shipped as `pin`/`unpin` + aliases)
 - Overlays / profile inheritance in the resolver (grit-style, kills manifest duplication).
 - `--shared` object sharing via `git clone --reference` (text file, **no symlinks**).
-- `keel freeze` / `unfreeze`; `stack`/`repo` add/remove editing the manifest.
+- `haw freeze` / `unfreeze`; `stack`/`repo` add/remove editing the manifest.
 - **Deliverable:** the stacks×repos model at full power, incl. shared repos and DRY
   manifests for large (50+ repo) trees.
 
 ### Phase 3 — MR orchestration depth (weeks 9–11) — ✅ shipped (see DR-11/DR-13)
 - GitLab impl fully behind the `Forge` trait (MRs, approvals, pipelines).
-- `keel change request` (open cross-linked PR/MRs on both forges) and `keel change land`
+- `haw change request` (open cross-linked PR/MRs on both forges) and `haw change land`
   (merge in topological order from the stack→repo graph).
-- `keel change goto` (interactive picker + cd, RepoFleet-style shell integration).
-- `keel forall -c` parallel.
+- `haw change goto` (interactive picker + cd, RepoFleet-style shell integration).
+- `haw forall -c` parallel.
 - Changeset **snapshots** (save/restore multi-repo feature state), a RepoFleet idea worth
   matching.
 - **Deliverable:** full cross-repo feature lifecycle on GitHub *and* GitLab, with
@@ -199,17 +199,17 @@ rather than completing one layer fully. Scope each item to the minimum that prov
 - **Design bar (non-negotiable): match [`k9s`](https://k9scli.io).** Keyboard-first + modal:
   `:` command bar, `/` filter, single-key actions, live-updating grid, always-visible help
   bar. Async refresh (no frozen frames), color-coded status, themeable + `NO_COLOR`-aware.
-  Mouse optional, never required. Open with a bare `keel` or `keel dash`.
+  Mouse optional, never required. Open with a bare `haw` or `haw dash`.
 - **Deliverable:** the fleet cockpit becomes a polished control surface, not just a viewer.
 
-### Phase 5 — Migration & distribution (week 13) — ✅ shipped (`keel import`, packaging/, examples/, `cargo xtask dist`)
-- `keel import --from west.yml | default.xml` (convert existing manifests).
+### Phase 5 — Migration & distribution (week 13) — ✅ shipped (`haw import`, packaging/, examples/, `cargo xtask dist`)
+- `haw import --from west.yml | default.xml` (convert existing manifests).
 - Homebrew tap + Scoop bucket + `cargo install` (match RepoFleet's distribution channels).
 - Docs, an embedded/BSP example, an automotive-style pinned-manifest example.
 - **Deliverable:** low-friction adoption path for `repo`/`west` users.
 
 ### Phase 6 — Collaborative merge — ✅ shipped (see DR-15)
-- `keel merge plan | resolve | status | cleanup | abort` (mergetopus-style slicing).
+- `haw merge plan | resolve | status | cleanup | abort` (mergetopus-style slicing).
   A conflict-heavy merge runs on a dedicated integration branch; its conflicts are
   partitioned by top-level path into disjoint **slices** that are resolved (and reviewed)
   piecewise, then sealed as one clean merge commit that the target branch fast-forwards to.
@@ -220,7 +220,7 @@ rather than completing one layer fully. Scope each item to the minimum that prov
 ### Extensibility, auth & CI/CD (cross-phase)
 Keelson stays open at the edges: it orchestrates git, forges, and build tools without
 reimplementing them. The extension surface — `forall`, lifecycle hooks, per-repo build
-commands, `keel-<name>` subcommand plugins, the `--format json` machine interface — plus the
+commands, `haw-<name>` subcommand plugins, the `--format json` machine interface — plus the
 auth model (git-native transport + opt-in forge tokens / OAuth device flow) and the CI/CD
 integration (`sync --locked`, `verify`, `evidence`, object-sharing cache) are specified in
 [EXTENDING.md](EXTENDING.md), with each item mapped to the phase that ships it. Guiding
@@ -229,7 +229,7 @@ CI system** — those arrive as hooks, per-repo commands, or plugins.
 
 ### Lexicon & testing (cross-phase)
 - **Lexicon**: verbs are one guessable word each — `tree` (was `graph`), `run` (was
-  `forall -c`), `pin`/`unpin` (was `freeze`/`unfreeze`), bare `keel`/`dash` (was `tui`);
+  `forall -c`), `pin`/`unpin` (was `freeze`/`unfreeze`), bare `haw`/`dash` (was `tui`);
   flag `--slug` (was `--repo`) on `repo add`. Old names stay as hidden aliases. Canonical
   spec: [CLI-DESIGN.md](CLI-DESIGN.md). Landed incrementally across Phases 1–2, cosmetic.
 - **Golden CLI-output tests** (Phase 2): snapshot `tree`/`status`/`lock` output so lexicon or
@@ -271,8 +271,8 @@ trait or a file format version.
 
 - **DR-1 — Lock covers the whole manifest, not one stack.** `keel.lock` pins every
   repo; `sync --stack` consumes a subset. Switching stacks never rewrites the lock.
-- **DR-2 — Overlays only apply at lock time.** `keel lock --overlay dev` re-resolves;
-  `keel sync` with an existing lock ignores overlays (and says so). Lock stays the single
+- **DR-2 — Overlays only apply at lock time.** `haw lock --overlay dev` re-resolves;
+  `haw sync` with an existing lock ignores overlays (and says so). Lock stays the single
   source of truth for reproducibility.
 - **DR-3 — Branch policy, never detached.** A branch rev checks out on a local branch of
   the same name; tags and SHAs check out on `keel/<rev>`. The lock records the branch
@@ -301,7 +301,7 @@ trait or a file format version.
   `reqwest` (blocking, REST v4). The `Forge` trait stays synchronous, so `keel-core` and
   the CLI never see an async runtime. Generic JSON verbs (get/post/patch/put) are used
   instead of octocrab's typed builders to stay stable across its releases.
-- **DR-12 — Snapshots capture the whole workspace.** `keel change snapshot save`
+- **DR-12 — Snapshots capture the whole workspace.** `haw change snapshot save`
   records every repo's branch + HEAD (not just the changeset's members): a feature's
   state includes where the rest of the fleet stood. Restore refuses on dirty repos and
   never touches the network.

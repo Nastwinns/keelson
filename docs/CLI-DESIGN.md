@@ -13,7 +13,7 @@ Goal: a lexicon a new user understands without a glossary, and options that fix 
 | **changeset** | one feature across N repos (branch + PR/MRs) | `topic`, `issue` |
 | **group** | free-form label on a repo, used to filter commands | kept from `repo` tool, now actually wired |
 | **rev** | what you ask for: branch, tag, or SHA — kind auto-detected | `revision`, `refspec` |
-| **lock / pin** | resolved SHA in `keel.lock` | `freeze` (planned rename: `keel pin` / `keel unpin`) |
+| **lock / pin** | resolved SHA in `keel.lock` | `freeze` (planned rename: `haw pin` / `haw unpin`) |
 | **drift** | HEAD differs from the locked SHA | — |
 
 Old spellings (`brick`, `product`, `bricks`, `--product`, `--bricks`) parse forever as
@@ -26,22 +26,22 @@ aliases so nothing breaks.
 
 | Verb | Does | Alias (accepted) |
 |------|------|------------------|
-| `keel init <path>` | bootstrap a workspace from a manifest | — |
-| `keel sync` | materialize the tree to `keel.lock` (writes lock if absent) | — |
-| `keel tree` | print the stack → repo tree | `graph` |
-| `keel status` | fleet status: branch, head, dirty, drift per repo | `st` |
-| `keel run '<cmd>'` | run a command in every repo, in parallel (positional) | `forall` (with `-c`) |
-| `keel lock` | resolve every repo's rev → SHA into `keel.lock` | — |
-| `keel pin` | pin `keel.lock` to current checkouts (no network) | `freeze` |
-| `keel unpin` | restore `keel.lock` to manifest revs | `unfreeze` |
-| `keel switch <stack>` | record a stack as current and sync it | — |
-| `keel repo add\|remove\|list` | edit the repos of the manifest | `brick` |
-| `keel stack add\|remove\|list` | edit the stacks of the manifest | `product` |
-| `keel change start\|status\|list` | cross-repo feature (changeset) workflow | — |
-| `keel` (no args) / `keel dash` | open the TUI cockpit | `tui` |
+| `haw init <path>` | bootstrap a workspace from a manifest | — |
+| `haw sync` | materialize the tree to `keel.lock` (writes lock if absent) | — |
+| `haw tree` | print the stack → repo tree | `graph` |
+| `haw status` | fleet status: branch, head, dirty, drift per repo | `st` |
+| `haw run '<cmd>'` | run a command in every repo, in parallel (positional) | `forall` (with `-c`) |
+| `haw lock` | resolve every repo's rev → SHA into `keel.lock` | — |
+| `haw pin` | pin `keel.lock` to current checkouts (no network) | `freeze` |
+| `haw unpin` | restore `keel.lock` to manifest revs | `unfreeze` |
+| `haw switch <stack>` | record a stack as current and sync it | — |
+| `haw repo add\|remove\|list` | edit the repos of the manifest | `brick` |
+| `haw stack add\|remove\|list` | edit the stacks of the manifest | `product` |
+| `haw change start\|status\|list` | cross-repo feature (changeset) workflow | — |
+| `haw` (no args) / `haw dash` | open the TUI cockpit | `tui` |
 
-`keel run` takes the command positionally (`keel run 'git fetch'`); `-c/--command` still works
-via the `forall` alias. Running `keel` with no subcommand opens the dashboard (like `htop`,
+`haw run` takes the command positionally (`haw run 'git fetch'`); `-c/--command` still works
+via the `forall` alias. Running `haw` with no subcommand opens the dashboard (like `htop`,
 `k9s`).
 
 ## Rev handling (user-friendly by default)
@@ -54,7 +54,7 @@ via the `forall` alias. Running `keel` with no subcommand opens the dashboard (l
 ## Groups (implemented)
 
 - `groups = ["firmware", "ci"]` on a repo.
-- `keel sync --group firmware`, `keel status --group ci`, `keel forall --group firmware -c ...`
+- `haw sync --group firmware`, `haw status --group ci`, `haw forall --group firmware -c ...`
   (repeatable; empty filter = everything; a filter excludes ungrouped repos).
 - Groups are recorded in `keel.lock` so filtering works offline.
 
@@ -116,20 +116,20 @@ CLI command it runs, so the TUI doubles as a way to discover the CLI.
 
 ## Shipped since this design was written
 
-- `keel pin` / `keel unpin` (aliases `freeze`/`unfreeze`).
+- `haw pin` / `haw unpin` (aliases `freeze`/`unfreeze`).
 - `--label <L>` on `change start`, forwarded to PR/MRs at `change request`.
 - `forge = "github" | "gitlab"` key on `[remote.X]` for hosts the URL heuristic misses.
 - `deps = [...]` on a repo — `change land` merges in stable topological order.
-- `keel verify`, `keel sync --locked`, `--format json` on status/tree, exit 3 on drift.
-- `keel build` / `keel test` (per-repo commands in the manifest), lifecycle hooks in
-  `.keel/hooks/`, `keel hooks install`, `keel evidence`, `keel-<name>` plugins.
-- Lexicon nuance: `--slug` on `repo add` accepts `--repo` as alias; `keel run` takes the
+- `haw verify`, `haw sync --locked`, `--format json` on status/tree, exit 3 on drift.
+- `haw build` / `haw test` (per-repo commands in the manifest), lifecycle hooks in
+  `.keel/hooks/`, `haw hooks install`, `haw evidence`, `haw-<name>` plugins.
+- Lexicon nuance: `--slug` on `repo add` accepts `--repo` as alias; `haw run` takes the
   command positionally (`forall -c` still works).
-- TUI `g` (goto) quits and prints the repo path — `cd "$(keel dash)"` — instead of
+- TUI `g` (goto) quits and prints the repo path — `cd "$(haw dash)"` — instead of
   spawning a nested shell.
 
 ## Planned (not yet implemented)
 
-- Tag conveniences: `keel lock --as-of <tag>`; `keel status` marking `rev` kind (branch/tag/sha).
-- `keel auth login` — OAuth device flow + OS keychain (see ARCHITECTURE DR-14).
+- Tag conveniences: `haw lock --as-of <tag>`; `haw status` marking `rev` kind (branch/tag/sha).
+- `haw auth login` — OAuth device flow + OS keychain (see ARCHITECTURE DR-14).
 - TUI: mouse support, themes beyond `NO_COLOR`, live ahead/behind refresh.

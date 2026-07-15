@@ -1,4 +1,4 @@
-//! The keel cockpit: a k9s-style, keyboard-first ratatui dashboard.
+//! The haw cockpit: a k9s-style, keyboard-first ratatui dashboard.
 //!
 //! Views: stacks -> fleet grid -> repo detail, changesets -> changeset grid,
 //! tree, help overlay. `/` filters the grid, `:` opens a command bar whose
@@ -16,10 +16,31 @@ use std::time::Duration;
 use keel_core::workspace::RepoStatus;
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table,
+    TableState,
+};
+
+/// The cockpit skin: Catppuccin-Mocha-leaning, chosen to read on dark terms.
+mod theme {
+    use ratatui::style::Color;
+
+    pub const ACCENT: Color = Color::Rgb(137, 180, 250);
+    pub const MAUVE: Color = Color::Rgb(203, 166, 247);
+    pub const GREEN: Color = Color::Rgb(166, 227, 161);
+    pub const YELLOW: Color = Color::Rgb(249, 226, 175);
+    pub const RED: Color = Color::Rgb(243, 139, 168);
+    pub const TEAL: Color = Color::Rgb(148, 226, 213);
+    pub const PEACH: Color = Color::Rgb(250, 179, 135);
+    pub const TEXT: Color = Color::Rgb(205, 214, 244);
+    pub const DIM: Color = Color::Rgb(127, 132, 156);
+    pub const SURFACE: Color = Color::Rgb(69, 71, 90);
+    pub const SURFACE0: Color = Color::Rgb(49, 50, 68);
+    pub const CRUST: Color = Color::Rgb(17, 17, 27);
+}
 
 /// One repo of a changeset, with its rendered PR/CI cells.
 #[derive(Debug, Clone)]
@@ -54,7 +75,7 @@ pub struct Snapshot {
     pub lock_present: bool,
     /// repo name -> absolute checkout path (for goto).
     pub paths: Vec<(String, PathBuf)>,
-    /// Rendered `keel tree` output for the tree view.
+    /// Rendered `haw tree` output for the tree view.
     pub tree: String,
 }
 
@@ -75,7 +96,7 @@ pub trait Controller: Send {
     fn change_land(&mut self, id: &str) -> io::Result<String>;
 }
 
-const SPINNER: [&str; 4] = ["◐", "◓", "◑", "◒"];
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum View {
@@ -236,7 +257,7 @@ impl App {
 }
 
 /// Run the cockpit until quit. Returns a path when the user asked to `goto`
-/// a repo, so the caller can print it (`cd "$(keel dash)"`).
+/// a repo, so the caller can print it (`cd "$(haw dash)"`).
 pub fn run(controller: Box<dyn Controller>) -> io::Result<Option<PathBuf>> {
     let (job_tx, job_rx) = channel::<Job>();
     let (out_tx, out_rx) = channel::<Outcome>();
@@ -303,20 +324,20 @@ fn run_command_bar(app: &mut App, jobs: &Sender<Job>, line: &str) {
     match (verb, rest) {
         ("sync", "") => {
             if let Some(stack) = app.stack.clone() {
-                app.message = format!("→ keel sync --stack {stack}");
+                app.message = format!("→ haw sync --stack {stack}");
                 dispatch(app, jobs, "sync", ActionKind::SyncStack(stack));
             }
         }
         ("stack" | "switch", name) if !name.is_empty() => {
-            app.message = format!("→ keel switch {name}");
+            app.message = format!("→ haw switch {name}");
             dispatch(app, jobs, "switch", ActionKind::Switch(name.to_string()));
         }
         ("run", cmd) if !cmd.is_empty() => {
-            app.message = format!("→ keel run '{cmd}'");
+            app.message = format!("→ haw run '{cmd}'");
             dispatch(app, jobs, "run", ActionKind::Run(cmd.to_string()));
         }
         ("change", id) if !id.is_empty() => {
-            app.message = format!("→ keel change start {id}");
+            app.message = format!("→ haw change start {id}");
             dispatch(
                 app,
                 jobs,
@@ -325,11 +346,11 @@ fn run_command_bar(app: &mut App, jobs: &Sender<Job>, line: &str) {
             );
         }
         ("pin", "") => {
-            app.message = "→ keel pin".to_string();
+            app.message = "→ haw pin".to_string();
             dispatch(app, jobs, "pin", ActionKind::Pin);
         }
         ("lock", "") => {
-            app.message = "→ keel lock".to_string();
+            app.message = "→ haw lock".to_string();
             dispatch(app, jobs, "lock", ActionKind::Lock);
         }
         ("tree", "") => app.goto_view(View::Tree),
@@ -378,9 +399,7 @@ fn event_loop(
                             app.snapshot = snapshot;
                             app.clamp_cursor();
                             if app.message == "loading…" {
-                                app.message =
-                                    "[s]ync [S]witch [p]in [l]ock [t]ree [c]hange [?]help"
-                                        .to_string();
+                                app.message = "ready — press ? for help".to_string();
                             }
                         }
                         Err(err) => app.message = format!("refresh failed: {err}"),
@@ -465,7 +484,7 @@ fn event_loop(
                             InputMode::NewChangeset(id) => {
                                 let id = id.trim().to_string();
                                 if !id.is_empty() {
-                                    app.message = format!("→ keel change start {id}");
+                                    app.message = format!("→ haw change start {id}");
                                     dispatch(
                                         &mut app,
                                         jobs,
@@ -537,16 +556,16 @@ fn event_loop(
             },
             KeyCode::Char('s') if app.view == View::Fleet => {
                 if let Some(repo) = app.cursor_repo() {
-                    app.message = format!("→ keel sync ({repo})");
+                    app.message = format!("→ haw sync ({repo})");
                     dispatch(&mut app, jobs, "sync", ActionKind::SyncRepo(repo));
                 } else if let Some(stack) = app.stack.clone() {
-                    app.message = format!("→ keel sync --stack {stack}");
+                    app.message = format!("→ haw sync --stack {stack}");
                     dispatch(&mut app, jobs, "sync", ActionKind::SyncStack(stack));
                 }
             }
             KeyCode::Char('s') if app.view == View::Stacks => {
                 if let Some(stack) = app.stack_rows().get(selected).map(|s| s.to_string()) {
-                    app.message = format!("→ keel sync --stack {stack}");
+                    app.message = format!("→ haw sync --stack {stack}");
                     dispatch(&mut app, jobs, "sync", ActionKind::SyncStack(stack));
                 }
             }
@@ -557,7 +576,7 @@ fn event_loop(
                 };
                 match target {
                     Some(stack) => {
-                        app.message = format!("→ keel switch {stack}");
+                        app.message = format!("→ haw switch {stack}");
                         app.stack = Some(stack.clone());
                         dispatch(&mut app, jobs, "switch", ActionKind::Switch(stack));
                     }
@@ -565,11 +584,11 @@ fn event_loop(
                 }
             }
             KeyCode::Char('p') if app.view == View::Fleet || app.view == View::Stacks => {
-                app.message = "→ keel pin".to_string();
+                app.message = "→ haw pin".to_string();
                 dispatch(&mut app, jobs, "pin", ActionKind::Pin);
             }
             KeyCode::Char('l') if app.view == View::Fleet || app.view == View::Stacks => {
-                app.message = "→ keel lock".to_string();
+                app.message = "→ haw lock".to_string();
                 dispatch(&mut app, jobs, "lock", ActionKind::Lock);
             }
             KeyCode::Char('r') => {
@@ -594,7 +613,7 @@ fn event_loop(
                     } else {
                         Some(app.selected_repos.clone())
                     };
-                    app.message = format!("→ keel change request {id}");
+                    app.message = format!("→ haw change request {id}");
                     dispatch(
                         &mut app,
                         jobs,
@@ -605,7 +624,7 @@ fn event_loop(
             }
             KeyCode::Char('L') if app.view == View::Changeset => {
                 if let Some(id) = app.changeset.clone() {
-                    app.message = format!("→ keel change land {id}");
+                    app.message = format!("→ haw change land {id}");
                     dispatch(&mut app, jobs, "change land", ActionKind::ChangeLand(id));
                 }
             }
@@ -614,60 +633,72 @@ fn event_loop(
     }
 }
 
-fn header_line(app: &App) -> String {
-    let context = match app.view {
+fn view_name(app: &App, view: View) -> String {
+    match view {
         View::Stacks => "stacks".to_string(),
-        View::Fleet => format!(
-            "stack: {}   lock: {}   repos: {}",
-            app.stack.as_deref().unwrap_or("—"),
-            if app.snapshot.lock_present {
-                "✓"
-            } else {
-                "✗"
-            },
-            app.fleet_rows().len()
-        ),
-        View::Changesets => format!("changesets: {}", app.changeset_rows().len()),
-        View::Changeset => format!(
-            "change {}   {} repos",
-            app.changeset.as_deref().unwrap_or("—"),
-            app.change_repo_rows().len()
-        ),
+        View::Fleet => "fleet".to_string(),
+        View::Changesets => "changesets".to_string(),
+        View::Changeset => format!("change {}", app.changeset.as_deref().unwrap_or("—")),
         View::Tree => "tree".to_string(),
-    };
-    format!(" keel ▸ {} ── {}", app.snapshot.root_label, context)
+    }
 }
 
-fn action_bar(app: &App) -> String {
-    let keys = match app.view {
-        View::Stacks => "[enter]open [s]ync [S]witch [p]in [l]ock [t]ree [c]hange",
-        View::Fleet => "[s]ync [S]tacks [p]in [l]ock [t]ree [c]hange [r]un [g]oto",
-        View::Changesets => "[enter]open [n]ew [b]ack",
-        View::Changeset => "[n]ew [␣]select [R]equest-PR [L]and [g]oto [b]ack",
-        View::Tree => "[b]ack",
-    };
-    format!("{keys}  [/]filter [:]cmd [?]help [q]uit")
+fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
+    match view {
+        View::Stacks => &[
+            ("enter", "open fleet"),
+            ("s", "sync stack"),
+            ("S", "switch"),
+            ("p", "pin"),
+            ("l", "lock"),
+            ("c", "changesets"),
+            ("t", "tree"),
+            ("?", "help"),
+        ],
+        View::Fleet => &[
+            ("s", "sync"),
+            ("S", "stacks"),
+            ("p", "pin"),
+            ("l", "lock"),
+            ("c", "changesets"),
+            ("r", "run"),
+            ("g", "goto"),
+            ("t", "tree"),
+            ("/", "filter"),
+            (":", "cmd"),
+        ],
+        View::Changesets => &[
+            ("enter", "open"),
+            ("n", "new"),
+            ("b", "back"),
+            ("/", "filter"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        View::Changeset => &[
+            ("space", "select"),
+            ("R", "request PR"),
+            ("L", "land"),
+            ("n", "new"),
+            ("g", "goto"),
+            ("b", "back"),
+        ],
+        View::Tree => &[("b", "back"), ("q", "quit")],
+    }
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
     let zones = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(6),
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(frame.area());
 
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            header_line(app),
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        zones[0],
-    );
-
+    draw_header(frame, app, zones[0]);
     match app.view {
         View::Stacks => draw_stacks(frame, app, zones[1]),
         View::Fleet => draw_fleet(frame, app, zones[1]),
@@ -675,224 +706,620 @@ fn draw(frame: &mut Frame, app: &mut App) {
         View::Changeset => draw_changeset(frame, app, zones[1]),
         View::Tree => draw_tree(frame, app, zones[1]),
     }
-
-    let status = match (&app.input, app.busy) {
-        (InputMode::Filter(buffer), _) => format!("/{buffer}▏"),
-        (InputMode::Command(buffer), _) => format!(":{buffer}▏"),
-        (InputMode::NewChangeset(buffer), _) => format!("new changeset id: {buffer}▏"),
-        (InputMode::None, Some(label)) => {
-            format!("{} {label}…", SPINNER[app.spinner])
-        }
-        (InputMode::None, None) => app.message.clone(),
-    };
-    frame.render_widget(
-        Paragraph::new(Line::styled(status, Style::default().fg(Color::Cyan))),
-        zones[2],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::styled(
-            action_bar(app),
-            Style::default().fg(Color::DarkGray),
-        )),
-        zones[3],
-    );
+    draw_status(frame, app, zones[2]);
+    draw_crumbs(frame, app, zones[3]);
 
     if app.help {
         draw_help(frame);
     }
 }
 
-fn glyph(repo: &RepoStatus) -> (&'static str, Color) {
-    if repo.missing {
-        ("✗", Color::Red)
-    } else if repo.dirty {
-        ("!", Color::Yellow)
-    } else if repo.drift {
-        ("●", Color::Magenta)
+fn kv(key: &str, value: Span<'static>) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!(" {key:<12}"), Style::default().fg(theme::DIM)),
+        value,
+    ])
+}
+
+fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(34),
+            Constraint::Min(28),
+            Constraint::Length(14),
+        ])
+        .split(area);
+
+    let lock = if app.snapshot.lock_present {
+        Span::styled("✓ committed", Style::default().fg(theme::GREEN))
     } else {
-        ("✓", Color::Green)
+        Span::styled("✗ absent — run haw lock", Style::default().fg(theme::RED))
+    };
+    let info = vec![
+        kv(
+            "context:",
+            Span::styled(
+                app.snapshot.root_label.clone(),
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ),
+        kv(
+            "stack:",
+            Span::styled(
+                app.stack.clone().unwrap_or_else(|| "—".to_string()),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ),
+        kv("lock:", lock),
+        kv(
+            "repos:",
+            Span::styled(
+                format!("{}", app.fleet_rows().len()),
+                Style::default().fg(theme::TEXT),
+            ),
+        ),
+        kv(
+            "changesets:",
+            Span::styled(
+                format!("{}", app.snapshot.changesets.len()),
+                Style::default().fg(theme::TEXT),
+            ),
+        ),
+    ];
+    frame.render_widget(Paragraph::new(Text::from(info)), columns[0]);
+
+    let hints = key_hints(app.view);
+    let mut key_lines: Vec<Line> = Vec::new();
+    for pair in hints.chunks(2) {
+        let mut spans = Vec::new();
+        for (key, label) in pair {
+            spans.push(Span::styled(
+                format!("<{key}>"),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                format!(" {label:<12}"),
+                Style::default().fg(theme::DIM),
+            ));
+        }
+        key_lines.push(Line::from(spans));
     }
+    frame.render_widget(Paragraph::new(Text::from(key_lines)), columns[1]);
+
+    let logo = vec![
+        Line::styled("┬ ┬┌─┐┬ ┬", Style::default().fg(theme::MAUVE)),
+        Line::styled("├─┤├─┤│││", Style::default().fg(theme::MAUVE)),
+        Line::styled("┴ ┴┴ ┴└┴┘", Style::default().fg(theme::MAUVE)),
+        Line::styled(" cockpit ⚓", Style::default().fg(theme::DIM)),
+    ];
+    frame.render_widget(
+        Paragraph::new(Text::from(logo)).alignment(Alignment::Right),
+        columns[2],
+    );
+}
+
+fn panel(title: String) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::SURFACE))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::default()
+                .fg(theme::MAUVE)
+                .add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn header_row(cells: &[&'static str]) -> Row<'static> {
+    Row::new(
+        cells
+            .iter()
+            .map(|c| {
+                Cell::from(Span::styled(
+                    *c,
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn cursor_style() -> Style {
+    Style::default()
+        .bg(theme::SURFACE0)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn short(sha: &str) -> &str {
     sha.get(..8).unwrap_or(sha)
 }
 
-fn draw_stacks(frame: &mut Frame, app: &mut App, area: Rect) {
-    let current = app.stack.clone();
-    let items: Vec<ListItem> = app
-        .stack_rows()
-        .iter()
-        .map(|name| {
-            let marker = if current.as_deref() == Some(name) {
-                "▸"
-            } else {
-                " "
-            };
-            ListItem::new(format!("{marker} {name}"))
-        })
-        .collect();
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" stacks "))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    frame.render_stateful_widget(list, area, &mut app.cursor);
+fn state_dot(repo: &RepoStatus) -> Span<'static> {
+    let (dot, color) = if repo.missing {
+        ("○", theme::DIM)
+    } else if repo.drift {
+        ("●", theme::RED)
+    } else if repo.dirty {
+        ("●", theme::YELLOW)
+    } else {
+        ("●", theme::GREEN)
+    };
+    Span::styled(dot, Style::default().fg(color))
 }
 
 fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
     let zones = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .constraints([Constraint::Min(3), Constraint::Length(3)])
         .split(area);
 
-    let rows = app.fleet_rows();
-    let width = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
-    let header = format!(
-        " {:<width$}  {:<24} {:<10} {:<6} {:<6} AHEAD/BEHIND",
-        "REPO", "BRANCH", "HEAD", "DIRTY", "DRIFT"
-    );
-    let mut items: Vec<ListItem> = vec![ListItem::new(Line::styled(
-        header,
-        Style::default().add_modifier(Modifier::UNDERLINED),
-    ))];
-    items.extend(rows.iter().map(|repo| {
-        let (mark, color) = glyph(repo);
-        let ahead_behind = repo
-            .ahead_behind
-            .map_or("—".to_string(), |(a, b)| format!("{a} / {b}"));
-        ListItem::new(Line::styled(
-            format!(
-                "{mark}{:<width$}  {:<24} {:<10} {:<6} {:<6} {}",
-                repo.name,
-                repo.branch.as_deref().unwrap_or("(detached)"),
-                repo.head.as_deref().map_or("—", short),
-                if repo.dirty { "yes" } else { "·" },
-                if repo.drift { "DRIFT" } else { "·" },
-                ahead_behind,
-            ),
-            Style::default().fg(color),
-        ))
-    }));
+    let rows: Vec<Row> = app
+        .fleet_rows()
+        .iter()
+        .map(|repo| {
+            if repo.missing {
+                return Row::new(vec![
+                    Cell::from(state_dot(repo)),
+                    Cell::from(Span::styled(
+                        repo.name.clone(),
+                        Style::default().fg(theme::RED),
+                    )),
+                    Cell::from(Span::styled(
+                        "not cloned — press s",
+                        Style::default().fg(theme::DIM),
+                    )),
+                ]);
+            }
+            let ahead_behind = repo
+                .ahead_behind
+                .map_or("—".to_string(), |(a, b)| format!("↑{a} ↓{b}"));
+            Row::new(vec![
+                Cell::from(state_dot(repo)),
+                Cell::from(Span::styled(
+                    repo.name.clone(),
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Cell::from(Span::styled(
+                    repo.branch.clone().unwrap_or_else(|| "(detached)".into()),
+                    Style::default().fg(theme::YELLOW),
+                )),
+                Cell::from(Span::styled(
+                    repo.head.as_deref().map_or("—", short).to_string(),
+                    Style::default().fg(theme::DIM),
+                )),
+                Cell::from(if repo.dirty {
+                    Span::styled("yes", Style::default().fg(theme::YELLOW))
+                } else {
+                    Span::styled("·", Style::default().fg(theme::DIM))
+                }),
+                Cell::from(if repo.drift {
+                    Span::styled("DRIFT", Style::default().fg(theme::RED))
+                } else {
+                    Span::styled("·", Style::default().fg(theme::DIM))
+                }),
+                Cell::from(Span::styled(ahead_behind, Style::default().fg(theme::TEAL))),
+            ])
+        })
+        .collect();
 
-    let mut state = ListState::default();
-    state.select(app.cursor.selected().map(|i| i + 1));
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" fleet "))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    frame.render_stateful_widget(list, zones[0], &mut state);
+    let count = rows.len();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(1),
+            Constraint::Min(10),
+            Constraint::Min(14),
+            Constraint::Length(9),
+            Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Length(9),
+        ],
+    )
+    .header(header_row(&[
+        "",
+        "REPO",
+        "BRANCH",
+        "HEAD",
+        "DIRTY",
+        "DRIFT",
+        "↑ / ↓",
+    ]))
+    .block(panel(format!("fleet({count})")))
+    .row_highlight_style(cursor_style())
+    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
 
-    let detail = match app
+    let mut state = TableState::default();
+    state.select(app.cursor.selected());
+    frame.render_stateful_widget(table, zones[0], &mut state);
+
+    let detail = app
         .cursor
         .selected()
-        .and_then(|i| app.fleet_rows().get(i).copied().cloned())
-    {
-        Some(repo) => format!(
-            " {}  ›  path {}   branch {}   dirty {}   locked {}   {}",
-            repo.name,
-            repo.path.display(),
-            repo.branch.as_deref().unwrap_or("(detached)"),
-            if repo.dirty { "yes" } else { "no" },
-            repo.locked_rev.as_deref().map_or("—", short),
+        .and_then(|i| app.fleet_rows().get(i).copied().cloned());
+    let line = match detail {
+        Some(repo) => Line::from(vec![
+            Span::styled(
+                format!(" {} ", repo.name),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("path ", Style::default().fg(theme::DIM)),
+            Span::styled(
+                format!("{} ", repo.path.display()),
+                Style::default().fg(theme::TEXT),
+            ),
+            Span::styled("· locked ", Style::default().fg(theme::DIM)),
+            Span::styled(
+                repo.locked_rev.as_deref().map_or("—", short).to_string(),
+                Style::default().fg(theme::TEXT),
+            ),
+            Span::styled(" · ", Style::default().fg(theme::DIM)),
             if repo.missing {
-                "NOT CLONED — press s"
+                Span::styled("NOT CLONED", Style::default().fg(theme::RED))
             } else if repo.drift {
-                "DRIFT (head != lock)"
+                Span::styled("DRIFT (head ≠ lock)", Style::default().fg(theme::RED))
+            } else if repo.dirty {
+                Span::styled("dirty worktree", Style::default().fg(theme::YELLOW))
             } else {
-                "in sync"
+                Span::styled("in sync ✓", Style::default().fg(theme::GREEN))
             },
+        ]),
+        None => Line::styled(
+            " no repos — check keel.toml",
+            Style::default().fg(theme::DIM),
         ),
-        None => " no repos — check keel.toml".to_string(),
     };
     frame.render_widget(
-        Paragraph::new(Line::styled(detail, Style::default().fg(Color::Gray))),
+        Paragraph::new(line).block(panel("detail".to_string())),
         zones[1],
     );
+}
+
+fn draw_stacks(frame: &mut Frame, app: &mut App, area: Rect) {
+    let current = app.stack.clone();
+    let counts: Vec<(String, usize)> = app
+        .snapshot
+        .fleet
+        .iter()
+        .map(|(name, repos)| (name.clone(), repos.len()))
+        .collect();
+    let items: Vec<ListItem> = app
+        .stack_rows()
+        .iter()
+        .map(|name| {
+            let is_current = current.as_deref() == Some(name);
+            let marker = if is_current {
+                Span::styled(
+                    "▸ ",
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::raw("  ")
+            };
+            let count = counts
+                .iter()
+                .find(|(n, _)| n == name)
+                .map_or(0, |(_, c)| *c);
+            let style = if is_current {
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            ListItem::new(Line::from(vec![
+                marker,
+                Span::styled((*name).to_string(), style),
+                Span::styled(
+                    format!("  · {count} repos"),
+                    Style::default().fg(theme::DIM),
+                ),
+            ]))
+        })
+        .collect();
+    let count = items.len();
+    let list = List::new(items)
+        .block(panel(format!("stacks({count})")))
+        .highlight_style(cursor_style());
+    frame.render_stateful_widget(list, area, &mut app.cursor);
 }
 
 fn draw_changesets(frame: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = app
         .changeset_rows()
         .iter()
-        .map(|c| ListItem::new(format!(" {}  ({} repos)", c.id, c.repos.len())))
+        .map(|c| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("  {}", c.id),
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  · {} repos", c.repos.len()),
+                    Style::default().fg(theme::DIM),
+                ),
+            ]))
+        })
         .collect();
+    let count = items.len();
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" changesets "))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .block(panel(format!("changesets({count})")))
+        .highlight_style(cursor_style());
     frame.render_stateful_widget(list, area, &mut app.cursor);
 }
 
-fn draw_changeset(frame: &mut Frame, app: &mut App, area: Rect) {
-    let rows = app.change_repo_rows();
-    let width = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
-    let header = format!(
-        "  {:<width$}  {:<16} {:<6} {:<6} {:<10} {:<14} CI",
-        "REPO", "BRANCH", "ON IT", "DIRTY", "HEAD", "PR / MR"
-    );
-    let mut items: Vec<ListItem> = vec![ListItem::new(Line::styled(
-        header,
-        Style::default().add_modifier(Modifier::UNDERLINED),
-    ))];
-    items.extend(rows.iter().map(|repo| {
-        let selected = app.selected_repos.contains(&repo.name);
-        ListItem::new(format!(
-            "{} {:<width$}  {:<16} {:<6} {:<6} {:<10} {:<14} {}",
-            if selected { "◉" } else { "·" },
-            repo.name,
-            repo.branch,
-            if repo.on_branch { "yes" } else { "NO" },
-            if repo.dirty { "yes" } else { "·" },
-            repo.head.as_deref().map_or("—", short),
-            repo.pr,
-            repo.ci,
-        ))
-    }));
+fn pr_span(text: &str) -> Span<'static> {
+    let color = if text.contains("open") {
+        theme::GREEN
+    } else if text.contains("merged") {
+        theme::MAUVE
+    } else if text.contains("draft") {
+        theme::PEACH
+    } else if text.contains("closed") {
+        theme::RED
+    } else {
+        theme::DIM
+    };
+    Span::styled(text.to_string(), Style::default().fg(color))
+}
 
-    let mut state = ListState::default();
-    state.select(app.cursor.selected().map(|i| i + 1));
-    let title = format!(" change {} ", app.changeset.as_deref().unwrap_or_default());
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    frame.render_stateful_widget(list, area, &mut state);
+fn ci_span(text: &str) -> Span<'static> {
+    let lower = text.to_lowercase();
+    let color = if text.contains('✓') || lower.contains("pass") {
+        theme::GREEN
+    } else if lower.contains("fail") || text.contains('✗') {
+        theme::RED
+    } else if lower.contains("run") || lower.contains("pend") || text.contains('⏳') {
+        theme::YELLOW
+    } else {
+        theme::DIM
+    };
+    Span::styled(text.to_string(), Style::default().fg(color))
+}
+
+fn draw_changeset(frame: &mut Frame, app: &mut App, area: Rect) {
+    let rows: Vec<Row> = app
+        .change_repo_rows()
+        .iter()
+        .map(|repo| {
+            let selected = app.selected_repos.contains(&repo.name);
+            Row::new(vec![
+                Cell::from(if selected {
+                    Span::styled("◉", Style::default().fg(theme::TEAL))
+                } else {
+                    Span::styled("·", Style::default().fg(theme::DIM))
+                }),
+                Cell::from(Span::styled(
+                    repo.name.clone(),
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Cell::from(Span::styled(
+                    repo.branch.clone(),
+                    Style::default().fg(theme::YELLOW),
+                )),
+                Cell::from(if repo.on_branch {
+                    Span::styled("yes", Style::default().fg(theme::GREEN))
+                } else {
+                    Span::styled("NO", Style::default().fg(theme::RED))
+                }),
+                Cell::from(if repo.dirty {
+                    Span::styled("yes", Style::default().fg(theme::YELLOW))
+                } else {
+                    Span::styled("·", Style::default().fg(theme::DIM))
+                }),
+                Cell::from(Span::styled(
+                    repo.head.as_deref().map_or("—", short).to_string(),
+                    Style::default().fg(theme::DIM),
+                )),
+                Cell::from(pr_span(&repo.pr)),
+                Cell::from(ci_span(&repo.ci)),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(1),
+            Constraint::Min(10),
+            Constraint::Min(14),
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Length(9),
+            Constraint::Min(12),
+            Constraint::Min(10),
+        ],
+    )
+    .header(header_row(&[
+        "", "REPO", "BRANCH", "ON IT", "DIRTY", "HEAD", "PR / MR", "CI",
+    ]))
+    .block(panel(format!(
+        "change {}",
+        app.changeset.as_deref().unwrap_or_default()
+    )))
+    .row_highlight_style(cursor_style())
+    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
+
+    let mut state = TableState::default();
+    state.select(app.cursor.selected());
+    frame.render_stateful_widget(table, area, &mut state);
 }
 
 fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect) {
+    let text: Vec<Line> = app
+        .snapshot
+        .tree
+        .lines()
+        .map(|l| Line::styled(l.to_string(), Style::default().fg(theme::TEXT)))
+        .collect();
     frame.render_widget(
-        Paragraph::new(app.snapshot.tree.as_str())
-            .block(Block::default().borders(Borders::ALL).title(" tree ")),
+        Paragraph::new(Text::from(text)).block(panel("tree".to_string())),
         area,
     );
 }
 
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let line = match (&app.input, app.busy) {
+        (InputMode::Filter(buffer), _) => Line::from(vec![
+            Span::styled(
+                " /",
+                Style::default()
+                    .fg(theme::MAUVE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(buffer.clone(), Style::default().fg(theme::TEXT)),
+            Span::styled("▏", Style::default().fg(theme::DIM)),
+        ]),
+        (InputMode::Command(buffer), _) => Line::from(vec![
+            Span::styled(
+                " ❯ ",
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(buffer.clone(), Style::default().fg(theme::TEXT)),
+            Span::styled("▏", Style::default().fg(theme::DIM)),
+        ]),
+        (InputMode::NewChangeset(buffer), _) => Line::from(vec![
+            Span::styled(" new changeset: ", Style::default().fg(theme::MAUVE)),
+            Span::styled(buffer.clone(), Style::default().fg(theme::TEXT)),
+            Span::styled("▏", Style::default().fg(theme::DIM)),
+        ]),
+        (InputMode::None, Some(label)) => Line::from(vec![
+            Span::styled(
+                format!(" {} ", SPINNER[app.spinner]),
+                Style::default().fg(theme::ACCENT),
+            ),
+            Span::styled(format!("{label}…"), Style::default().fg(theme::TEXT)),
+        ]),
+        (InputMode::None, None) => {
+            let msg = &app.message;
+            let color =
+                if msg.contains("failed") || msg.contains("error") || msg.contains("unknown") {
+                    theme::RED
+                } else if msg.starts_with('→') {
+                    theme::TEAL
+                } else {
+                    theme::DIM
+                };
+            Line::styled(format!(" {msg}"), Style::default().fg(color))
+        }
+    };
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn draw_crumbs(frame: &mut Frame, app: &App, area: Rect) {
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    for view in &app.back {
+        spans.push(Span::styled(
+            format!(" {} ", view_name(app, *view)),
+            Style::default().fg(theme::DIM).bg(theme::SURFACE0),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(
+        format!(" {} ", view_name(app, app.view)),
+        Style::default()
+            .fg(theme::CRUST)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "⚓ haw v0.1.0 ",
+            Style::default().fg(theme::DIM),
+        ))
+        .alignment(Alignment::Right),
+        area,
+    );
+}
+
+fn help_entry(key: &'static str, desc: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("  {key:<10}"),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(desc, Style::default().fg(theme::TEXT)),
+    ])
+}
+
+fn help_section(title: &'static str) -> Line<'static> {
+    Line::styled(
+        format!(" {title}"),
+        Style::default()
+            .fg(theme::MAUVE)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
 fn draw_help(frame: &mut Frame) {
     let area = frame.area();
-    let width = area.width.min(64);
-    let height = area.height.min(20);
+    let width = area.width.min(60);
+    let height = area.height.min(24);
     let popup = Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
         width,
         height,
     };
-    let text = [
-        "global   j/k move · enter drill in · esc/b back · q quit",
-        "         / filter · : command bar · ? this help",
-        "",
-        "fleet    s sync repo/stack · S stacks · p pin · l lock",
-        "         t tree · c changesets · r run · g goto",
-        "",
-        "change   n new · space select · R request PR/MR",
-        "         L land (topological, stops on failure) · g goto",
-        "",
-        "cmd bar  :sync · :stack NAME · :run CMD · :change ID",
-        "         :pin · :lock · :tree",
-        "",
-        "press any key to close",
-    ]
-    .map(Line::from)
-    .to_vec();
+    let text = vec![
+        help_section("navigation"),
+        help_entry("j / k", "move · enter drill in · esc/b back"),
+        help_entry("q", "quit · ctrl-c force quit"),
+        Line::raw(""),
+        help_section("fleet"),
+        help_entry("s", "sync repo under cursor (or stack)"),
+        help_entry("S", "stacks view · p pin · l lock"),
+        help_entry("t", "tree · c changesets · r run · g goto"),
+        Line::raw(""),
+        help_section("changeset"),
+        help_entry("n", "new · space select repos"),
+        help_entry("R", "request PR/MRs (cross-linked)"),
+        help_entry("L", "land in dependency order"),
+        Line::raw(""),
+        help_section("command bar"),
+        help_entry(":sync", "· :stack NAME · :run CMD"),
+        help_entry(":change", "ID · :pin · :lock · :tree"),
+        Line::raw(""),
+        Line::styled(" press any key to close", Style::default().fg(theme::DIM)),
+    ];
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(" help ")),
+        Paragraph::new(Text::from(text)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme::ACCENT))
+                .title(Span::styled(
+                    " help ",
+                    Style::default()
+                        .fg(theme::MAUVE)
+                        .add_modifier(Modifier::BOLD),
+                )),
+        ),
         popup,
     );
 }

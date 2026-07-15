@@ -24,7 +24,7 @@ pub enum LockError {
     Parse(#[source] Box<toml::de::Error>),
     #[error("could not serialize lockfile")]
     Serialize(#[from] toml::ser::Error),
-    #[error("unsupported lockfile version {0} (this keel supports {LOCK_VERSION})")]
+    #[error("unsupported lockfile version {0} (this haw supports {LOCK_VERSION})")]
     UnsupportedVersion(u32),
 }
 

@@ -65,14 +65,14 @@ pub struct Repo {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
     /// Repos this repo depends on; drives the topological order of
-    /// `keel change land`.
+    /// `haw change land`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deps: Vec<String>,
-    /// Shell command `keel build` runs in this repo (keel stays
+    /// Shell command `haw build` runs in this repo (keel stays
     /// build-system-agnostic: it only shells out).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
-    /// Shell command `keel test` runs in this repo.
+    /// Shell command `haw test` runs in this repo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test: Option<String>,
 }

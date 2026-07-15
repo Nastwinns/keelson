@@ -15,10 +15,10 @@ drafts and a checklist for **you** to post when the gate is met.
 A project only gets one first impression per community. Posting a repo that doesn't run burns
 it. Post only when **all** of these are true:
 
-- [ ] Phase 1 runs: `keel init` → `sync` → `tree`/`status` → `change start` work end to end.
+- [ ] Phase 1 runs: `haw init` → `sync` → `tree`/`status` → `change start` work end to end.
 - [ ] `git init` + real commits + a public GitHub repo (README already ships).
 - [ ] **A gif of the TUI cockpit** (the single most important asset — see §1).
-- [ ] `cargo install keel-cli` works, or a one-line install is documented.
+- [ ] `cargo install hawser` works, or a one-line install is documented.
 - [ ] README quick start copy-pastes and works on a clean machine.
 
 Until then: build in private, tease nothing.
@@ -31,7 +31,7 @@ Store under `media/` in the repo. The gif is the hero; everything else is second
 
 | Asset | Size | Use | Tool |
 |-------|------|-----|------|
-| `media/keel-tui.gif` | ~1200×700, <5 MB, <20 s loop | r/commandline, r/rust, README top | **vhs** (charmbracelet) |
+| `media/haw-tui.gif` | ~1200×700, <5 MB, <20 s loop | r/commandline, r/rust, README top | **vhs** (charmbracelet) |
 | `media/keel-tree.png` | terminal screenshot | inline in posts | native screenshot |
 | `media/keel-status.png` | terminal screenshot | inline | native |
 | `media/social-card.png` | 1200×630 | HN/X link preview | any |
@@ -40,7 +40,7 @@ Store under `media/` in the repo. The gif is the hero; everything else is second
 
 ```tape
 # media/demo.tape  —  run: vhs media/demo.tape
-Output media/keel-tui.gif
+Output media/haw-tui.gif
 Set FontSize 16
 Set Width 1200
 Set Height 700
@@ -98,7 +98,7 @@ Replace `<REPO_URL>` and attach the gif. Keep bodies short — Reddit rewards br
 > **Title:** Keelson: reproducible multi-repo composition + cross-repo PR/MR orchestration, in Rust
 >
 > I got tired of managing a product split across ~10 git repos with bash scripts and
-> submodules, so I built `keel`. A TOML manifest declares your repos and *stacks* (named
+> submodules, so I built `haw`. A TOML manifest declares your repos and *stacks* (named
 > compositions); a committed lockfile pins every repo to an exact SHA so CI reproduces the
 > exact tree. On top: start a feature branch across N repos at once and watch the whole fleet
 > in a k9s-style TUI.
@@ -110,7 +110,7 @@ Replace `<REPO_URL>` and attach the gif. Keep bodies short — Reddit rewards br
 
 ### r/rust — weekly "what are you working on" thread
 
-> `keel` — a Rust CLI+TUI for composing a product out of many git repos: a manifest + a
+> `haw` — a Rust CLI+TUI for composing a product out of many git repos: a manifest + a
 > committed lockfile (reproducible checkouts) plus cross-repo branch/PR orchestration, with a
 > k9s-style fleet dashboard (ratatui). Just got the TUI cockpit working — gif: `<REPO_URL>`.
 
@@ -118,7 +118,7 @@ Replace `<REPO_URL>` and attach the gif. Keep bodies short — Reddit rewards br
 
 > **Title:** k9s-style TUI for managing a fleet of git repos [gif]
 >
-> `keel` — one screen for N repos: branch, dirty, drift-vs-lockfile, ahead/behind; `:` command
+> `haw` — one screen for N repos: branch, dirty, drift-vs-lockfile, ahead/behind; `:` command
 > bar, `/` filter, single-key sync/switch. Rust + ratatui, cross-platform. `<REPO_URL>`
 
 ### r/ROS (and r/robotics)
@@ -126,7 +126,7 @@ Replace `<REPO_URL>` and attach the gif. Keep bodies short — Reddit rewards br
 > **Title:** A reproducible alternative to vcstool/wstool for multi-repo ROS workspaces
 >
 > ROS workspaces spread across many repos and `vcstool` has no lockfile — CI and teammates
-> drift. I built `keel`: a TOML manifest + a **committed lockfile** pinning every repo to an
+> drift. I built `haw`: a TOML manifest + a **committed lockfile** pinning every repo to an
 > exact SHA, an `import` from a `.repos` file, plus a TUI to see the whole workspace at once.
 > Rust, no Python runtime. `<REPO_URL>` — would love ROS folks to tell me what's missing.
 
@@ -135,7 +135,7 @@ Replace `<REPO_URL>` and attach the gif. Keep bodies short — Reddit rewards br
 > **Title:** For anyone stuck with `repo`/`west`: a Rust tool with a real lockfile and no Python
 >
 > Managing a firmware product from shared BSP/HAL/MCAL repos with `west`/`repo` means no
-> lockfile, a Python runtime, and detached HEADs. `keel` gives you: a committed lockfile
+> lockfile, a Python runtime, and detached HEADs. `haw` gives you: a committed lockfile
 > (exact SHA per repo → reproducible + auditable), plain full clones (no detached HEAD, no
 > symlinks — Windows-safe), and a fleet TUI. `import --from west.yml` to try it on your tree.
 > `<REPO_URL>`
@@ -144,15 +144,15 @@ Replace `<REPO_URL>` and attach the gif. Keep bodies short — Reddit rewards br
 
 > **Title:** keel — reproducible multi-repo composition with a committed lockfile (Rust)
 >
-> A manifest + lockfile so `keel sync --locked` reproduces the exact multi-repo tree in CI,
-> `keel verify` gates drift, `--format json` for pipelines. Cross-repo PR/MR orchestration on
+> A manifest + lockfile so `haw sync --locked` reproduces the exact multi-repo tree in CI,
+> `haw verify` gates drift, `--format json` for pipelines. Cross-repo PR/MR orchestration on
 > GitHub *and* GitLab. `<REPO_URL>`. (Posting in the self-promo thread per the rules.)
 
 ### r/opensource
 
 > **Title:** Keelson — multi-repo product composition + cross-repo MR orchestration (Rust, MIT/Apache)
 >
-> Open-source `keel`: compose a product from many git repos reproducibly (manifest +
+> Open-source `haw`: compose a product from many git repos reproducibly (manifest +
 > committed lockfile) and drive cross-repo feature branches + PR/MRs from one TUI. Dual
 > MIT/Apache-2.0, contributions welcome. `<REPO_URL>`
 

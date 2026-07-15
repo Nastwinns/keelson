@@ -27,7 +27,7 @@ pub enum SnapshotError {
     AlreadyExists(String),
     #[error("snapshot `{0}` not found")]
     NotFound(String),
-    #[error("repo `{name}` is not cloned at {path}; run `keel sync` first")]
+    #[error("repo `{name}` is not cloned at {path}; run `haw sync` first")]
     MissingRepo { name: String, path: PathBuf },
     #[error("repo `{0}` has uncommitted changes; commit or stash before restoring")]
     Dirty(String),

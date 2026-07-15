@@ -90,7 +90,7 @@ pub enum RepoFailure {
     Git(#[from] GitError),
     #[error(transparent)]
     Forge(#[from] ForgeError),
-    #[error("no PR/MR recorded; run `keel change request` first")]
+    #[error("no PR/MR recorded; run `haw change request` first")]
     NoPr,
 }
 
@@ -131,7 +131,7 @@ fn changeset_body(changeset: &Changeset) -> String {
             None => body.push_str(&format!("- {} — (no PR yet)\n", repo.name)),
         }
     }
-    body.push_str("\nOpened by `keel change request`.\n");
+    body.push_str("\nOpened by `haw change request`.\n");
     body
 }
 

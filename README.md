@@ -14,7 +14,7 @@
 **Reproducible multi-repo stack composition + cross-repo MR orchestration. In Rust.**
 
 [![build](https://img.shields.io/badge/CI-Linux%20%7C%20macOS%20%7C%20Windows-brightgreen?logo=github)](.github/workflows/ci.yml)
-[![crates.io](https://img.shields.io/badge/crates.io-keel--cli-orange?logo=rust)](https://crates.io)
+[![crates.io](https://img.shields.io/badge/crates.io-hawser-orange?logo=rust)](https://crates.io)
 [![rust](https://img.shields.io/badge/rust-1.90%2B-orange?logo=rust)](https://www.rust-lang.org)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![unsafe](https://img.shields.io/badge/unsafe-forbidden-success.svg)](#)
@@ -24,7 +24,7 @@
 
 ---
 
-`keel` is a command-line tool (with a TUI) for assembling a software stack out of
+`haw` is a command-line tool (with a TUI) for assembling a software stack out of
 many independent Git repositories — without submodules, without detached HEADs, and
 without a Python runtime. A single declarative manifest describes your **stacks** and
 the **repos** (repositories) they are composed of; a committed **lockfile** pins every
@@ -43,28 +43,28 @@ for fast native introspection and shells out to `git` only for the heavy plumbin
 
 ```bash
 # install (any of)
-cargo install keel-cli          # from crates.io
+cargo install hawser          # from crates.io
 brew install keelson            # macOS / Linuxbrew
 scoop install keelson           # Windows
 
 # bootstrap a workspace from a manifest, then materialize a stack
-keel init keel.toml
-keel sync                       # clones every repo, writes keel.lock
+haw init keel.toml
+haw sync                       # clones every repo, writes keel.lock
 ```
 
 ## Demos
 
 Rendered with [VHS](https://github.com/charmbracelet/vhs) from the tapes in
 [`demo/`](demo/) — CI re-renders them on every CLI/TUI change, so they never lie.
-Regenerate locally: `cargo build --release -p keel-cli && vhs demo/cli.tape`.
+Regenerate locally: `cargo build --release -p hawser && vhs demo/cli.tape`.
 
 **The CLI** — `sync`, `tree`, `status`, cross-repo changesets, in full color:
 
-![keel CLI demo](demo/keel-cli.gif)
+![haw CLI demo](demo/haw-cli.gif)
 
-**The TUI cockpit** — bare `keel`, k9s-style, keyboard-first:
+**The TUI cockpit** — bare `haw`, k9s-style, keyboard-first:
 
-![keel TUI demo](demo/keel-tui.gif)
+![haw TUI demo](demo/haw-tui.gif)
 
 Output follows the conventions of the modern Rust CLI family (`bat`, `eza`, `ripgrep`):
 color on a TTY, plain when piped, `NO_COLOR` honored, `CLICOLOR_FORCE=1` to force color
@@ -74,7 +74,7 @@ branches, dim SHAs and chrome, **green** ✓ / clean, **yellow** dirty, **red** 
 A typical session — compose, inspect, branch across repos:
 
 ```console
-$ keel tree
+$ haw tree
 keel.toml
 ├─ gateway
 │  ├─ kernel    v6.1.2       (git@gitlab.company.com:firmware/kernel.git)
@@ -84,13 +84,13 @@ keel.toml
    ├─ kernel  v6.1.2         (git@gitlab.company.com:firmware/kernel.git)
    └─ hal     main           (git@gitlab.company.com:firmware/hal.git)
 
-$ keel status
+$ haw status
 REPO      BRANCH   HEAD      DIRTY  DRIFT
 kernel    v6.1.2   a1b2c3d4  -      -
 hal       main     9f8e7d6c  yes    -
 app-mqtt  release  4d5e6f7a  -      YES
 
-$ keel change start FEAT-42 --repos kernel,app-mqtt
+$ haw change start FEAT-42 --repos kernel,app-mqtt
 changeset `FEAT-42` started across 2 repo(s):
   kernel    -> change/FEAT-42
   app-mqtt  -> change/FEAT-42
@@ -233,7 +233,7 @@ repos = ["kernel", "hal"]        # shares kernel + hal, no duplication
 # --- overlays -------------------------------------------------------------
 
 [overlay.dev.repo.kernel]
-rev = "main"                      # `keel sync --overlay dev`: kernel follows main
+rev = "main"                      # `haw sync --overlay dev`: kernel follows main
 ```
 
 ---
@@ -241,7 +241,7 @@ rev = "main"                      # `keel sync --overlay dev`: kernel follows ma
 ## Command surface
 
 ```
-keel                             Open the TUI cockpit (no subcommand)
+haw                              Open the TUI cockpit (no subcommand)
 ├── init <manifest-url|path>     Bootstrap a workspace from a manifest
 ├── sync [--stack S]             Clone/pull repos to the state in keel.lock
 │                                (resolves + writes lock if absent)  [--shared]
@@ -277,7 +277,7 @@ keel                             Open the TUI cockpit (no subcommand)
 │   └── abort                    Undo the planned merge, restore the target branch
 │
 ├── import --from <west.yml|default.xml>   Convert a west/repo manifest to keel.toml
-└── dash                         Open the fleet dashboard (same as bare `keel`)
+└── dash                         Open the fleet dashboard (same as bare `haw`)
 ```
 
 Verbs are one guessable word each; old names (`graph`, `forall`, `freeze`, `tui`) stay as
@@ -312,7 +312,7 @@ Views:
 ### Cockpit layout — fleet view
 
 ```text
- keel ▸ ~/work/gateway ───────────────────────── stack: gateway   lock: ✓   repos: 3/3
+ haw ▸ ~/work/gateway ───────────────────────── stack: gateway   lock: ✓   repos: 3/3
 ────────────────────────────────────────────────────────────────────────────────────────
  REPO        BRANCH        HEAD       DIRTY   DRIFT   AHEAD/BEHIND
 ▸kernel      v6.1.2        a1b2c3d4     ·       ·        0 / 0
@@ -330,7 +330,7 @@ the bottom strip details it live.
 ### Cockpit layout — changeset view
 
 ```text
- keel ▸ change FEAT-42 ───────────────────────────────── 2 repos   branch: change/FEAT-42
+ haw ▸ change FEAT-42 ───────────────────────────────── 2 repos   branch: change/FEAT-42
 ────────────────────────────────────────────────────────────────────────────────────────
  REPO        BRANCH          ON IT  DIRTY   HEAD       PR / MR        CI
 ▸kernel      change/FEAT-42   yes     ·     a1b2c3d4   #128 ● open    ✓ passed
@@ -343,7 +343,7 @@ Keyboard-first, k9s-style: `:` opens a command bar mirroring the CLI verbs (`:sy
 `:stack sensor-node`, `:run git status`), `/` filters the grid, single keys act on the cursor
 row. Full keymap: [docs/CLI-DESIGN.md](docs/CLI-DESIGN.md#tui-keymap).
 
-Open it with a bare `keel` (or `keel dash`). A richer GUI is possible later via **Tauri**,
+Open it with a bare `haw` (or `haw dash`). A richer GUI is possible later via **Tauri**,
 reusing the exact same Rust core. The TUI ships first: one binary, low cost, on-target.
 
 ---
@@ -353,73 +353,75 @@ reusing the exact same Rust core. The TUI ships first: one binary, low cost, on-
 Illustrative output for the shipped commands (Phase 1). Colorized on a TTY, plain when piped.
 
 ```console
-$ keel init keel.toml
+$ haw init keel.toml
 initialized workspace from keel.toml
-next: keel sync
+next: haw sync
 
-$ keel sync
+$ haw sync
 wrote keel.lock (3 repos pinned)
   ✓ kernel    cloned
   ✓ hal       cloned
   ✓ app-mqtt  cloned
 synced stack `gateway` (3/3 repos)
 
-$ keel tree
+$ haw tree
 keel.toml
 └─ gateway
    ├─ kernel    v6.1.2       (git@gitlab.company.com:firmware/kernel.git)
    ├─ hal       main         (git@gitlab.company.com:firmware/hal.git)
    └─ app-mqtt  release/2.x  (git@github.com:acme/app-mqtt.git)
 
-$ keel status
+$ haw status
 REPO      BRANCH   HEAD      DIRTY  DRIFT
 kernel    v6.1.2   a1b2c3d4  -      -
 hal       main     9f8e7d6c  yes    -
 app-mqtt  release  4d5e6f7a  -      YES
 
-$ keel run 'git fetch --tags'
+$ haw run 'git fetch --tags'
 ── kernel ──
 ── hal ──
 ── app-mqtt ──
 ran in 3/3 repos
 
-$ keel lock
+$ haw lock
 wrote keel.lock (3 repos pinned)
   kernel    a1b2c3d4e5f6  <- v6.1.2
   hal       9f8e7d6c5b4a  <- main
   app-mqtt  4d5e6f7a8b9c  <- release/2.x
 
-$ keel pin                       # snapshot current checkouts (no network)
+$ haw pin                       # snapshot current checkouts (no network)
 pinned keel.lock to current HEADs (3 repos)
 
-$ keel change start FEAT-42 --repos kernel,app-mqtt
+$ haw change start FEAT-42 --repos kernel,app-mqtt
 changeset `FEAT-42` started across 2 repo(s):
   kernel    -> change/FEAT-42
   app-mqtt  -> change/FEAT-42
 
-$ keel change status FEAT-42
+$ haw change status FEAT-42
 changeset `FEAT-42`
 REPO      BRANCH           ON IT  DIRTY  HEAD      PR
 kernel    change/FEAT-42   yes    -      a1b2c3d4  —
 app-mqtt  change/FEAT-42   yes    yes    4d5e6f7a  —
-(no PR/MRs yet — open them with `keel change request FEAT-42`)
+(no PR/MRs yet — open them with `haw change request FEAT-42`)
 ```
 
 ## Testing
 
 ```bash
-cargo test --workspace        # unit + integration; 50 tests, all green
+cargo test --workspace        # unit + integration; 55 tests, all green
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 Covered today: manifest parse + referential validation, TOML round-trip, resolver + overlay
-precedence, lockfile read/write, changeset start/status. Planned (see roadmap):
+precedence, lockfile read/write, changeset start/status, the full collaborative-merge
+lifecycle against real git repos, plus:
 
-- **Golden CLI-output tests** — snapshot `tree`/`status`/`lock` output so lexicon and format
-  changes are caught in review.
-- **Determinism tests** — assert `keel.lock` is byte-identical across Linux/macOS/Windows for
-  the same inputs (a hard requirement for certification evidence, [COMPLIANCE §8](docs/COMPLIANCE.md)).
+- **Golden CLI-output tests** (`crates/hawser/tests/golden.rs`) — drive the real `haw`
+  binary and snapshot `tree`/`status`/`sync` output, the `--format json` schema, and the
+  `--verify` exit-3 CI gate.
+- **Determinism tests** — `keel.lock` is byte-identical run-to-run and LF-only; the CI
+  matrix makes that a cross-OS guarantee (certification evidence, [COMPLIANCE §8](docs/COMPLIANCE.md)).
 
 ## Status
 

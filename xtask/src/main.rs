@@ -74,15 +74,15 @@ fn dist() -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
     let triple = host_triple()?;
 
-    println!("building keel {version} ({triple})…");
+    println!("building haw {version} ({triple})…");
     run(
         Command::new("cargo")
-            .args(["build", "--release", "-p", "keel-cli"])
+            .args(["build", "--release", "-p", "hawser"])
             .current_dir(&root),
         "cargo build --release",
     )?;
 
-    let binary = if cfg!(windows) { "keel.exe" } else { "keel" };
+    let binary = if cfg!(windows) { "haw.exe" } else { "haw" };
     let built = root.join("target").join("release").join(binary);
     if !built.exists() {
         bail!("release binary missing at {}", built.display());
@@ -91,9 +91,9 @@ fn dist() -> Result<()> {
     let dist = root.join("dist");
     std::fs::create_dir_all(&dist)?;
     let archive = dist.join(if cfg!(windows) {
-        format!("keel-{version}-{triple}.zip")
+        format!("haw-{version}-{triple}.zip")
     } else {
-        format!("keel-{version}-{triple}.tar.gz")
+        format!("haw-{version}-{triple}.tar.gz")
     });
     let _ = std::fs::remove_file(&archive);
 

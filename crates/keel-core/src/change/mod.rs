@@ -29,7 +29,7 @@ pub enum ChangeError {
     NotFound(String),
     #[error("repo `{0}` is not in the manifest")]
     UnknownRepo(String),
-    #[error("repo `{name}` is not cloned at {path}; run `keel sync` first")]
+    #[error("repo `{name}` is not cloned at {path}; run `haw sync` first")]
     MissingRepoRepo { name: String, path: PathBuf },
     #[error("repo `{0}` is on a detached HEAD; check out a branch first")]
     Detached(String),

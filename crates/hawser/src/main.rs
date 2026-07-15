@@ -79,13 +79,13 @@ impl Palette {
 }
 
 #[derive(Parser)]
-#[command(name = "keel", version, about = "The beam that binds the repos")]
+#[command(name = "haw", version, about = "The beam that binds the repos")]
 struct Cli {
     /// Path to the manifest.
     #[arg(long, global = true, default_value = "keel.toml")]
     manifest: PathBuf,
 
-    /// No subcommand opens the TUI cockpit (same as `keel dash`).
+    /// No subcommand opens the TUI cockpit (same as `haw dash`).
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -124,7 +124,7 @@ enum Command {
     /// Pin keel.lock to each repo's current HEAD (no network).
     #[command(alias = "freeze")]
     Pin,
-    /// Restore keel.lock to the manifest revs (same as `keel lock`).
+    /// Restore keel.lock to the manifest revs (same as `haw lock`).
     #[command(alias = "unfreeze")]
     Unpin {
         #[arg(long)]
@@ -221,7 +221,7 @@ enum Command {
     /// Bundle baseline evidence (manifest, lock, audit log, status) for audits.
     Evidence {
         /// Output archive path.
-        #[arg(long, default_value = "keel-evidence.tar.gz")]
+        #[arg(long, default_value = "haw-evidence.tar.gz")]
         out: PathBuf,
     },
     /// Convert a west.yml or repo default.xml manifest to keel.toml.
@@ -235,17 +235,17 @@ enum Command {
         #[command(subcommand)]
         command: MergeCommand,
     },
-    /// Open the fleet dashboard (same as bare `keel`).
+    /// Open the fleet dashboard (same as bare `haw`).
     #[command(alias = "tui")]
     Dash,
-    /// Anything else runs a `keel-<name>` plugin from PATH.
+    /// Anything else runs a `haw-<name>` plugin from PATH.
     #[command(external_subcommand)]
     Plugin(Vec<String>),
 }
 
 #[derive(Subcommand)]
 enum HooksCommand {
-    /// Write a pre-commit hook in every repo that runs `keel verify`.
+    /// Write a pre-commit hook in every repo that runs `haw verify`.
     Install,
     /// List the lifecycle hooks the workspace defines.
     List,
@@ -329,7 +329,7 @@ enum ChangeCommand {
     },
     /// Merge the PR/MRs in dependency order; stops at the first failure.
     Land { id: String },
-    /// Print a changeset repo's path (usable as: cd "$(keel change goto ID REPO)").
+    /// Print a changeset repo's path (usable as: cd "$(haw change goto ID REPO)").
     Goto {
         id: String,
         /// Repo name; omit for an interactive picker.
@@ -468,7 +468,7 @@ fn run() -> Result<ExitCode> {
         } => {
             let cmd = command
                 .or(command_flag)
-                .context("pass the command: keel run 'git fetch'")?;
+                .context("pass the command: haw run 'git fetch'")?;
             run_across(&cmd, &groups, jobs)?;
         }
         Command::Change { command } => match command {
@@ -565,7 +565,7 @@ fn init(source: &str) -> Result<()> {
         .with_context(|| format!("{source} is not a valid manifest"))?;
     std::fs::write(&dest, text)?;
     println!("initialized workspace from {source}");
-    println!("next: keel sync");
+    println!("next: haw sync");
     Ok(())
 }
 
@@ -580,7 +580,7 @@ fn sync(
     let ws = open_workspace()?;
     let stack = ws.pick_stack(stack)?;
     if locked && !ws.lock_path().exists() {
-        bail!("--locked: no keel.lock — commit one (keel lock) before running CI syncs");
+        bail!("--locked: no keel.lock — commit one (haw lock) before running CI syncs");
     }
     hooks::fire(&ws, hooks::Hook::PreSync, &json!({"stack": stack}))?;
     let backend = ShellGit;
@@ -596,7 +596,7 @@ fn sync(
         println!("wrote keel.lock ({} repos pinned)", plan.tasks.len());
         record(&ws, "lock.write", None, None, None);
     } else if !overlays.is_empty() {
-        println!("note: keel.lock exists — overlays ignored (run `keel lock` to re-resolve)");
+        println!("note: keel.lock exists — overlays ignored (run `haw lock` to re-resolve)");
     }
 
     let results = fan_out(&plan.tasks, default_jobs(jobs), |task| {
@@ -719,7 +719,7 @@ fn unpin(overlays: &[String]) -> Result<()> {
 fn repo_list() -> Result<()> {
     let ws = open_workspace()?;
     if ws.manifest.repos.is_empty() {
-        println!("no repos — add one with `keel repo add <name> --url <url>`");
+        println!("no repos — add one with `haw repo add <name> --url <url>`");
         return Ok(());
     }
     let c = Palette::new();
@@ -765,7 +765,7 @@ fn repo_add(
     std::fs::write(ws.manifest_path(), updated)?;
     record(&ws, "repo.add", Some(name), None, None);
     println!("added repo `{name}`");
-    println!("next: keel lock && keel sync");
+    println!("next: haw lock && haw sync");
     Ok(())
 }
 
@@ -783,7 +783,7 @@ fn repo_remove(name: &str) -> Result<()> {
 fn stack_list() -> Result<()> {
     let ws = open_workspace()?;
     if ws.manifest.stacks.is_empty() {
-        println!("no stacks — add one with `keel stack add <name> --repos a,b`");
+        println!("no stacks — add one with `haw stack add <name> --repos a,b`");
         return Ok(());
     }
     let c = Palette::new();
@@ -870,7 +870,7 @@ fn status(groups: &[String], format: &str, verify: bool) -> Result<ExitCode> {
                         println!(
                             "{}  {}",
                             c.name(&format!("{:<width$}", s.name)),
-                            c.dim("(not cloned — run `keel sync`)")
+                            c.dim("(not cloned — run `haw sync`)")
                         );
                         continue;
                     }
@@ -1012,7 +1012,7 @@ fn run_across(command: &str, groups: &[String], jobs: Option<usize>) -> Result<(
         .filter(|(_, path)| backend.is_repo(path))
         .collect();
     if present.is_empty() {
-        bail!("no cloned repos — run `keel sync` first");
+        bail!("no cloned repos — run `haw sync` first");
     }
 
     let results = fan_out(&present, default_jobs(jobs), |(name, path)| {
@@ -1125,7 +1125,7 @@ fn change_status(id: &str) -> Result<()> {
             println!(
                 "{}  {}",
                 c.name(&format!("{:<width$}", s.name)),
-                c.dim("(repo missing — run `keel sync`)")
+                c.dim("(repo missing — run `haw sync`)")
             );
             continue;
         }
@@ -1160,7 +1160,7 @@ fn change_status(id: &str) -> Result<()> {
         let tokens = Tokens::from_env();
         for (name, status) in orchestrate::statuses(&ws, &tokens, id)? {
             match status {
-                None => println!("  {name}  (no PR — run `keel change request`)"),
+                None => println!("  {name}  (no PR — run `haw change request`)"),
                 Some(Ok(s)) => println!(
                     "  {name}  {}  approved: {}  ci: {}  {}",
                     render_pr_state(s.state),
@@ -1176,7 +1176,7 @@ fn change_status(id: &str) -> Result<()> {
             }
         }
     } else {
-        println!("(no PR/MRs yet — open them with `keel change request {id}`)");
+        println!("(no PR/MRs yet — open them with `haw change request {id}`)");
     }
     Ok(())
 }
@@ -1200,7 +1200,7 @@ fn change_request(id: &str, base: Option<&str>) -> Result<()> {
         }
     }
     if failures > 0 {
-        bail!("{failures} repo(s) failed; fix and re-run `keel change request {id}`");
+        bail!("{failures} repo(s) failed; fix and re-run `haw change request {id}`");
     }
     println!(
         "requested changeset `{id}` ({} PR/MRs, cross-linked)",
@@ -1303,7 +1303,7 @@ fn merge_repo(ws: &Workspace, repo: Option<&str>) -> Result<(String, PathBuf)> {
     let path = ws.root.join(spec.checkout_path(&name));
     if !ShellGit.is_repo(&path) {
         bail!(
-            "repo `{name}` is not cloned at {}; run `keel sync`",
+            "repo `{name}` is not cloned at {}; run `haw sync`",
             path.display()
         );
     }
@@ -1342,7 +1342,7 @@ fn merge_plan(source: &str, repo: Option<&str>, into: Option<&str>) -> Result<()
     }
     println!(
         "{}",
-        c.dim("next: keel merge resolve <slice> [--take ours|theirs], then keel merge cleanup")
+        c.dim("next: haw merge resolve <slice> [--take ours|theirs], then haw merge cleanup")
     );
     Ok(())
 }
@@ -1367,7 +1367,7 @@ fn merge_resolve(slice: &str, repo: Option<&str>, take: Option<TakeSide>) -> Res
     let remaining = plan.unresolved();
     println!("{} resolved slice `{}`", c.ok("✓"), c.name(slice));
     if remaining.is_empty() {
-        println!("{}", c.ok("all slices resolved — run `keel merge cleanup`"));
+        println!("{}", c.ok("all slices resolved — run `haw merge cleanup`"));
     } else {
         println!("remaining: {}", c.warn(&remaining.join(", ")));
     }
@@ -1378,7 +1378,7 @@ fn merge_status(repo: Option<&str>) -> Result<()> {
     let ws = open_workspace()?;
     let (name, _) = merge_repo(&ws, repo)?;
     let Some(plan) = keel_merge::load_plan(&ws.state_dir(), &name)? else {
-        println!("no merge planned for `{name}` — start one with `keel merge plan <source>`");
+        println!("no merge planned for `{name}` — start one with `haw merge plan <source>`");
         return Ok(());
     };
     let c = Palette::new();
@@ -1476,7 +1476,7 @@ fn snapshot_list() -> Result<()> {
     let ws = open_workspace()?;
     let names = snapshot::Snapshot::list(&ws)?;
     if names.is_empty() {
-        println!("no snapshots — save one with `keel change snapshot save <name>`");
+        println!("no snapshots — save one with `haw change snapshot save <name>`");
         return Ok(());
     }
     for name in names {
@@ -1489,7 +1489,7 @@ fn change_list() -> Result<()> {
     let ws = open_workspace()?;
     let ids = change::Changeset::list(&ws)?;
     if ids.is_empty() {
-        println!("no changesets — start one with `keel change start <id>`");
+        println!("no changesets — start one with `haw change start <id>`");
         return Ok(());
     }
     for id in ids {
@@ -1501,7 +1501,7 @@ fn change_list() -> Result<()> {
 fn verify(format: &str) -> Result<ExitCode> {
     let ws = open_workspace()?;
     if !ws.lock_path().exists() {
-        bail!("no keel.lock to verify against — run `keel lock` first");
+        bail!("no keel.lock to verify against — run `haw lock` first");
     }
     let statuses = ws.status(&[], &ShellGit)?;
     let offenders: Vec<&RepoStatus> = statuses
@@ -1601,7 +1601,7 @@ fn build_or_test(build: bool, groups: &[String], jobs: Option<usize>) -> Result<
 fn hooks_install() -> Result<()> {
     let ws = open_workspace()?;
     let backend = ShellGit;
-    let script = "#!/bin/sh\n# installed by `keel hooks install`\nkeel verify || {\n  echo 'keel: tree diverges from keel.lock (run keel sync or keel pin)' >&2\n  exit 1\n}\n";
+    let script = "#!/bin/sh\n# installed by `haw hooks install`\nhaw verify || {\n  echo 'keel: tree diverges from keel.lock (run haw sync or haw pin)' >&2\n  exit 1\n}\n";
     let mut installed = 0usize;
     for (name, repo) in &ws.manifest.repos {
         let path = ws.root.join(repo.checkout_path(name));
@@ -1616,10 +1616,10 @@ fn hooks_install() -> Result<()> {
             std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
         }
         installed += 1;
-        println!("  ✓ {name}  pre-commit -> keel verify");
+        println!("  ✓ {name}  pre-commit -> haw verify");
     }
     if installed == 0 {
-        bail!("no cloned repos — run `keel sync` first");
+        bail!("no cloned repos — run `haw sync` first");
     }
     println!("installed the integrity pre-commit in {installed} repo(s)");
     Ok(())
@@ -1707,7 +1707,7 @@ fn plugin(args: &[String]) -> Result<ExitCode> {
     let Some((name, rest)) = args.split_first() else {
         bail!("empty plugin invocation");
     };
-    let binary = format!("keel-{name}");
+    let binary = format!("haw-{name}");
     let context = match open_workspace() {
         Ok(ws) => json!({
             "schema": "keel.plugin/1",
@@ -1756,7 +1756,7 @@ fn import_manifest(from: &Path) -> Result<()> {
         "one stack `{}` holds every repo — split it into real stacks as needed",
         import::DEFAULT_STACK
     );
-    println!("next: keel lock && keel sync");
+    println!("next: haw lock && haw sync");
     Ok(())
 }
 

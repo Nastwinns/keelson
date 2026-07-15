@@ -1,7 +1,7 @@
-# Renders demo/keel-tui.gif — the k9s-style fleet cockpit.
+# Renders demo/haw-tui.gif — the k9s-style fleet cockpit.
 # Regenerate locally with: vhs demo/tui.tape   (needs the release binary built)
 
-Output demo/keel-tui.gif
+Output demo/haw-tui.gif
 
 Set FontSize 16
 Set Width 1100
@@ -11,12 +11,12 @@ Set Theme "Catppuccin Mocha"
 Set TypingSpeed 35ms
 
 Hide
-Type `export PATH="$PWD/target/release:$PATH" && . demo/setup.sh && keel sync --stack gateway >/dev/null && echo tweak >> hal/README.md && clear`
+Type `export PATH="$PWD/target/release:$PATH" && . demo/setup.sh && haw sync --stack gateway >/dev/null && echo tweak >> hal/README.md && clear`
 Enter
 Sleep 2s
 Show
 
-Type "keel"
+Type "haw"
 Enter
 Sleep 3s
 

@@ -1,7 +1,7 @@
-# Renders demo/keel-cli.gif — the colorful CLI walkthrough.
+# Renders demo/haw-cli.gif — the colorful CLI walkthrough.
 # Regenerate locally with: vhs demo/cli.tape   (needs the release binary built)
 
-Output demo/keel-cli.gif
+Output demo/haw-cli.gif
 
 Set FontSize 16
 Set Width 1100
@@ -16,11 +16,11 @@ Enter
 Sleep 2s
 Show
 
-Type "keel sync --stack gateway"
+Type "haw sync --stack gateway"
 Enter
 Sleep 2.5s
 
-Type "keel tree"
+Type "haw tree"
 Enter
 Sleep 2s
 
@@ -28,15 +28,15 @@ Type "echo tweak >> hal/README.md"
 Enter
 Sleep 500ms
 
-Type "keel status"
+Type "haw status"
 Enter
 Sleep 2.5s
 
-Type "keel change start FEAT-42 --repos kernel,app-mqtt"
+Type "haw change start FEAT-42 --repos kernel,app-mqtt"
 Enter
 Sleep 2.5s
 
-Type "keel change status FEAT-42"
+Type "haw change status FEAT-42"
 Enter
 Sleep 3s
 

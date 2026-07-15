@@ -29,7 +29,7 @@ pay for it.
 | **SBOM export (CycloneDX + SPDX)**            | —  | ✅ | ✅ |
 | **Signed lockfile / provenance attestation**  | —  | —  | ✅ |
 | **Signature-verification enforcement policy** | —  | —  | ✅ |
-| **`keel evidence` cert bundle**               | —  | —  | ✅ |
+| **`haw evidence` cert bundle**               | —  | —  | ✅ |
 | **Audit log export**                          | —  | ✅ | ✅ |
 | **Air-gapped deployment + offline licensing** | —  | —  | ✅ |
 | **FIPS crypto build variant**                 | —  | —  | ✅ |
@@ -183,7 +183,7 @@ consultants running ClearCase/PTC-Integrity→Git migrations.
 |--------------------------|-----------------------------------------|--------------------------------------|
 | 1 — Double-layer MVP     | lock, sync, drift, json output, signed releases | Core adoption; determinism baseline |
 | 2 — Composition depth    | overlays, audit log, **SBOM export**    | Team tier; CRA/SBOM story            |
-| 3 — MR depth             | signing, provenance, `keel evidence`, SHA-256 | Compliance tier; evidence bundle    |
+| 3 — MR depth             | signing, provenance, `haw evidence`, SHA-256 | Compliance tier; evidence bundle    |
 | 4 — TUI actions          | interactive cockpit                     | Team/Compliance stickiness           |
 | 5 — Migration/dist       | `import`, packaging                     | Wedge adoption at scale              |
 | later                    | FIPS build, per-standard Qualification Kits | Enterprise avionics/defense; add-on revenue |

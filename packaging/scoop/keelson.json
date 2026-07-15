@@ -5,18 +5,18 @@
     "license": "MIT OR Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/balin/keelson/releases/download/v0.1.0/keel-0.1.0-x86_64-pc-windows-msvc.zip",
+            "url": "https://github.com/balin/keelson/releases/download/v0.1.0/haw-0.1.0-x86_64-pc-windows-msvc.zip",
             "hash": "REPLACE_WITH_SHA256_WINDOWS_X64"
         }
     },
-    "bin": "keel.exe",
+    "bin": "haw.exe",
     "checkver": {
         "github": "https://github.com/balin/keelson"
     },
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/balin/keelson/releases/download/v$version/keel-$version-x86_64-pc-windows-msvc.zip"
+                "url": "https://github.com/balin/keelson/releases/download/v$version/haw-$version-x86_64-pc-windows-msvc.zip"
             }
         }
     }

@@ -6,7 +6,7 @@ automotive, industrial, medical). These buyers cannot adopt an SCM tool unless i
 and is **data-protection clean**. This document specifies what Keelson must provide, per
 domain, and maps each requirement to a technical feature and a delivery phase.
 
-Terminology: "the tool" = the `keel` binary + `keel-core`. "The applicant" = the customer's
+Terminology: "the tool" = the `haw` binary + `keel-core`. "The applicant" = the customer's
 safety/security team who owns the certification argument. Keelson supplies **evidence and a
 qualification kit**; the applicant owns the final determination in their plan (PSAC, safety
 plan, SEooC assumptions).
@@ -72,7 +72,7 @@ standard; the *artifacts* Keelson must supply are largely shared (§2.6).
 - Medical IEC 62304 §8 SOUP/configuration management: supply SBOM + baseline evidence.
 
 ### 2.6 The shared qualification artifact set (produced once, mapped per standard)
-1. **Tool Operational Requirements** — what `keel` shall do, in verifiable statements.
+1. **Tool Operational Requirements** — what `haw` shall do, in verifiable statements.
 2. **Requirements → test traceability matrix** (every requirement has a test).
 3. **Test suite + machine-readable results** per released LTS, per supported OS.
 4. **Safety/Operation Manual** — intended use, operating envelope, constraints, and the
@@ -97,9 +97,9 @@ signed, reproducible baseline".
   Committed, diff-reviewable, machine-verifiable.
 - **Deterministic resolution.** Documented, versioned resolution algorithm (see
   `resolver/mod.rs`); overlay precedence is total and stable.
-- **Drift detection.** `keel status` / `keel verify` proves the on-disk tree matches the
+- **Drift detection.** `haw status` / `haw verify` proves the on-disk tree matches the
   baseline — this *is* a configuration verification activity for the customer's SCM plan.
-- **Evidence bundle.** `keel evidence` emits: baseline (lock) + SBOM + provenance
+- **Evidence bundle.** `haw evidence` emits: baseline (lock) + SBOM + provenance
   attestation + tool configuration record, as one signed archive for the cert data package.
 
 Standards mapping:
@@ -121,7 +121,7 @@ Regulatory tailwind — increasingly mandatory, not optional.
   SPDX 3.0 when stable. Include NTIA minimum elements (supplier, component, version, unique
   id, dependency relationship, author, timestamp).
 - Keelson emits an SBOM **of the composed product** (repos + their pinned ids) *and* ships
-  an SBOM **of `keel` itself** (its Rust dependency tree) per release.
+  an SBOM **of `haw` itself** (its Rust dependency tree) per release.
 - **EU Cyber Resilience Act (Regulation (EU) 2024/2847).** In force since Dec 2024; core
   obligations apply ~Dec 2027, vulnerability/incident reporting ~Sept 2026. Requires
   manufacturers of products-with-digital-elements to maintain an SBOM and handle
@@ -146,13 +146,13 @@ crypto, be FIPS-swappable, be secret-hygienic.
 - Trust anchors configured per workspace (allowed signer sets, keyrings, Fulcio roots).
 
 ### 5.2 Baseline integrity
-- **Signed lockfile / signed resolution attestation.** `keel lock --sign` produces a
+- **Signed lockfile / signed resolution attestation.** `haw lock --sign` produces a
   detached signature or an in-toto attestation over the canonical lock bytes, so a reviewer
   can prove the baseline was not altered after approval.
 - Canonical, byte-stable lock serialization is a prerequisite (§8).
 
 ### 5.3 Tool identity (a qualified tool must be identity-verifiable)
-- **Signed, reproducible `keel` releases.** Cosign/Sigstore signatures + SHA-256 checksums +
+- **Signed, reproducible `haw` releases.** Cosign/Sigstore signatures + SHA-256 checksums +
   SLSA build provenance for every artifact and every LTS. Customers verify the binary they
   run matches the qualified one.
 
@@ -264,9 +264,9 @@ What must be *built* to make the above real. Phases refer to `ARCHITECTURE.md §
 | Commit/tag signature verification (gpg/ssh/sigstore) | Source integrity                    | 2/3   |
 | Signed lockfile / in-toto attestation          | Baseline integrity                       | 3     |
 | Provenance attestation (SLSA/in-toto)          | Supply-chain assurance                   | 3     |
-| `keel evidence` bundle                         | One-shot cert data package               | 3     |
+| `haw evidence` bundle                         | One-shot cert data package               | 3     |
 | SHA-256 object-format support + record         | Hash agility, long-lived programs        | 3     |
-| Signed + reproducible `keel` releases          | Tool identity, qualification             | 1→ongoing |
+| Signed + reproducible `haw` releases          | Tool identity, qualification             | 1→ongoing |
 | Vendored deps + reproducible tool build        | Air-gap, secure SDLC                     | 1→ongoing |
 | FIPS-validated crypto build variant            | FIPS 140-3 environments                  | later |
 | Offline license activation                     | Air-gap, GDPR zero-egress                | commercial |
