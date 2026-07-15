@@ -413,7 +413,7 @@ app-mqtt  change/FEAT-42   yes    yes    4d5e6f7a  —
 ## Testing
 
 ```bash
-cargo test --workspace        # unit + integration; 55 tests, all green
+cargo test --workspace        # unit + integration; 72 tests, all green
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
@@ -427,6 +427,8 @@ lifecycle against real git repos, plus:
   `--verify` exit-3 CI gate.
 - **Determinism tests** — `keel.lock` is byte-identical run-to-run and LF-only; the CI
   matrix makes that a cross-OS guarantee (certification evidence, [COMPLIANCE §8](docs/COMPLIANCE.md)).
+- **Cockpit logic tests** (`crates/keel-tui`) — filter-by-name-or-group, cursor clamping,
+  view navigation, and the command bar (incl. the `:change status` non-mutation guard).
 
 ## Status
 

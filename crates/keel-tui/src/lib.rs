@@ -1699,3 +1699,255 @@ fn draw_help(frame: &mut Frame) {
         popup,
     );
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn repo(name: &str, groups: &[&str]) -> RepoStatus {
+        RepoStatus {
+            name: name.to_string(),
+            path: PathBuf::from(name),
+            missing: false,
+            branch: Some("main".to_string()),
+            head: Some("a".repeat(40)),
+            dirty: false,
+            locked_rev: Some("a".repeat(40)),
+            drift: false,
+            ahead_behind: Some((0, 0)),
+            groups: groups.iter().map(|g| g.to_string()).collect(),
+        }
+    }
+
+    fn app_with(snapshot: Snapshot) -> App {
+        let mut cursor = ListState::default();
+        cursor.select(Some(0));
+        App {
+            view: View::Fleet,
+            back: Vec::new(),
+            snapshot,
+            stack: Some("gw".to_string()),
+            changeset: None,
+            selected_repos: Vec::new(),
+            cursor,
+            input: InputMode::None,
+            filter: String::new(),
+            message: String::new(),
+            busy: None,
+            spinner: 0,
+            tick: 0,
+            help: false,
+            goto: None,
+            pending_confirm: None,
+            output: None,
+        }
+    }
+
+    fn fleet_app() -> App {
+        let snap = Snapshot {
+            stacks: vec!["gw".to_string()],
+            fleet: vec![(
+                "gw".to_string(),
+                vec![
+                    repo("kernel", &["firmware", "ci"]),
+                    repo("hal", &["firmware"]),
+                    repo("app-mqtt", &[]),
+                ],
+            )],
+            paths: vec![("kernel".to_string(), PathBuf::from("/w/kernel"))],
+            merges: vec![(
+                "kernel".to_string(),
+                MergeBadge {
+                    source: "origin/feature".to_string(),
+                    resolved: 1,
+                    total: 2,
+                },
+            )],
+            ..Default::default()
+        };
+        app_with(snap)
+    }
+
+    // ---- pure helpers -----------------------------------------------------
+
+    #[test]
+    fn repo_matches_name_and_groups() {
+        let groups = vec!["firmware".to_string(), "ci".to_string()];
+        assert!(repo_matches("kernel", &groups, ""));
+        assert!(repo_matches("kernel", &groups, "kern"));
+        assert!(repo_matches("kernel", &groups, "firm"));
+        assert!(repo_matches("kernel", &groups, "ci"));
+        assert!(!repo_matches("kernel", &groups, "zzz"));
+    }
+
+    #[test]
+    fn short_is_multibyte_safe() {
+        assert_eq!(short(&"a".repeat(40)), "aaaaaaaa");
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(short(""), "");
+        assert_eq!(short("é"), "é");
+    }
+
+    #[test]
+    fn ahead_behind_spans_colors() {
+        let text = |ab| {
+            ahead_behind_spans(ab)
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
+        assert_eq!(text(None), "—");
+        assert_eq!(text(Some((0, 0))), "up to date");
+        assert_eq!(text(Some((2, 0))), "↑2 ");
+        assert_eq!(text(Some((0, 3))), "↓3");
+        assert_eq!(text(Some((2, 3))), "↑2 ↓3");
+    }
+
+    #[test]
+    fn ahead_behind_cell_dot_when_even() {
+        let line = ahead_behind_cell(Some((0, 0)));
+        assert_eq!(line.spans[0].content, "·");
+    }
+
+    #[test]
+    fn groups_label_empty_vs_set() {
+        assert_eq!(groups_label(&[]).0, "—");
+        assert_eq!(groups_label(&["a".to_string(), "b".to_string()]).0, "a,b");
+    }
+
+    #[test]
+    fn cursor_glyph_blinks() {
+        let mut app = fleet_app();
+        app.tick = 0;
+        assert_eq!(cursor_glyph(&app), "▏");
+        app.tick = 4;
+        assert_eq!(cursor_glyph(&app), " ");
+        app.tick = 8;
+        assert_eq!(cursor_glyph(&app), "▏");
+    }
+
+    #[test]
+    fn view_name_and_key_hints_cover_all_views() {
+        let app = fleet_app();
+        for v in [
+            View::Stacks,
+            View::Fleet,
+            View::Changesets,
+            View::Changeset,
+            View::Tree,
+        ] {
+            assert!(!view_name(&app, v).is_empty());
+            assert!(!key_hints(v).is_empty());
+        }
+    }
+
+    // ---- App methods ------------------------------------------------------
+
+    #[test]
+    fn fleet_rows_filter_by_name_and_group() {
+        let mut app = fleet_app();
+        assert_eq!(app.fleet_rows().len(), 3);
+        app.filter = "hal".to_string();
+        assert_eq!(app.fleet_rows().len(), 1);
+        app.filter = "firmware".to_string();
+        assert_eq!(app.fleet_rows().len(), 2);
+        app.filter = "ci".to_string();
+        assert_eq!(app.fleet_rows().len(), 1);
+    }
+
+    #[test]
+    fn clamp_cursor_bounds_to_last_row() {
+        let mut app = fleet_app();
+        app.cursor.select(Some(99));
+        app.clamp_cursor();
+        assert_eq!(app.cursor.selected(), Some(2));
+        app.filter = "hal".to_string();
+        app.clamp_cursor();
+        assert_eq!(app.cursor.selected(), Some(0));
+    }
+
+    #[test]
+    fn merge_badge_and_repo_path_lookup() {
+        let app = fleet_app();
+        assert_eq!(app.merge_badge("kernel").map(|b| b.total), Some(2));
+        assert!(app.merge_badge("hal").is_none());
+        assert_eq!(app.repo_path("kernel"), Some(PathBuf::from("/w/kernel")));
+        assert!(app.repo_path("ghost").is_none());
+    }
+
+    #[test]
+    fn goto_view_and_back_restore_previous() {
+        let mut app = fleet_app();
+        app.filter = "hal".to_string();
+        app.goto_view(View::Tree);
+        assert_eq!(app.view, View::Tree);
+        assert!(app.filter.is_empty());
+        app.go_back();
+        assert_eq!(app.view, View::Fleet);
+    }
+
+    // ---- command bar (the :change ambiguity fix) --------------------------
+
+    fn drain(rx: &Receiver<Job>) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        while let Ok(Job::Action(label, _)) = rx.try_recv() {
+            labels.push(label);
+        }
+        labels
+    }
+
+    #[test]
+    fn change_status_does_not_start_a_changeset() {
+        let mut app = fleet_app();
+        let (tx, rx) = channel();
+        run_command_bar(&mut app, &tx, "change status");
+        // navigates to the changeset view, never dispatches change start
+        assert_eq!(app.view, View::Changeset);
+        assert_eq!(app.changeset.as_deref(), Some("status"));
+        assert!(!drain(&rx).contains(&"change start"));
+    }
+
+    #[test]
+    fn change_start_with_id_dispatches() {
+        let mut app = fleet_app();
+        let (tx, rx) = channel();
+        run_command_bar(&mut app, &tx, "change start FEAT-9");
+        assert_eq!(drain(&rx), vec!["change start"]);
+    }
+
+    #[test]
+    fn change_land_and_request_ask_confirmation() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        run_command_bar(&mut app, &tx, "change land FEAT-9");
+        assert!(matches!(app.pending_confirm, Some(Confirm::Land(_))));
+        app.pending_confirm = None;
+        run_command_bar(&mut app, &tx, "change request FEAT-9");
+        assert!(matches!(app.pending_confirm, Some(Confirm::Request(_, _))));
+    }
+
+    #[test]
+    fn merge_cleanup_requires_a_planned_merge() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        run_command_bar(&mut app, &tx, "merge cleanup kernel");
+        assert!(matches!(
+            app.pending_confirm,
+            Some(Confirm::MergeCleanup(_))
+        ));
+        app.pending_confirm = None;
+        run_command_bar(&mut app, &tx, "merge cleanup hal");
+        assert!(app.pending_confirm.is_none());
+        assert!(app.message.contains("no merge planned"));
+    }
+
+    #[test]
+    fn unknown_command_reports() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        run_command_bar(&mut app, &tx, "frobnicate");
+        assert!(app.message.contains("unknown command"));
+    }
+}

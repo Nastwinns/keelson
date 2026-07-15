@@ -219,6 +219,26 @@ mod pin_tests {
         assert_eq!(lock.repos[0].branch, "feature/x");
         assert_eq!(lock.repos[0].source_rev, "main");
     }
+
+    #[test]
+    fn open_manifest_honors_custom_filename_and_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("fleet.toml");
+        std::fs::write(
+            &custom,
+            "[repo.a]\nurl = \"/r/a\"\nrev = \"main\"\n\n[stack.s]\nrepos = [\"a\"]\n",
+        )
+        .unwrap();
+
+        let ws = Workspace::open_manifest(&custom).unwrap();
+        assert_eq!(ws.root, dir.path());
+        assert_eq!(ws.manifest_path(), custom);
+        // lock/state live beside the manifest, not next to a hardcoded keel.toml
+        assert_eq!(ws.lock_path(), dir.path().join("keel.lock"));
+        assert!(ws.manifest.repos.contains_key("a"));
+
+        assert!(Workspace::open_manifest(dir.path().join("missing.toml")).is_err());
+    }
 }
 
 mod edit_tests {
