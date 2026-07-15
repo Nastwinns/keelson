@@ -1,5 +1,6 @@
 //! The human-authored `keel.toml` manifest: remotes, repos, stacks, overlays.
 
+pub mod edit;
 mod model;
 mod toml_loader;
 

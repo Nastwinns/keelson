@@ -69,7 +69,7 @@ fn clone_checkout_and_introspect() {
     let dest = tmp.path().join("clones").join("repo");
 
     assert!(!ShellGit.is_repo(&dest));
-    ShellGit.clone_repo(&url, &dest).unwrap();
+    ShellGit.clone_repo(&url, &dest, None).unwrap();
     assert!(ShellGit.is_repo(&dest));
 
     ShellGit.checkout(&dest, &head, "main").unwrap();
@@ -99,7 +99,7 @@ fn refuses_to_discard_local_commits() {
     let old = git(&src, &["rev-parse", "main"]);
     let dest = tmp.path().join("repo");
 
-    ShellGit.clone_repo(&url, &dest).unwrap();
+    ShellGit.clone_repo(&url, &dest, None).unwrap();
     ShellGit.checkout(&dest, &old, "main").unwrap();
 
     git(&dest, &["config", "user.email", "test@keelson.dev"]);
@@ -113,13 +113,37 @@ fn refuses_to_discard_local_commits() {
 }
 
 #[test]
+fn shared_clone_references_the_mirror() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = make_source_repo(tmp.path());
+    let url = src.to_string_lossy().into_owned();
+    let mirror = keel_core::git::mirror_dir(&tmp.path().join("cache"), &url);
+    let dest = tmp.path().join("repo");
+
+    ShellGit.ensure_mirror(&url, &mirror).unwrap();
+    assert!(mirror.join("HEAD").exists(), "mirror is a bare repo");
+    ShellGit.ensure_mirror(&url, &mirror).unwrap();
+
+    ShellGit.clone_repo(&url, &dest, Some(&mirror)).unwrap();
+    let alternates = dest
+        .join(".git")
+        .join("objects")
+        .join("info")
+        .join("alternates");
+    assert!(
+        alternates.exists(),
+        "shared clone records the mirror in objects/info/alternates (a text file)"
+    );
+}
+
+#[test]
 fn create_branch_and_fetch() {
     let tmp = tempfile::tempdir().unwrap();
     let src = make_source_repo(tmp.path());
     let url = src.to_string_lossy().into_owned();
     let dest = tmp.path().join("repo");
 
-    ShellGit.clone_repo(&url, &dest).unwrap();
+    ShellGit.clone_repo(&url, &dest, None).unwrap();
     ShellGit.create_branch(&dest, "change/FEAT-1").unwrap();
     assert_eq!(
         ShellGit.current_branch(&dest).unwrap().as_deref(),

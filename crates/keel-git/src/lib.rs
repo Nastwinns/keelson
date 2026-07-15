@@ -15,6 +15,12 @@ use keel_core::git::{GitBackend, GitError, ResolvedRev, RevKind};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ShellGit;
 
+/// Platform cache directory for shared bare mirrors (`--shared` mode).
+pub fn default_cache_root() -> Option<std::path::PathBuf> {
+    directories::ProjectDirs::from("dev", "keelson", "keelson")
+        .map(|dirs| dirs.cache_dir().join("mirrors"))
+}
+
 fn git_command(cwd: Option<&Path>) -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -84,14 +90,42 @@ impl GitBackend for ShellGit {
         })
     }
 
-    fn clone_repo(&self, url: &str, dest: &Path) -> Result<(), GitError> {
+    fn clone_repo(&self, url: &str, dest: &Path, reference: Option<&Path>) -> Result<(), GitError> {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let output = git_command(None).arg("clone").arg(url).arg(dest).output()?;
+        let mut cmd = git_command(None);
+        cmd.arg("clone");
+        if let Some(mirror) = reference {
+            cmd.arg("--reference").arg(mirror);
+        }
+        let output = cmd.arg(url).arg(dest).output()?;
         if !output.status.success() {
             return Err(GitError::Command {
                 context: format!("git clone {url}"),
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_mirror(&self, url: &str, mirror: &Path) -> Result<(), GitError> {
+        if mirror.join("HEAD").exists() {
+            run(&["fetch", "--prune"], Some(mirror))?;
+            return Ok(());
+        }
+        if let Some(parent) = mirror.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let output = git_command(None)
+            .arg("clone")
+            .arg("--mirror")
+            .arg(url)
+            .arg(mirror)
+            .output()?;
+        if !output.status.success() {
+            return Err(GitError::Command {
+                context: format!("git clone --mirror {url}"),
                 stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
             });
         }

@@ -18,12 +18,14 @@ keel-tui = { path = "crates/keel-tui", version = "0.1.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+directories = "6"
 indexmap = { version = "2", features = ["serde"] }
 ratatui = "0.29"
 serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 thiserror = "2"
 toml = "0.8"
+toml_edit = "0.22"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

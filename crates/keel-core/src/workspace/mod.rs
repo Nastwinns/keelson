@@ -45,6 +45,8 @@ pub enum SyncError {
     Workspace(#[from] WorkspaceError),
     #[error("repo `{0}` is not in {LOCK_FILE}; run `keel lock` to regenerate it")]
     MissingLockEntry(String),
+    #[error("repo `{0}` is not cloned; run `keel sync` first")]
+    NotCloned(String),
 }
 
 /// A workspace rooted at the directory containing `keel.toml`.
@@ -68,6 +70,8 @@ pub struct RepoTask {
     pub source_rev: String,
     /// The real local branch to check out on.
     pub branch: String,
+    /// Shared bare mirror to reference at clone time (`--shared` mode).
+    pub mirror: Option<PathBuf>,
 }
 
 /// The full set of repo tasks for one stack.
@@ -217,14 +221,56 @@ impl Workspace {
         })
     }
 
+    /// Snapshot the workspace: a lockfile pinning every repo to its current
+    /// HEAD (and current branch). No network. `keel unpin` (= `keel lock`)
+    /// restores the lock to the manifest revs.
+    pub fn pin(&self, backend: &dyn GitBackend) -> Result<Lockfile, SyncError> {
+        let mut repos = match self.read_lock()? {
+            Some(lock) => lock.repos,
+            None => resolver::resolve_all(&self.manifest, &[])?
+                .into_iter()
+                .map(|rb| LockedRepo {
+                    name: rb.name,
+                    url: rb.url,
+                    path: rb.path,
+                    rev: String::new(),
+                    source_rev: rb.rev,
+                    branch: String::new(),
+                    groups: rb.groups,
+                })
+                .collect(),
+        };
+        for entry in &mut repos {
+            let abs = self.root.join(&entry.path);
+            if !backend.is_repo(&abs) {
+                return Err(SyncError::NotCloned(entry.name.clone()));
+            }
+            entry.rev = backend.head_sha(&abs)?;
+            match backend.current_branch(&abs)? {
+                Some(branch) => entry.branch = branch,
+                None if entry.branch.is_empty() => {
+                    entry.branch = format!("keel/pin-{}", &entry.rev[..8.min(entry.rev.len())]);
+                }
+                None => {}
+            }
+        }
+        Ok(Lockfile {
+            version: LOCK_VERSION,
+            repos,
+        })
+    }
+
     /// Build the sync plan for `stack`. Uses the existing lock; generates
     /// and writes one when absent. Overlays only apply to lock generation.
     /// A non-empty `groups` filter limits the plan to matching repos.
+    /// `cache_root` enables shared object storage: clones reference a bare
+    /// mirror kept under it.
     pub fn plan_sync(
         &self,
         stack: &str,
         overlays: &[String],
         groups: &[String],
+        cache_root: Option<&std::path::Path>,
         backend: &dyn GitBackend,
     ) -> Result<SyncPlan, SyncError> {
         let mut resolution = resolver::resolve(&self.manifest, stack, overlays)?;
@@ -251,6 +297,7 @@ impl Workspace {
                 target: locked.rev.clone(),
                 source_rev: locked.source_rev.clone(),
                 branch: locked.branch.clone(),
+                mirror: cache_root.map(|root| crate::git::mirror_dir(root, &locked.url)),
             });
         }
         Ok(SyncPlan {
@@ -319,7 +366,10 @@ impl Workspace {
 /// Bring one repo to its target state. Safe to run in parallel across repos.
 pub fn sync_repo(task: &RepoTask, backend: &dyn GitBackend) -> Result<SyncOutcome, GitError> {
     if !backend.is_repo(&task.path) {
-        backend.clone_repo(&task.url, &task.path)?;
+        if let Some(mirror) = &task.mirror {
+            backend.ensure_mirror(&task.url, mirror)?;
+        }
+        backend.clone_repo(&task.url, &task.path, task.mirror.as_deref())?;
         backend.checkout(&task.path, &task.target, &task.branch)?;
         return Ok(SyncOutcome::Cloned);
     }

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use keel_core::git::GitBackend;
-use keel_core::manifest::{ManifestLoader, TomlLoader};
+use keel_core::manifest::{ManifestLoader, TomlLoader, edit};
 use keel_core::workspace::{MANIFEST_FILE, SyncOutcome, Workspace, sync_repo};
 use keel_core::{change, resolver};
 use keel_git::ShellGit;
@@ -59,6 +59,9 @@ enum Command {
         /// Only repos in these groups (repeatable).
         #[arg(long = "group")]
         groups: Vec<String>,
+        /// Share objects with a local mirror cache (git alternates, no symlinks).
+        #[arg(long)]
+        shared: bool,
         #[arg(long, short = 'j')]
         jobs: Option<usize>,
     },
@@ -66,6 +69,27 @@ enum Command {
     Lock {
         #[arg(long)]
         overlay: Vec<String>,
+    },
+    /// Pin keel.lock to each repo's current HEAD (no network).
+    #[command(alias = "freeze")]
+    Pin,
+    /// Restore keel.lock to the manifest revs (same as `keel lock`).
+    #[command(alias = "unfreeze")]
+    Unpin {
+        #[arg(long)]
+        overlay: Vec<String>,
+    },
+    /// Add, remove, or list the repos of the manifest.
+    #[command(alias = "brick")]
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommand,
+    },
+    /// Add, remove, or list the stacks of the manifest.
+    #[command(alias = "product")]
+    Stack {
+        #[command(subcommand)]
+        command: StackCommand,
     },
     /// Aggregated fleet status: branch, head, dirty, drift per repo.
     Status {
@@ -103,6 +127,55 @@ enum Command {
     },
     /// Launch the fleet dashboard.
     Tui,
+}
+
+#[derive(Subcommand)]
+enum RepoCommand {
+    /// List repos with rev, path, and groups.
+    List,
+    /// Add a repo to the manifest (keeps your comments and formatting).
+    Add {
+        name: String,
+        /// Full clone URL (or use --remote + --repo).
+        #[arg(long, conflicts_with_all = ["remote", "repo"])]
+        url: Option<String>,
+        /// Named remote from [remote.X].
+        #[arg(long, requires = "repo")]
+        remote: Option<String>,
+        /// Repository path under the remote.
+        #[arg(long, requires = "remote")]
+        repo: Option<String>,
+        #[arg(long, default_value = "main")]
+        rev: String,
+        /// Checkout path (default: the repo name).
+        #[arg(long)]
+        path: Option<String>,
+        /// Group label (repeatable).
+        #[arg(long = "group")]
+        groups: Vec<String>,
+    },
+    /// Remove a repo (refused while a stack or overlay references it).
+    Remove { name: String },
+}
+
+#[derive(Subcommand)]
+enum StackCommand {
+    /// List stacks and their repos.
+    List,
+    /// Add a stack composed of existing repos.
+    Add {
+        name: String,
+        /// Repos in the stack.
+        #[arg(
+            long = "repos",
+            alias = "bricks",
+            value_delimiter = ',',
+            required = true
+        )]
+        repos: Vec<String>,
+    },
+    /// Remove a stack.
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -144,9 +217,30 @@ fn run() -> Result<()> {
             stack,
             overlay,
             groups,
+            shared,
             jobs,
-        } => sync(stack.as_deref(), &overlay, &groups, jobs),
+        } => sync(stack.as_deref(), &overlay, &groups, shared, jobs),
         Command::Lock { overlay } => lock(&overlay),
+        Command::Pin => pin(),
+        Command::Unpin { overlay } => unpin(&overlay),
+        Command::Repo { command } => match command {
+            RepoCommand::List => repo_list(),
+            RepoCommand::Add {
+                name,
+                url,
+                remote,
+                repo,
+                rev,
+                path,
+                groups,
+            } => repo_add(&name, url, remote, repo, rev, path, groups),
+            RepoCommand::Remove { name } => repo_remove(&name),
+        },
+        Command::Stack { command } => match command {
+            StackCommand::List => stack_list(),
+            StackCommand::Add { name, repos } => stack_add(&name, &repos),
+            StackCommand::Remove { name } => stack_remove(&name),
+        },
         Command::Status { groups } => status(&groups),
         Command::Switch { stack, jobs } => switch(&stack, jobs),
         Command::Graph { stack, overlay } => graph(&cli.manifest, stack.as_deref(), &overlay),
@@ -208,12 +302,20 @@ fn sync(
     stack: Option<&str>,
     overlays: &[String],
     groups: &[String],
+    shared: bool,
     jobs: Option<usize>,
 ) -> Result<()> {
     let ws = open_workspace()?;
     let stack = ws.pick_stack(stack)?;
     let backend = ShellGit;
-    let plan = ws.plan_sync(&stack, overlays, groups, &backend)?;
+    let cache_root = if shared {
+        let root = keel_git::default_cache_root().context("no cache directory on this platform")?;
+        println!("sharing objects via {}", root.display());
+        Some(root)
+    } else {
+        None
+    };
+    let plan = ws.plan_sync(&stack, overlays, groups, cache_root.as_deref(), &backend)?;
     if plan.wrote_lock {
         println!("wrote keel.lock ({} repos pinned)", plan.tasks.len());
     } else if !overlays.is_empty() {
@@ -265,6 +367,126 @@ fn lock(overlays: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn pin() -> Result<()> {
+    let ws = open_workspace()?;
+    let lockfile = ws.pin(&ShellGit)?;
+    lockfile.save(&ws.lock_path())?;
+    println!(
+        "pinned keel.lock to current HEADs ({} repos)",
+        lockfile.repos.len()
+    );
+    for repo in &lockfile.repos {
+        println!(
+            "  {}  {}  ({})",
+            repo.name,
+            &repo.rev[..8.min(repo.rev.len())],
+            repo.branch
+        );
+    }
+    Ok(())
+}
+
+fn unpin(overlays: &[String]) -> Result<()> {
+    lock(overlays)?;
+    println!("restored keel.lock to the manifest revs");
+    Ok(())
+}
+
+fn repo_list() -> Result<()> {
+    let ws = open_workspace()?;
+    if ws.manifest.repos.is_empty() {
+        println!("no repos — add one with `keel repo add <name> --url <url>`");
+        return Ok(());
+    }
+    let width = ws.manifest.repos.keys().map(String::len).max().unwrap_or(4);
+    for (name, repo) in &ws.manifest.repos {
+        let groups = if repo.groups.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", repo.groups.join(", "))
+        };
+        println!(
+            "{name:<width$}  {}  {}{groups}",
+            repo.rev,
+            repo.checkout_path(name).display()
+        );
+    }
+    Ok(())
+}
+
+fn repo_add(
+    name: &str,
+    url: Option<String>,
+    remote: Option<String>,
+    repo: Option<String>,
+    rev: String,
+    path: Option<String>,
+    groups: Vec<String>,
+) -> Result<()> {
+    let ws = open_workspace()?;
+    let spec = edit::NewRepo {
+        name: name.to_string(),
+        url,
+        remote,
+        repo,
+        rev,
+        path,
+        groups,
+    };
+    let text = std::fs::read_to_string(ws.manifest_path())?;
+    let updated = edit::add_repo(&text, &spec)?;
+    std::fs::write(ws.manifest_path(), updated)?;
+    println!("added repo `{name}`");
+    println!("next: keel lock && keel sync");
+    Ok(())
+}
+
+fn repo_remove(name: &str) -> Result<()> {
+    let ws = open_workspace()?;
+    let text = std::fs::read_to_string(ws.manifest_path())?;
+    let updated = edit::remove_repo(&text, name)?;
+    std::fs::write(ws.manifest_path(), updated)?;
+    println!("removed repo `{name}` from the manifest");
+    println!("note: its clone stays on disk; delete the directory if unwanted");
+    Ok(())
+}
+
+fn stack_list() -> Result<()> {
+    let ws = open_workspace()?;
+    if ws.manifest.stacks.is_empty() {
+        println!("no stacks — add one with `keel stack add <name> --repos a,b`");
+        return Ok(());
+    }
+    let current = ws.current_stack();
+    for (name, stack) in &ws.manifest.stacks {
+        let marker = if current.as_deref() == Some(name) {
+            "*"
+        } else {
+            " "
+        };
+        println!("{marker} {name}: {}", stack.repos.join(", "));
+    }
+    Ok(())
+}
+
+fn stack_add(name: &str, repos: &[String]) -> Result<()> {
+    let ws = open_workspace()?;
+    let text = std::fs::read_to_string(ws.manifest_path())?;
+    let updated = edit::add_stack(&text, name, repos)?;
+    std::fs::write(ws.manifest_path(), updated)?;
+    println!("added stack `{name}` ({} repos)", repos.len());
+    Ok(())
+}
+
+fn stack_remove(name: &str) -> Result<()> {
+    let ws = open_workspace()?;
+    let text = std::fs::read_to_string(ws.manifest_path())?;
+    let updated = edit::remove_stack(&text, name)?;
+    std::fs::write(ws.manifest_path(), updated)?;
+    println!("removed stack `{name}`");
+    Ok(())
+}
+
 fn status(groups: &[String]) -> Result<()> {
     let ws = open_workspace()?;
     let statuses = ws.status(groups, &ShellGit)?;
@@ -302,7 +524,7 @@ fn switch(stack: &str, jobs: Option<usize>) -> Result<()> {
     let stack = ws.pick_stack(Some(stack))?;
     ws.set_current_stack(&stack)?;
     println!("switched to stack `{stack}`");
-    sync(Some(&stack), &[], &[], jobs)
+    sync(Some(&stack), &[], &[], false, jobs)
 }
 
 fn graph(path: &Path, stack: Option<&str>, overlays: &[String]) -> Result<()> {

@@ -42,11 +42,35 @@ pub struct ResolvedRev {
     pub kind: RevKind,
 }
 
+/// Directory of the shared bare mirror for `url` under `cache_root`.
+/// Stable, filesystem-safe, collision-resistant (FNV-1a 64 over the URL).
+pub fn mirror_dir(cache_root: &Path, url: &str) -> PathBuf {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in url.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let stem: String = url
+        .rsplit('/')
+        .next()
+        .unwrap_or("repo")
+        .trim_end_matches(".git")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(40)
+        .collect();
+    cache_root.join(format!("{stem}-{hash:016x}.git"))
+}
+
 /// Every git operation Keelson needs, behind one trait.
 pub trait GitBackend: Sync {
     /// Resolve a rev (branch, tag, or SHA) to a commit SHA without cloning.
     fn resolve_rev(&self, url: &str, rev: &str) -> Result<ResolvedRev, GitError>;
-    fn clone_repo(&self, url: &str, dest: &Path) -> Result<(), GitError>;
+    /// Clone `url` to `dest`; `reference` shares objects with a local mirror
+    /// via git alternates (a text file — no symlinks).
+    fn clone_repo(&self, url: &str, dest: &Path, reference: Option<&Path>) -> Result<(), GitError>;
+    /// Create or refresh the bare mirror of `url` at `mirror`.
+    fn ensure_mirror(&self, url: &str, mirror: &Path) -> Result<(), GitError>;
     fn fetch(&self, repo: &Path) -> Result<(), GitError>;
     /// Check out `sha` on a real local branch named `branch` (never detached).
     fn checkout(&self, repo: &Path, sha: &str, branch: &str) -> Result<(), GitError>;

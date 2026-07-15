@@ -131,3 +131,143 @@ repos = ["kernel", "docs", "tools"]
         "ungrouped repos are excluded by an active group filter"
     );
 }
+
+mod pin_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    use keel_core::git::{GitBackend, GitError, ResolvedRev, RevKind};
+    use keel_core::workspace::Workspace;
+
+    struct FakeGit {
+        heads: HashMap<PathBuf, (String, Option<String>)>,
+    }
+
+    impl GitBackend for FakeGit {
+        fn resolve_rev(&self, _url: &str, rev: &str) -> Result<ResolvedRev, GitError> {
+            Ok(ResolvedRev {
+                sha: "c".repeat(40),
+                kind: if rev == "main" {
+                    RevKind::Branch
+                } else {
+                    RevKind::Tag
+                },
+            })
+        }
+        fn clone_repo(
+            &self,
+            _url: &str,
+            _dest: &Path,
+            _reference: Option<&Path>,
+        ) -> Result<(), GitError> {
+            Ok(())
+        }
+        fn ensure_mirror(&self, _url: &str, _mirror: &Path) -> Result<(), GitError> {
+            Ok(())
+        }
+        fn fetch(&self, _repo: &Path) -> Result<(), GitError> {
+            Ok(())
+        }
+        fn checkout(&self, _repo: &Path, _sha: &str, _branch: &str) -> Result<(), GitError> {
+            Ok(())
+        }
+        fn create_branch(&self, _repo: &Path, _name: &str) -> Result<(), GitError> {
+            Ok(())
+        }
+        fn head_sha(&self, repo: &Path) -> Result<String, GitError> {
+            Ok(self.heads[repo].0.clone())
+        }
+        fn current_branch(&self, repo: &Path) -> Result<Option<String>, GitError> {
+            Ok(self.heads[repo].1.clone())
+        }
+        fn is_dirty(&self, _repo: &Path) -> Result<bool, GitError> {
+            Ok(false)
+        }
+        fn is_repo(&self, repo: &Path) -> bool {
+            self.heads.contains_key(repo)
+        }
+    }
+
+    #[test]
+    fn pin_snapshots_heads_without_network() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("keel.toml"),
+            "[repo.a]\nurl = \"/r/a\"\nrev = \"main\"\n\n[stack.s]\nrepos = [\"a\"]\n",
+        )
+        .unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+
+        let head = "d".repeat(40);
+        let fake = FakeGit {
+            heads: HashMap::from([(
+                dir.path().join("a"),
+                (head.clone(), Some("feature/x".to_string())),
+            )]),
+        };
+        let lock = ws.pin(&fake).unwrap();
+        assert_eq!(lock.repos.len(), 1);
+        assert_eq!(lock.repos[0].rev, head);
+        assert_eq!(lock.repos[0].branch, "feature/x");
+        assert_eq!(lock.repos[0].source_rev, "main");
+    }
+}
+
+mod edit_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use keel_core::manifest::edit::{self, EditError, NewRepo};
+
+    const BASE: &str = "# my workspace\n\n[repo.a]\nurl = \"/r/a\"   # keep me\nrev = \"main\"\n\n[stack.s]\nrepos = [\"a\"]\n";
+
+    #[test]
+    fn add_repo_preserves_comments() {
+        let spec = NewRepo {
+            name: "b".into(),
+            url: Some("/r/b".into()),
+            rev: "v1".into(),
+            groups: vec!["fw".into()],
+            ..Default::default()
+        };
+        let out = edit::add_repo(BASE, &spec).unwrap();
+        assert!(out.contains("# my workspace"));
+        assert!(out.contains("# keep me"));
+        assert!(out.contains("[repo.b]"));
+        assert!(out.contains("groups = [\"fw\"]"));
+    }
+
+    #[test]
+    fn add_duplicate_repo_fails() {
+        let spec = NewRepo {
+            name: "a".into(),
+            url: Some("/r/a2".into()),
+            rev: "main".into(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            edit::add_repo(BASE, &spec),
+            Err(EditError::RepoExists(_))
+        ));
+    }
+
+    #[test]
+    fn remove_repo_refused_while_referenced() {
+        assert!(matches!(
+            edit::remove_repo(BASE, "a"),
+            Err(EditError::ReferencedByStack { .. })
+        ));
+        let no_stack = edit::remove_stack(BASE, "s").unwrap();
+        let out = edit::remove_repo(&no_stack, "a").unwrap();
+        assert!(!out.contains("[repo.a]"));
+        assert!(out.contains("# my workspace"));
+    }
+
+    #[test]
+    fn add_stack_validates_repo_names() {
+        let out = edit::add_stack(BASE, "s2", &["a".into()]).unwrap();
+        assert!(out.contains("[stack.s2]"));
+        assert!(edit::add_stack(BASE, "bad", &["ghost".into()]).is_err());
+    }
+}
