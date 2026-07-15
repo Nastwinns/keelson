@@ -169,6 +169,11 @@ impl GitBackend for ShellGit {
         Ok(())
     }
 
+    fn push_branch(&self, repo: &Path, branch: &str) -> Result<(), GitError> {
+        run(&["push", "--set-upstream", "origin", branch], Some(repo))?;
+        Ok(())
+    }
+
     fn head_sha(&self, repo: &Path) -> Result<String, GitError> {
         run(&["rev-parse", "HEAD"], Some(repo))
     }

@@ -176,6 +176,9 @@ mod pin_tests {
         fn create_branch(&self, _repo: &Path, _name: &str) -> Result<(), GitError> {
             Ok(())
         }
+        fn push_branch(&self, _repo: &Path, _branch: &str) -> Result<(), GitError> {
+            Ok(())
+        }
         fn head_sha(&self, repo: &Path) -> Result<String, GitError> {
             Ok(self.heads[repo].0.clone())
         }

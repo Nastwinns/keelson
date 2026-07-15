@@ -125,8 +125,23 @@ enum Command {
         #[command(subcommand)]
         command: ChangeCommand,
     },
+    /// Save/restore named multi-repo states (branch + commit per repo).
+    Snapshot {
+        #[command(subcommand)]
+        command: SnapshotCommand,
+    },
     /// Launch the fleet dashboard.
     Tui,
+}
+
+#[derive(Subcommand)]
+enum SnapshotCommand {
+    /// Record every repo's branch + HEAD under a name.
+    Save { name: String },
+    /// Check every repo back out to a saved state (refuses on dirty repos).
+    Restore { name: String },
+    /// List saved snapshots.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -195,6 +210,21 @@ enum ChangeCommand {
     },
     /// Per-repo branch + PR/MR dashboard for a changeset.
     Status { id: String },
+    /// Push the changeset branches and open cross-linked PR/MRs.
+    Request {
+        id: String,
+        /// Target branch for the PR/MRs (default: the locked branch, else main).
+        #[arg(long)]
+        base: Option<String>,
+    },
+    /// Merge the changeset PR/MRs in order; stops at the first failure.
+    Land { id: String },
+    /// Print a changeset repo's path (usable as: cd "$(keel change goto ID REPO)").
+    Goto {
+        id: String,
+        /// Repo name; omit for an interactive picker.
+        repo: Option<String>,
+    },
     /// List recorded changesets.
     List,
 }
@@ -257,7 +287,15 @@ fn run() -> Result<()> {
                 skip_branch,
             } => change_start(&id, repos.as_deref(), branch.as_deref(), skip_branch),
             ChangeCommand::Status { id } => change_status(&id),
+            ChangeCommand::Request { id, base } => change_request(&id, base.as_deref()),
+            ChangeCommand::Land { id } => change_land(&id),
+            ChangeCommand::Goto { id, repo } => change_goto(&id, repo.as_deref()),
             ChangeCommand::List => change_list(),
+        },
+        Command::Snapshot { command } => match command {
+            SnapshotCommand::Save { name } => snapshot_save(&name),
+            SnapshotCommand::Restore { name } => snapshot_restore(&name),
+            SnapshotCommand::List => snapshot_list(),
         },
         Command::Tui => tui(),
     }
@@ -687,7 +725,162 @@ fn change_status(id: &str) -> Result<()> {
                 .unwrap_or("—"),
         );
     }
-    println!("(PR/MR state arrives with `change request` — Phase 3)");
+
+    let changeset = change::Changeset::load(&ws, id)?;
+    if changeset.repos.iter().any(|r| r.pr_number.is_some()) {
+        println!();
+        println!("PR/MRs:");
+        let tokens = keel_forge::Tokens::from_env();
+        for (name, status) in keel_forge::orchestrate::statuses(&ws, &tokens, id)? {
+            match status {
+                None => println!("  {name}  (no PR — run `keel change request`)"),
+                Some(Ok(s)) => println!(
+                    "  {name}  {}  approved: {}  ci: {}  {}",
+                    match s.state {
+                        keel_forge::PrState::Open => "open",
+                        keel_forge::PrState::Draft => "draft",
+                        keel_forge::PrState::Merged => "merged",
+                        keel_forge::PrState::Closed => "closed",
+                    },
+                    if s.approved { "yes" } else { "no" },
+                    match s.ci_passing {
+                        Some(true) => "passing",
+                        Some(false) => "FAILING",
+                        None => "pending",
+                    },
+                    s.url
+                ),
+                Some(Err(err)) => println!("  {name}  (status unavailable: {err})"),
+            }
+        }
+    } else {
+        println!("(no PR/MRs yet — open them with `keel change request {id}`)");
+    }
+    Ok(())
+}
+
+fn change_request(id: &str, base: Option<&str>) -> Result<()> {
+    let ws = open_workspace()?;
+    let tokens = keel_forge::Tokens::from_env();
+    let outcomes = keel_forge::orchestrate::request(&ws, &ShellGit, &tokens, id, base)?;
+    let mut failures = 0usize;
+    for outcome in &outcomes {
+        match &outcome.result {
+            Ok(url) => println!("  ✓ {}  {url}", outcome.name),
+            Err(err) => {
+                failures += 1;
+                eprintln!("  ✗ {}  {err}", outcome.name);
+            }
+        }
+    }
+    if failures > 0 {
+        bail!("{failures} repo(s) failed; fix and re-run `keel change request {id}`");
+    }
+    println!(
+        "requested changeset `{id}` ({} PR/MRs, cross-linked)",
+        outcomes.len()
+    );
+    Ok(())
+}
+
+fn change_land(id: &str) -> Result<()> {
+    let ws = open_workspace()?;
+    let tokens = keel_forge::Tokens::from_env();
+    let outcomes = keel_forge::orchestrate::land(&ws, &tokens, id)?;
+    let mut failed = false;
+    for outcome in &outcomes {
+        match &outcome.result {
+            Ok(msg) => println!("  ✓ {}  {msg}", outcome.name),
+            Err(err) => {
+                failed = true;
+                eprintln!("  ✗ {}  {err}", outcome.name);
+            }
+        }
+    }
+    if failed {
+        bail!("landing stopped at the first failure; later repos stay unmerged");
+    }
+    println!("changeset `{id}` landed ({} repos)", outcomes.len());
+    Ok(())
+}
+
+fn change_goto(id: &str, repo: Option<&str>) -> Result<()> {
+    let ws = open_workspace()?;
+    let changeset = change::Changeset::load(&ws, id)?;
+    let path_of = |name: &str| -> Result<PathBuf> {
+        let spec = ws
+            .manifest
+            .repos
+            .get(name)
+            .with_context(|| format!("repo `{name}` is not in the manifest"))?;
+        Ok(ws.root.join(spec.checkout_path(name)))
+    };
+
+    let name = match repo {
+        Some(name) => {
+            if !changeset.repos.iter().any(|r| r.name == name) {
+                bail!("repo `{name}` is not part of changeset `{id}`");
+            }
+            name.to_string()
+        }
+        None if std::io::stdin().is_terminal() => {
+            for (index, entry) in changeset.repos.iter().enumerate() {
+                eprintln!("  {}. {}  ({})", index + 1, entry.name, entry.branch);
+            }
+            eprint!("repo number: ");
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            let choice: usize = line.trim().parse().context("not a number")?;
+            changeset
+                .repos
+                .get(choice.saturating_sub(1))
+                .map(|entry| entry.name.clone())
+                .context("choice out of range")?
+        }
+        None => {
+            let names: Vec<&str> = changeset.repos.iter().map(|r| r.name.as_str()).collect();
+            bail!(
+                "pass a repo name (one of: {}) — interactive picker needs a terminal",
+                names.join(", ")
+            );
+        }
+    };
+    println!("{}", path_of(&name)?.display());
+    Ok(())
+}
+
+fn snapshot_save(name: &str) -> Result<()> {
+    let ws = open_workspace()?;
+    let snap = keel_core::snapshot::save(&ws, &ShellGit, name)?;
+    println!("saved snapshot `{name}` ({} repos)", snap.repos.len());
+    for repo in &snap.repos {
+        println!(
+            "  {}  {}  ({})",
+            repo.name,
+            &repo.sha[..8.min(repo.sha.len())],
+            repo.branch.as_deref().unwrap_or("detached")
+        );
+    }
+    Ok(())
+}
+
+fn snapshot_restore(name: &str) -> Result<()> {
+    let ws = open_workspace()?;
+    let snap = keel_core::snapshot::restore(&ws, &ShellGit, name)?;
+    println!("restored snapshot `{name}` ({} repos)", snap.repos.len());
+    Ok(())
+}
+
+fn snapshot_list() -> Result<()> {
+    let ws = open_workspace()?;
+    let names = keel_core::snapshot::Snapshot::list(&ws)?;
+    if names.is_empty() {
+        println!("no snapshots — save one with `keel snapshot save <name>`");
+        return Ok(());
+    }
+    for name in names {
+        println!("{name}");
+    }
     Ok(())
 }
 

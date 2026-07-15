@@ -1,7 +1,12 @@
 //! PR/MR orchestration behind the [`Forge`] trait.
 //!
-//! Detection is live; the GitHub (octocrab) and GitLab implementations land
-//! behind this trait in Phases 1 and 3.
+//! [`github::GitHub`] and [`gitlab::GitLab`] implement the trait over plain
+//! blocking HTTP; [`orchestrate`] drives the cross-repo changeset lifecycle
+//! (request, status, land) forge-agnostically.
+
+pub mod github;
+pub mod gitlab;
+pub mod orchestrate;
 
 /// Which forge a remote URL belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +56,12 @@ pub struct PrStatus {
 pub enum ForgeError {
     #[error("{0} support is not implemented yet")]
     NotImplemented(&'static str),
+    #[error("no forge recognized for {0}; only GitHub and GitLab are supported")]
+    UnknownForge(String),
+    #[error("cannot extract a repository path from {0}")]
+    UnsupportedUrl(String),
+    #[error("no {0} token; set {1}")]
+    MissingToken(&'static str, &'static str),
     #[error("forge API error: {0}")]
     Api(String),
 }
@@ -60,6 +71,92 @@ pub trait Forge {
     fn open_pr(&self, repo_url: &str, spec: &PrSpec) -> Result<PrHandle, ForgeError>;
     fn pr_status(&self, repo_url: &str, number: u64) -> Result<PrStatus, ForgeError>;
     fn merge_pr(&self, repo_url: &str, number: u64) -> Result<(), ForgeError>;
+    /// Rewrite the PR/MR description (used for cross-linking a changeset).
+    fn update_pr_body(&self, repo_url: &str, number: u64, body: &str) -> Result<(), ForgeError>;
+}
+
+/// Turns a repo URL into a ready-to-call [`Forge`] client.
+/// The production impl is [`Tokens`]; tests substitute fakes.
+pub trait ForgeFactory: Sync {
+    fn client_for(&self, url: &str) -> Result<Box<dyn Forge>, ForgeError>;
+}
+
+/// API tokens, usually read from the environment by the front-end.
+#[derive(Debug, Clone, Default)]
+pub struct Tokens {
+    pub github: Option<String>,
+    pub gitlab: Option<String>,
+}
+
+impl Tokens {
+    /// Read tokens from the conventional environment variables.
+    pub fn from_env() -> Self {
+        let first = |names: &[&str]| {
+            names
+                .iter()
+                .find_map(|name| std::env::var(name).ok().filter(|v| !v.is_empty()))
+        };
+        Self {
+            github: first(&["KEEL_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"]),
+            gitlab: first(&["KEEL_GITLAB_TOKEN", "GITLAB_TOKEN"]),
+        }
+    }
+}
+
+impl ForgeFactory for Tokens {
+    fn client_for(&self, url: &str) -> Result<Box<dyn Forge>, ForgeError> {
+        match detect(url) {
+            ForgeKind::GitHub => {
+                let token = self.github.clone().ok_or(ForgeError::MissingToken(
+                    "GitHub",
+                    "KEEL_GITHUB_TOKEN or GITHUB_TOKEN",
+                ))?;
+                Ok(Box::new(github::GitHub::new(token)))
+            }
+            ForgeKind::GitLab => {
+                let token = self.gitlab.clone().ok_or(ForgeError::MissingToken(
+                    "GitLab",
+                    "KEEL_GITLAB_TOKEN or GITLAB_TOKEN",
+                ))?;
+                Ok(Box::new(gitlab::GitLab::new(token)))
+            }
+            ForgeKind::Unknown => Err(ForgeError::UnknownForge(url.to_string())),
+        }
+    }
+}
+
+/// Host + repository path (`owner/repo`, or a nested GitLab group path)
+/// extracted from a clone URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoCoords {
+    pub host: String,
+    pub path: String,
+}
+
+/// Parse an HTTP(S), ssh://, or scp-like (`git@host:path`) clone URL.
+pub fn repo_coords(url: &str) -> Option<RepoCoords> {
+    let (host, raw_path) = if let Some((_, after_scheme)) = url.split_once("://") {
+        let (authority, path) = after_scheme.split_once('/')?;
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        let host = host.split(':').next().unwrap_or(host);
+        (host, path)
+    } else if let Some((user_host, path)) = url.split_once(':') {
+        let (_, host) = user_host.rsplit_once('@')?;
+        (host, path)
+    } else {
+        return None;
+    };
+    let path = raw_path
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+    if host.is_empty() || path.is_empty() || !path.contains('/') {
+        return None;
+    }
+    Some(RepoCoords {
+        host: host.to_string(),
+        path: path.to_string(),
+    })
 }
 
 /// Host part of an HTTP(S), ssh://, or scp-like (`git@host:path`) git URL.
@@ -90,7 +187,7 @@ pub fn detect(url: &str) -> ForgeKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{ForgeKind, detect};
+    use super::{ForgeKind, RepoCoords, detect, repo_coords};
 
     #[test]
     fn detects_github() {
@@ -119,5 +216,28 @@ mod tests {
         );
         assert_eq!(detect("/tmp/local/repo"), ForgeKind::Unknown);
         assert_eq!(detect("file:///tmp/local/repo"), ForgeKind::Unknown);
+    }
+
+    #[test]
+    fn coords_from_every_url_shape() {
+        let expect = |host: &str, path: &str| {
+            Some(RepoCoords {
+                host: host.into(),
+                path: path.into(),
+            })
+        };
+        assert_eq!(
+            repo_coords("https://github.com/acme/x.git"),
+            expect("github.com", "acme/x")
+        );
+        assert_eq!(
+            repo_coords("git@github.com:acme/x.git"),
+            expect("github.com", "acme/x")
+        );
+        assert_eq!(
+            repo_coords("ssh://git@gitlab.company.com/fw/nested/kernel.git"),
+            expect("gitlab.company.com", "fw/nested/kernel")
+        );
+        assert_eq!(repo_coords("/tmp/local/repo"), None);
     }
 }

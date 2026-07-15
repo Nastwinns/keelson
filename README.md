@@ -8,10 +8,10 @@
 ██╔═██╗ ██╔══╝  ██╔══╝  ██║     ╚════██║██║   ██║██║╚██╗██║
 ██║  ██╗███████╗███████╗███████╗███████║╚██████╔╝██║ ╚████║
 ╚═╝  ╚═╝╚══════╝╚══════╝╚══════╝╚══════╝ ╚═════╝ ╚═╝  ╚═══╝
-      ⚓  the beam that binds the bricks  ⚓
+      ⚓  the beam that binds the repos  ⚓
 ```
 
-**Reproducible multi-repo product composition + cross-repo MR orchestration. In Rust.**
+**Reproducible multi-repo stack composition + cross-repo MR orchestration. In Rust.**
 
 [![build](https://img.shields.io/badge/CI-Linux%20%7C%20macOS%20%7C%20Windows-brightgreen?logo=github)](.github/workflows/ci.yml)
 [![crates.io](https://img.shields.io/badge/crates.io-keel--cli-orange?logo=rust)](https://crates.io)
@@ -24,14 +24,14 @@
 
 ---
 
-`keel` is a command-line tool (with a TUI) for assembling a software product out of
+`keel` is a command-line tool (with a TUI) for assembling a software stack out of
 many independent Git repositories — without submodules, without detached HEADs, and
-without a Python runtime. A single declarative manifest describes your **products** and
-the **bricks** (repositories) they are composed of; a committed **lockfile** pins every
-brick to an exact revision so any teammate or CI machine reproduces the exact same tree.
+without a Python runtime. A single declarative manifest describes your **stacks** and
+the **repos** (repositories) they are composed of; a committed **lockfile** pins every
+repo to an exact revision so any teammate or CI machine reproduces the exact same tree.
 
 On top of composition, Keelson orchestrates the day-to-day multi-repo workflow: create a
-feature branch across all affected bricks at once, open the matching Pull/Merge Requests
+feature branch across all affected repos at once, open the matching Pull/Merge Requests
 on GitHub and GitLab, and track their review + CI state from one screen.
 
 Keelson runs natively on **Linux, macOS and Windows**. It uses [`gitoxide`](https://github.com/GitoxideLabs/gitoxide)
@@ -47,9 +47,9 @@ cargo install keel-cli          # from crates.io
 brew install keelson            # macOS / Linuxbrew
 scoop install keelson           # Windows
 
-# bootstrap a workspace from a manifest, then materialize a product
+# bootstrap a workspace from a manifest, then materialize a stack
 keel init keel.toml
-keel sync                       # clones every brick, writes keel.lock
+keel sync                       # clones every repo, writes keel.lock
 ```
 
 A typical session — compose, inspect, branch across repos:
@@ -71,8 +71,8 @@ kernel    v6.1.2   a1b2c3d4  -      -
 hal       main     9f8e7d6c  yes    -
 app-mqtt  release  4d5e6f7a  -      YES
 
-$ keel change start FEAT-42 --bricks kernel,app-mqtt
-changeset `FEAT-42` started across 2 brick(s):
+$ keel change start FEAT-42 --repos kernel,app-mqtt
+changeset `FEAT-42` started across 2 repo(s):
   kernel    -> change/FEAT-42
   app-mqtt  -> change/FEAT-42
 ```
@@ -81,8 +81,8 @@ changeset `FEAT-42` started across 2 brick(s):
 
 ## How it composes
 
-One manifest declares **bricks** (repos) and **products** (named sets of bricks). A brick is
-shared, never duplicated. A committed lockfile pins every brick to an exact SHA.
+One manifest declares **repos** (repos) and **stacks** (named sets of repos). A repo is
+shared, never duplicated. A committed lockfile pins every repo to an exact SHA.
 
 ```
               keel.toml  (intent)                 keel.lock  (pinned SHAs, committed)
@@ -90,13 +90,13 @@ shared, never duplicated. A committed lockfile pins every brick to an exact SHA.
       ┌────────────┼────────────┐                          ▼
       ▼            ▼            ▼                   reproducible on any machine / CI
  ┌─────────┐  ┌─────────┐  ┌──────────┐
- │ kernel  │  │  hal    │  │ app-mqtt │   ← bricks (full autonomous git clones)
+ │ kernel  │  │  hal    │  │ app-mqtt │   ← repos (full autonomous git clones)
  └────┬────┘  └────┬────┘  └────┬─────┘
       │            │            │
-      ├──────┬─────┤            │          products reuse the SAME bricks,
+      ├──────┬─────┤            │          stacks reuse the SAME repos,
       ▼      │     ▼            ▼          no submodules, no detached HEAD, no symlinks
  ┌──────────┴──┐  ┌────────────┴─────┐
- │  gateway    │  │   sensor-node    │   ← products (compositions)
+ │  gateway    │  │   sensor-node    │   ← stacks (compositions)
  │ kernel+hal  │  │   kernel + hal   │
  │  +app-mqtt  │  │                  │
  └─────────────┘  └──────────────────┘
@@ -106,17 +106,17 @@ shared, never duplicated. A committed lockfile pins every brick to an exact SHA.
 
 ## Why Keelson exists
 
-Splitting a product into many repositories is common in embedded/automotive/avionics
-(shared BSW, HAL, MCAL bricks reused across ECUs) and in microservice backends. The
+Splitting a stack into many repositories is common in embedded/automotive/avionics
+(shared BSW, HAL, MCAL repos reused across ECUs) and in microservice backends. The
 existing tooling each solves one slice of the problem:
 
 - **Google `repo` / `west`** give you a manifest, but no lockfile, a Python runtime,
   detached HEADs, and (for `repo`) symlink-based layouts that fight Windows.
 - **RepoFleet** (Go) nails the *issue → branches across repos → PR/MR* workflow, but has
-  no notion of product composition or a reproducible pinned manifest.
+  no notion of stack composition or a reproducible pinned manifest.
 - **mergetopus** (Rust) brilliantly parallelizes one big risky merge, but is single-repo.
 
-Keelson is the union that nobody ships: **reproducible product composition** (the `repo`
+Keelson is the union that nobody ships: **reproducible stack composition** (the `repo`
 job, done properly with a lockfile) **+ cross-repo MR orchestration** (the RepoFleet job,
 in Rust) **+ optional parallel collaborative merge** (the mergetopus idea), behind one
 binary and one TUI.
@@ -131,32 +131,32 @@ traceability tools). It is the orchestration layer those toolchains sit on top o
 
 ## Core concepts
 
-**Brick** — one Git repository, cloned as a full autonomous repo (its own `.git`, its own
-branches, no detached HEAD). A brick can be shared by several products.
+**Repo** — one Git repository, cloned as a full autonomous repo (its own `.git`, its own
+branches, no detached HEAD). A repo can be shared by several stacks.
 
-**Product** — a named composition: a set of bricks at chosen revisions. Checking out a
-product materializes the union of its bricks at the paths the manifest declares.
+**Stack** — a named composition: a set of repos at chosen revisions. Checking out a
+stack materializes the union of its repos at the paths the manifest declares.
 
-**Manifest** (`keel.toml`) — human-authored intent: remotes, bricks, products, overlays.
+**Manifest** (`keel.toml`) — human-authored intent: remotes, repos, stacks, overlays.
 TOML, for the same reasons Cargo uses it: no indentation traps, no YAML type coercion
 ("Norway problem"), stable serde ecosystem, clean diffs in review.
 
-**Lockfile** (`keel.lock`) — machine-generated, committed: every brick resolved to an
+**Lockfile** (`keel.lock`) — machine-generated, committed: every repo resolved to an
 exact SHA. This is the reproducibility + audit guarantee (a real argument in
 automotive/avionics) that `repo` and `west` lack.
 
-**Overlay** — a named set of per-brick overrides (rev, path) applied on top of the
-manifest, so variants (dev, bleeding-edge, customer builds) never duplicate brick lists.
+**Overlay** — a named set of per-repo overrides (rev, path) applied on top of the
+manifest, so variants (dev, bleeding-edge, customer builds) never duplicate repo lists.
 
-**Changeset** — a feature spanning several bricks: one logical branch created across N
-bricks, with N linked PR/MRs and an aggregated status.
+**Changeset** — a feature spanning several repos: one logical branch created across N
+repos, with N linked PR/MRs and an aggregated status.
 
 ---
 
 ## Layout on disk (no symlinks, ever)
 
 ```
-myproduct/
+mystack/
 ├── keel.toml           # manifest (intent)
 ├── keel.lock           # lockfile (resolved SHAs, committed)
 ├── kernel/             # real, complete git repo
@@ -164,8 +164,8 @@ myproduct/
 └── app-mqtt/           # real, complete git repo
 ```
 
-Bricks are plain clones at their final path — exactly what west does, and the reason it
-works on Windows where `repo` struggled. Object sharing across products on one machine is
+Repos are plain clones at their final path — exactly what west does, and the reason it
+works on Windows where `repo` struggled. Object sharing across stacks on one machine is
 available as an **opt-in optimization** via git's native `alternates`
 (`git clone --reference`), which writes a text file, not a symlink. Keelson uses three
 text-based indirections git already provides (`alternates`, the `.git: gitdir:` file, and
@@ -182,37 +182,37 @@ url = "git@gitlab.company.com:firmware"
 [remote.github]
 url = "git@github.com:acme"
 
-# --- bricks ---------------------------------------------------------------
+# --- repos ---------------------------------------------------------------
 
-[brick.kernel]
+[repo.kernel]
 remote = "internal"
 repo   = "kernel.git"
 rev    = "v6.1.2"        # tag or sha => pinned & reproducible
 groups = ["firmware"]
 
-[brick.hal]
+[repo.hal]
 remote = "internal"
 repo   = "hal.git"
 rev    = "main"          # branch => follows head, until locked
 groups = ["firmware"]
 
-[brick.app-mqtt]
+[repo.app-mqtt]
 remote = "github"
 repo   = "app-mqtt.git"
 rev    = "release/2.x"
-path   = "apps/mqtt"     # optional; defaults to the brick name
+path   = "apps/mqtt"     # optional; defaults to the repo name
 
-# --- products -------------------------------------------------------------
+# --- stacks -------------------------------------------------------------
 
-[product.gateway]
-bricks = ["kernel", "hal", "app-mqtt"]
+[stack.gateway]
+repos = ["kernel", "hal", "app-mqtt"]
 
-[product.sensor-node]
-bricks = ["kernel", "hal"]        # shares kernel + hal, no duplication
+[stack.sensor-node]
+repos = ["kernel", "hal"]        # shares kernel + hal, no duplication
 
 # --- overlays -------------------------------------------------------------
 
-[overlay.dev.brick.kernel]
+[overlay.dev.repo.kernel]
 rev = "main"                      # `keel sync --overlay dev`: kernel follows main
 ```
 
@@ -223,25 +223,25 @@ rev = "main"                      # `keel sync --overlay dev`: kernel follows ma
 ```
 keel
 ├── init <manifest-url|path>     Bootstrap a workspace from a manifest
-├── sync [--product P]           Clone/pull bricks to the state in keel.lock
+├── sync [--stack P]           Clone/pull repos to the state in keel.lock
 │                                (resolves + writes lock if absent)  [--shared]
-├── lock                         Resolve every brick's rev to a SHA -> keel.lock
+├── lock                         Resolve every repo's rev to a SHA -> keel.lock
 ├── freeze / unfreeze            Pin all revs to current SHAs / restore to manifest
-├── switch <product>             Materialize a different product in the workspace
-├── status                       Aggregated fleet status (dirty/ahead/behind per brick)
-├── forall -c '<cmd>'            Run a command across bricks, in parallel
-├── graph                        Print the product -> brick tree
+├── switch <stack>             Materialize a different stack in the workspace
+├── status                       Aggregated fleet status (dirty/ahead/behind per repo)
+├── forall -c '<cmd>'            Run a command across repos, in parallel
+├── graph                        Print the stack -> repo tree
 │
-├── brick   add|remove|list      Edit bricks in the manifest
-├── product add|remove|list      Edit products in the manifest
+├── repo   add|remove|list      Edit repos in the manifest
+├── stack add|remove|list      Edit stacks in the manifest
 │
 ├── change                       Cross-repo feature ("changeset") workflow
-│   ├── start <id> [--bricks ..] Create one branch across the affected bricks
-│   │                            [--skip-branch] adopt each brick's current branch instead
-│   ├── status                   Per-brick branch + PR/MR review + CI dashboard
-│   ├── request                  Open linked PR/MR on GitHub/GitLab for each brick
-│   ├── goto                     Interactive picker; cd into a brick
-│   ├── snapshot save|restore    Save/restore the multi-brick state of a changeset
+│   ├── start <id> [--repos ..] Create one branch across the affected repos
+│   │                            [--skip-branch] adopt each repo's current branch instead
+│   ├── status                   Per-repo branch + PR/MR review + CI dashboard
+│   ├── request                  Open linked PR/MR on GitHub/GitLab for each repo
+│   ├── goto                     Interactive picker; cd into a repo
+│   ├── snapshot save|restore    Save/restore the multi-repo state of a changeset
 │   └── land                     Merge PR/MRs in dependency order
 │
 ├── merge                        (optional) parallel collaborative merge (mergetopus-style)
@@ -253,7 +253,7 @@ keel
 └── tui                          Launch the fleet dashboard (ratatui)
 ```
 
-Key differentiators vs the field: `lock`/`freeze` (reproducibility), `switch <product>`
+Key differentiators vs the field: `lock`/`freeze` (reproducibility), `switch <stack>`
 (composition), parallel `forall` and `sync`, `change request` on **both** GitHub and
 GitLab from Rust, and a real fleet **TUI**.
 
@@ -261,11 +261,11 @@ GitLab from Rust, and a real fleet **TUI**.
 
 ## The TUI
 
-A `ratatui` dashboard, because multi-repo state is intrinsically 2-D (N bricks × their
+A `ratatui` dashboard, because multi-repo state is intrinsically 2-D (N repos × their
 state) and works over SSH — the right shape for embedded/CI users:
 
-- left: product → brick tree
-- right: per-brick detail (branch, SHA, dirty, ahead/behind, drift vs lock)
+- left: stack → repo tree
+- right: per-repo detail (branch, SHA, dirty, ahead/behind, drift vs lock)
 - changeset view: the N branches of a feature, each with PR/MR review + CI status
 - keyboard actions: sync, status, switch, start/land a changeset
 

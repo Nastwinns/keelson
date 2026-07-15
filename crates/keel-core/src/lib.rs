@@ -7,4 +7,5 @@ pub mod git;
 pub mod lock;
 pub mod manifest;
 pub mod resolver;
+pub mod snapshot;
 pub mod workspace;

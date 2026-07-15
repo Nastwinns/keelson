@@ -75,6 +75,8 @@ pub trait GitBackend: Sync {
     /// Check out `sha` on a real local branch named `branch` (never detached).
     fn checkout(&self, repo: &Path, sha: &str, branch: &str) -> Result<(), GitError>;
     fn create_branch(&self, repo: &Path, name: &str) -> Result<(), GitError>;
+    /// Push `branch` to origin (sets upstream on first push).
+    fn push_branch(&self, repo: &Path, branch: &str) -> Result<(), GitError>;
     fn head_sha(&self, repo: &Path) -> Result<String, GitError>;
     /// `None` means detached HEAD.
     fn current_branch(&self, repo: &Path) -> Result<Option<String>, GitError>;

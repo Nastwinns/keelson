@@ -37,12 +37,17 @@ pub enum ChangeError {
     Git(#[from] GitError),
 }
 
-/// One repo participating in a changeset, with its feature branch.
+/// One repo participating in a changeset, with its feature branch and,
+/// once `change request` ran, its PR/MR.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChangeRepo {
     pub name: String,
     pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<u64>,
 }
 
 /// A feature across several repos.
@@ -173,6 +178,8 @@ pub fn start(
         entries.push(ChangeRepo {
             name,
             branch: entry_branch,
+            pr_url: None,
+            pr_number: None,
         });
     }
 
