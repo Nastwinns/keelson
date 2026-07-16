@@ -610,9 +610,44 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("error: {err:#}");
+            let c = Palette::new();
+            eprintln!("{} {err}", c.err("error:"));
+            for cause in err.chain().skip(1) {
+                eprintln!("  {} {cause}", c.dim("↳"));
+            }
+            if let Some(hint) = hint_for(&format!("{err:#}").to_lowercase()) {
+                eprintln!("\n{} {hint}", c.bold("hint:"));
+            }
+            eprintln!(
+                "\nRun {} for usage, or {} for a command's options and examples.",
+                c.bold("`haw --help`"),
+                c.bold("`haw <command> --help`")
+            );
             ExitCode::FAILURE
         }
+    }
+}
+
+/// A one-line actionable hint for common failures, matched on the error text.
+fn hint_for(msg: &str) -> Option<&'static str> {
+    if msg.contains("haw.toml") || msg.contains("manifest") || msg.contains("no such file") {
+        Some(
+            "no workspace here — run `haw init <manifest-url|path>`, cd into a workspace, \
+              or point at one with `--manifest <path>`.",
+        )
+    } else if msg.contains("token") {
+        Some(
+            "set a forge token: HAW_GITHUB_TOKEN / GITHUB_TOKEN (or run `gh auth login`), \
+              or HAW_GITLAB_TOKEN / GITLAB_TOKEN for GitLab.",
+        )
+    } else if msg.contains("no stack") || msg.contains("select a stack") {
+        Some("pass `--stack <name>` or run `haw switch <stack>`; list them with `haw stack list`.")
+    } else if msg.contains("lock") || msg.contains("drift") {
+        Some("run `haw sync` (or `haw lock`) to resolve; `haw verify` reports drift vs haw.lock.")
+    } else if msg.contains("not a git repo") || msg.contains("not cloned") {
+        Some("run `haw sync` to clone the repos declared in haw.toml first.")
+    } else {
+        None
     }
 }
 
