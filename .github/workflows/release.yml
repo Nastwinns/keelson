@@ -226,3 +226,166 @@ jobs:
             artifacts/*.rpm
             dist/hawser.rb
             dist/hawser.json
+
+  distribute:
+    name: distribute to private registries
+    needs: [release]
+    runs-on: ubuntu-latest
+    # A registry upload failure must never fail the pipeline: the GitHub Release
+    # has already published. Each step is additionally gated on its secrets.
+    continue-on-error: true
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Resolve version
+        id: v
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: List files to distribute
+        shell: bash
+        run: ls -l artifacts
+
+      # ------------------------------------------------------------------
+      # 1. Nexus — raw hosted repository
+      # ------------------------------------------------------------------
+      - name: Publish to Nexus (raw hosted)
+        continue-on-error: true
+        env:
+          NEXUS_URL: ${{ secrets.NEXUS_URL }}
+          NEXUS_USER: ${{ secrets.NEXUS_USER }}
+          NEXUS_PASS: ${{ secrets.NEXUS_PASS }}
+          NEXUS_REPO: ${{ secrets.NEXUS_REPO }}
+          VERSION: ${{ steps.v.outputs.version }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${NEXUS_URL}" ] || [ -z "${NEXUS_USER}" ] || [ -z "${NEXUS_PASS}" ]; then
+            echo "skipping Nexus: secret not set (need NEXUS_URL, NEXUS_USER, NEXUS_PASS)"
+            exit 0
+          fi
+          REPO="${NEXUS_REPO:-raw-hosted}"
+          BASE="${NEXUS_URL%/}/repository/${REPO}/haw/${VERSION}"
+          cd artifacts
+          shopt -s nullglob
+          for f in haw-*.tar.gz haw-*.zip haw-*.sha256 haw-*.sig haw-*.pem *.deb *.rpm; do
+            [ -e "$f" ] || continue
+            echo "Nexus: uploading $f -> ${BASE}/$f"
+            curl -fSs -u "${NEXUS_USER}:${NEXUS_PASS}" \
+              --upload-file "$f" "${BASE}/$f"
+          done
+          echo "Nexus: done"
+
+      # ------------------------------------------------------------------
+      # 2. Artifactory — generic repository
+      # ------------------------------------------------------------------
+      - name: Publish to Artifactory (generic)
+        continue-on-error: true
+        env:
+          ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+          ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+          ARTIFACTORY_REPO: ${{ secrets.ARTIFACTORY_REPO }}
+          VERSION: ${{ steps.v.outputs.version }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${ARTIFACTORY_URL}" ] || [ -z "${ARTIFACTORY_TOKEN}" ]; then
+            echo "skipping Artifactory: secret not set (need ARTIFACTORY_URL, ARTIFACTORY_TOKEN)"
+            exit 0
+          fi
+          REPO="${ARTIFACTORY_REPO:-generic-local}"
+          BASE="${ARTIFACTORY_URL%/}/${REPO}/haw/${VERSION}"
+          cd artifacts
+          shopt -s nullglob
+          for f in haw-*.tar.gz haw-*.zip haw-*.sha256 haw-*.sig haw-*.pem *.deb *.rpm; do
+            [ -e "$f" ] || continue
+            echo "Artifactory: uploading $f -> ${BASE}/$f"
+            curl -fSs -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
+              --upload-file "$f" "${BASE}/$f"
+          done
+          echo "Artifactory: done"
+
+      # ------------------------------------------------------------------
+      # 3. GitLab — generic package registry + GitLab Release
+      # ------------------------------------------------------------------
+      - name: Publish to GitLab (generic packages + release)
+        continue-on-error: true
+        env:
+          GITLAB_URL: ${{ secrets.GITLAB_URL }}
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_PROJECT_ID: ${{ secrets.GITLAB_PROJECT_ID }}
+          VERSION: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${GITLAB_TOKEN}" ] || [ -z "${GITLAB_PROJECT_ID}" ]; then
+            echo "skipping GitLab: secret not set (need GITLAB_TOKEN, GITLAB_PROJECT_ID)"
+            exit 0
+          fi
+          API="${GITLAB_URL:-https://gitlab.com}"
+          API="${API%/}/api/v4/projects/${GITLAB_PROJECT_ID}"
+          PKG="${API}/packages/generic/haw/${VERSION}"
+          cd artifacts
+          shopt -s nullglob
+          # Upload each file to the generic package registry, collecting asset links.
+          LINKS=""
+          for f in haw-*.tar.gz haw-*.zip haw-*.sha256 haw-*.sig haw-*.pem *.deb *.rpm; do
+            [ -e "$f" ] || continue
+            echo "GitLab: uploading $f -> ${PKG}/$f"
+            curl -fSs --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+              --upload-file "$f" "${PKG}/$f"
+            LINKS="${LINKS}{\"name\":\"$f\",\"url\":\"${PKG}/$f\"},"
+          done
+          LINKS="${LINKS%,}"
+          # Create a GitLab Release pointing at the uploaded package links.
+          echo "GitLab: creating release ${TAG}"
+          BODY="{\"tag_name\":\"${TAG}\",\"name\":\"haw ${TAG}\",\"assets\":{\"links\":[${LINKS}]}}"
+          HTTP=$(curl -sS -o /tmp/gl_release.json -w '%{http_code}' \
+            --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --request POST "${API}/releases" \
+            --data "${BODY}") || true
+          if [ "$HTTP" = "201" ]; then
+            echo "GitLab: release created"
+          elif grep -qi 'already exists' /tmp/gl_release.json 2>/dev/null; then
+            echo "GitLab: release already exists, tolerating"
+          else
+            echo "GitLab: release POST returned HTTP ${HTTP}"
+            cat /tmp/gl_release.json 2>/dev/null || true
+          fi
+          echo "GitLab: done"
+
+      # ------------------------------------------------------------------
+      # 4. Bitbucket — repository Downloads
+      # ------------------------------------------------------------------
+      - name: Publish to Bitbucket (downloads)
+        continue-on-error: true
+        env:
+          BITBUCKET_USER: ${{ secrets.BITBUCKET_USER }}
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+          BITBUCKET_WORKSPACE: ${{ secrets.BITBUCKET_WORKSPACE }}
+          BITBUCKET_REPO: ${{ secrets.BITBUCKET_REPO }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${BITBUCKET_USER}" ] || [ -z "${BITBUCKET_TOKEN}" ] \
+             || [ -z "${BITBUCKET_WORKSPACE}" ] || [ -z "${BITBUCKET_REPO}" ]; then
+            echo "skipping Bitbucket: secret not set (need BITBUCKET_USER, BITBUCKET_TOKEN, BITBUCKET_WORKSPACE, BITBUCKET_REPO)"
+            exit 0
+          fi
+          URL="https://api.bitbucket.org/2.0/repositories/${BITBUCKET_WORKSPACE}/${BITBUCKET_REPO}/downloads"
+          cd artifacts
+          shopt -s nullglob
+          for f in haw-*.tar.gz haw-*.zip haw-*.sha256 haw-*.sig haw-*.pem *.deb *.rpm; do
+            [ -e "$f" ] || continue
+            echo "Bitbucket: uploading $f -> ${URL}"
+            curl -fSs -u "${BITBUCKET_USER}:${BITBUCKET_TOKEN}" \
+              -X POST "${URL}" -F "files=@${f}"
+          done
+          echo "Bitbucket: done"

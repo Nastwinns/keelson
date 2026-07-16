@@ -1,6 +1,6 @@
 [package]
 name = "haw-forge"
-description = "hawser PR/MR orchestration behind the Forge trait (GitHub, GitLab)"
+description = "hawser PR/MR orchestration behind the Forge trait (GitHub, GitLab, Bitbucket)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

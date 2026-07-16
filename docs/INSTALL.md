@@ -17,6 +17,7 @@ every supported platform.
 | **Scoop** | Windows | `scoop bucket add nastwinns https://github.com/Nastwinns/scoop-bucket` then `scoop install hawser` | Scoop |
 | **Static musl binary** | Linux x86_64 | download `haw-0.1.2-x86_64-unknown-linux-musl.tar.gz` (see below) | none (zero-dependency) |
 | **Prebuilt archive** | Linux gnu (x86_64/aarch64), Linux musl (x86_64), macOS (x86_64/aarch64), Windows (x86_64) | [GitHub Release](https://github.com/Nastwinns/hawser/releases/latest) | none (optional: `cosign`, `sha256sum` to verify) |
+| **Private registries** | any | Nexus / Artifactory / GitLab / Bitbucket mirror — see [DISTRIBUTION.md](DISTRIBUTION.md) | registry credentials |
 | **Docker** | any (with Docker) | `docker build -t haw .` | Docker + the repo |
 | **From source** | any (Rust) | `cargo install --git …` or `cargo build --release` | Rust 1.90+ toolchain |
 
@@ -156,6 +157,23 @@ sudo install haw /usr/local/bin/
 
 The static musl binary has no runtime dependencies, so nothing else needs to cross
 the air gap.
+
+## Private registries (Nexus / Artifactory / GitLab / Bitbucket)
+
+Organizations that mirror releases to an internal registry can pull the exact same
+signed archives (plus `.sha256`, `.sig`, `.pem`, and the `.deb`/`.rpm`) from Nexus,
+Artifactory, GitLab, or Bitbucket. Each tagged release publishes the GitHub Release
+first, then mirrors the artifacts to whichever of these registries are configured.
+
+See [DISTRIBUTION.md](DISTRIBUTION.md) for the exact upload paths, the secret matrix to
+enable each registry, and the per-registry download/install commands. Example (Nexus):
+
+```bash
+curl -u "$NEXUS_USER:$NEXUS_PASS" -O \
+  "$NEXUS_URL/repository/raw-hosted/haw/0.1.2/haw-0.1.2-x86_64-unknown-linux-musl.tar.gz"
+```
+
+Verify the checksum and cosign signature exactly as for the GitHub Release (above).
 
 ## Docker
 

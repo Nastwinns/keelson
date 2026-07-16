@@ -4,6 +4,7 @@
 //! blocking HTTP; [`orchestrate`] drives the cross-repo changeset lifecycle
 //! (request, status, land) forge-agnostically.
 
+pub mod bitbucket;
 pub mod github;
 pub mod gitlab;
 pub mod orchestrate;
@@ -13,6 +14,7 @@ pub mod orchestrate;
 pub enum ForgeKind {
     GitHub,
     GitLab,
+    Bitbucket,
     Unknown,
 }
 
@@ -116,7 +118,7 @@ pub const FILE_LINE_CAP: usize = 600;
 pub enum ForgeError {
     #[error("{0} support is not implemented yet")]
     NotImplemented(&'static str),
-    #[error("no forge recognized for {0}; only GitHub and GitLab are supported")]
+    #[error("no forge recognized for {0}; only GitHub, GitLab, and Bitbucket are supported")]
     UnknownForge(String),
     #[error("cannot extract a repository path from {0}")]
     UnsupportedUrl(String),
@@ -224,6 +226,7 @@ pub fn kind_from_key(key: &str) -> Option<ForgeKind> {
     match key {
         "github" => Some(ForgeKind::GitHub),
         "gitlab" => Some(ForgeKind::GitLab),
+        "bitbucket" => Some(ForgeKind::Bitbucket),
         _ => None,
     }
 }
@@ -233,6 +236,10 @@ pub fn kind_from_key(key: &str) -> Option<ForgeKind> {
 pub struct Tokens {
     pub github: Option<String>,
     pub gitlab: Option<String>,
+    pub bitbucket: Option<String>,
+    /// When set alongside a Bitbucket token, auth switches from Bearer to HTTP
+    /// Basic (`user:token`).
+    pub bitbucket_user: Option<String>,
 }
 
 impl Tokens {
@@ -253,7 +260,14 @@ impl Tokens {
         ])
         .or_else(gh_cli_token);
         let gitlab = first(&["HAW_GITLAB_TOKEN", "GITLAB_TOKEN", "HAW_FORGE_TOKEN"]);
-        Self { github, gitlab }
+        let bitbucket = first(&["HAW_BITBUCKET_TOKEN", "BITBUCKET_TOKEN", "HAW_FORGE_TOKEN"]);
+        let bitbucket_user = first(&["BITBUCKET_USER"]);
+        Self {
+            github,
+            gitlab,
+            bitbucket,
+            bitbucket_user,
+        }
     }
 }
 
@@ -286,6 +300,16 @@ impl ForgeFactory for Tokens {
                     "HAW_GITLAB_TOKEN or GITLAB_TOKEN",
                 ))?;
                 Ok(Box::new(gitlab::GitLab::new(token)))
+            }
+            ForgeKind::Bitbucket => {
+                let token = self.bitbucket.clone().ok_or(ForgeError::MissingToken(
+                    "Bitbucket",
+                    "HAW_BITBUCKET_TOKEN or BITBUCKET_TOKEN",
+                ))?;
+                Ok(Box::new(bitbucket::Bitbucket::new(
+                    token,
+                    self.bitbucket_user.clone(),
+                )))
             }
             ForgeKind::Unknown => Err(ForgeError::UnknownForge(url.to_string())),
         }
@@ -348,6 +372,7 @@ pub fn detect(url: &str) -> ForgeKind {
     match host_of(url) {
         Some(host) if host.contains("github") => ForgeKind::GitHub,
         Some(host) if host.contains("gitlab") => ForgeKind::GitLab,
+        Some(host) if host.contains("bitbucket") => ForgeKind::Bitbucket,
         _ => ForgeKind::Unknown,
     }
 }
@@ -416,11 +441,38 @@ mod tests {
     }
 
     #[test]
-    fn unknown_for_everything_else() {
+    fn detects_bitbucket_including_self_hosted() {
         assert_eq!(
             detect("https://bitbucket.org/acme/x.git"),
-            ForgeKind::Unknown
+            ForgeKind::Bitbucket
         );
+        assert_eq!(detect("git@bitbucket.org:acme/x.git"), ForgeKind::Bitbucket);
+        assert_eq!(
+            detect("ssh://git@bitbucket.company.com/team/repo.git"),
+            ForgeKind::Bitbucket
+        );
+    }
+
+    #[test]
+    fn bitbucket_coords_parse_workspace_and_slug() {
+        assert_eq!(
+            repo_coords("https://bitbucket.org/acme/widget.git"),
+            Some(RepoCoords {
+                host: "bitbucket.org".into(),
+                path: "acme/widget".into(),
+            })
+        );
+        assert_eq!(
+            repo_coords("git@bitbucket.org:acme/widget.git"),
+            Some(RepoCoords {
+                host: "bitbucket.org".into(),
+                path: "acme/widget".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn unknown_for_everything_else() {
         assert_eq!(detect("/tmp/local/repo"), ForgeKind::Unknown);
         assert_eq!(detect("file:///tmp/local/repo"), ForgeKind::Unknown);
     }
