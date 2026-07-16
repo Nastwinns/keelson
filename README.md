@@ -23,70 +23,88 @@ cross-repo PR, review, and CI run from one keyboard cockpit. One binary. In Rust
 
 ---
 
-`git` is great for one repository. `haw` is for the ten you ship together.
+**`haw` is a multi-repo platform for teams that ship a product spread across many Git
+repositories.** It composes them into a reproducible stack, orchestrates work across the
+whole fleet, drives cross-repo PRs on GitHub and GitLab, and ships with supply-chain
+governance built in — all from one static binary and a k9s-style cockpit.
 
-A declarative manifest (`haw.toml`) lists your repos and composes them into named
-**stacks**. A committed lockfile (`haw.lock`) pins every repo to an exact SHA — so a
-teammate, or a CI runner, or an auditor rebuilds the *identical* tree, byte for byte.
-
-On top of that reproducible base, `haw` runs the daily multi-repo loop: branch one
-feature across every affected repo, open the linked PRs/MRs on GitHub **and** GitLab,
-then review, merge, and land them — all from a k9s-style cockpit that never leaves the
-terminal.
-
-No submodules. No detached HEADs. No symlinks. No Python.
+It's not a git wrapper. It's the layer above git: the manifest, the lockfile, the
+fleet-wide build/test/CI, the cross-forge change flow, and the audit trail.
 
 ![haw TUI cockpit](demo/haw-tui.gif)
 
+## What haw does
+
+Five capabilities, one binary — each solving a slice of the multi-repo problem:
+
+### 🧱 Compose — a reproducible stack from many repos
+
+- **Manifest + lockfile.** `haw.toml` declares repos; `haw.lock` pins each to an exact
+  SHA — so a teammate, a CI runner, or an auditor rebuilds the *identical* tree.
+- **Stacks & overlays.** Compose repos into named stacks; overlays override revisions
+  per variant without duplicating a repo list.
+- **Built to scale.** Shallow (`--depth`) and partial (`--filter=blob:none`) clone, and
+  a shared object store via git `alternates` — no symlinks, so it works on Windows.
+
+### ⚙️ Orchestrate — run work across the whole fleet
+
+- **Parallel everything.** `run`, `build`, `test` any command across every repo at once
+  (`-j N`), reading through [gitoxide](https://github.com/GitoxideLabs/gitoxide).
+- **Fleet-wide search.** `haw grep` fans `git grep` across all repos in one shot.
+- **A ready CI gate.** `haw verify` asserts the tree matches the lock and exits 3 on
+  drift — drop it straight into a pipeline.
+
+### 🔀 Collaborate — cross-repo, cross-forge change flow
+
+- **Changesets.** One feature = one branch across N repos, with cross-linked PR/MRs on
+  GitHub **and** GitLab, an aggregated review + CI status, and `land` to merge them in
+  dependency order.
+- **Collaborative merge.** Slice a big merge per-directory, resolve each unit in
+  parallel, then seal — or abort cleanly.
+
+### 🚁 Operate — the k9s-style TUI cockpit (bare `haw`)
+
+- **Read → drill → act.** A live fleet grid; drill into a repo's diff, a PR's checks, or
+  a CI run's live progress bar + runner — then merge, approve, or checkout from the
+  keyboard.
+- **A real daily driver.** Fuzzy filter, sort, marks + bulk actions, a **problems-only**
+  view, a **drift ⚠** highlight, cross-repo `grep`, a file browser (local *and* remote),
+  drop-to-shell, a `:` command bar, and six themes.
+
+### 🛡️ Govern — supply-chain & audit, built in
+
+- **Plugins.** `haw <name>` runs `haw-<name>` from PATH — extend the CLI without forking.
+- **Provenance & signing.** SBOM (CycloneDX + SPDX), SLSA/in-toto provenance,
+  cosign/minisign signatures on every release.
+- **Integrity.** Pre-commit and lifecycle **hooks**, a secret/hygiene **gate**, and
+  `evidence` bundles (manifest + lock + audit + status) for qualification.
+
+> No submodules. No detached HEADs. No symlinks. No Python runtime. `haw` orchestrates
+> Git and the forge APIs — it does not reimplement Git's merge engine, replace a forge,
+> or replace your toolchain.
+
 ## Why it exists
 
-Splitting a product across repositories is routine — shared HAL/BSP repos reused
-across ECUs in automotive and avionics, or a fleet of backend microservices. But the
-tooling forces a choice, and every option gives up something:
+Splitting a product across repositories is routine — shared HAL/BSP repos reused across
+ECUs in automotive and avionics, or a fleet of backend microservices. Every existing
+tool solves one slice and gives up another:
 
 | Tool | Gives you | Gives up |
 |------|-----------|----------|
-| Google `repo` | manifest-driven multi-repo checkout | a lockfile; **symlinks the git internals** (breaks on Windows); detached HEADs; needs Python |
+| Google `repo` | manifest-driven checkout | lockfile; **symlinks git internals** (breaks on Windows); detached HEADs; needs Python |
 | Zephyr `west` | manifest + per-project update | reproducible pinning; detached HEADs; needs Python |
-| RepoFleet (Go) | issue → branches → PR/MR flow | stack composition; reproducible pinning |
+| RepoFleet (Go) | issue → branches → PR/MR flow | stack composition; reproducible pinning; build/CI orchestration |
 | mergetopus (Rust) | parallel single-repo merges | anything multi-repo |
 
-`haw` is the union nobody ships: **reproducible composition** + **cross-repo PR/MR
-orchestration** + optional **parallel collaborative merge**, behind one static binary
-and one TUI. It orchestrates Git and the forge APIs — it does not reimplement Git's
-merge engine, replace a forge, or replace your toolchain.
+`haw` is the union nobody ships — reproducible composition **and** fleet orchestration
+**and** cross-forge PR flow **and** supply-chain governance, behind one binary.
 
 > **Why no symlinks, when `repo` needs them?** `repo` shares one object store across
 > hundreds of Android repos and wires each checkout to it with symlinks — a hard
-> requirement in 2008, before `git worktree` and partial clone existed. `haw` clones
-> each repo as a plain, autonomous git repo (disk is cheap now), and gets reproducible
-> builds from `haw.lock`, not a shared store. Object sharing is *opt-in* via git's
-> native `alternates` (`--shared`) — a text file, never a symlink. So `haw` runs
-> unchanged on Windows.
-
-## Highlights
-
-- **Reproducible by default.** `haw.lock` pins every repo to a SHA. Runs are
-  byte-identical across machines and OSes — a real argument in automotive/avionics
-  audits, where the lockfile *is* the evidence.
-- **Plain repos on disk.** Every repo is an ordinary, complete git clone you can `cd`
-  into and use directly. No symlinks, no detached HEAD — so it works on Windows, where
-  `repo` struggles.
-- **Stacks compose, revs overlay.** Named repo sets share the same clones; overlays
-  override revisions per variant without ever duplicating a repo list.
-- **One feature, N repos.** A *changeset* opens one branch everywhere, cross-links the
-  PR/MRs, aggregates their status, and `land`s them in dependency order.
-- **A cockpit, not a dashboard.** Bare `haw` is a k9s-grade TUI: live refresh, fuzzy
-  filter, sort, marks and bulk actions, cross-repo `grep`, a file browser (local *and*
-  remote), a drop-to-shell, and drill-ins that show a repo's diff, a PR's checks, a CI
-  run's live progress — then `merge`, `approve`, or `checkout`, all from the keyboard.
-- **Loud about drift.** Any repo whose HEAD has drifted from the lock — or is dirty, or
-  uncloned — turns red with a ⚠ marker; `p` filters the fleet to just the problems.
-- **Fast and native.** Reads go through [gitoxide](https://github.com/GitoxideLabs/gitoxide);
-  only heavy plumbing shells out to `git`. `sync`, `run`, `build`, `test` all run in
-  parallel.
-- **CI-friendly.** `haw verify` exits 3 on drift; `--json` where it matters;
-  `NO_COLOR`/`CLICOLOR_FORCE` honored like `bat`, `eza`, and `ripgrep`.
+> requirement in 2008, before `git worktree` and partial clone existed. `haw` clones each
+> repo as a plain, autonomous git repo (disk is cheap now) and gets reproducibility from
+> `haw.lock`, not a shared store. Object sharing is *opt-in* via git's native
+> `alternates` (`--shared`) — a text file, never a symlink. So `haw` runs on Windows.
 
 ## Install
 
@@ -161,9 +179,16 @@ changeset `FEAT-42` started across 2 repo(s):
   app-mqtt  -> change/FEAT-42
 ```
 
-Output is colored on a TTY and plain when piped (`NO_COLOR` honored) — one scheme
-everywhere: **cyan** names, **yellow** revs and branches, dim SHAs, **green** clean,
-**yellow** dirty, **red** drift.
+One color scheme runs across the CLI and the TUI — colored on a TTY, plain when piped
+(`NO_COLOR` / `CLICOLOR_FORCE` honored, exactly like `bat`, `eza`, and `ripgrep`):
+
+| Color | Means |
+|-------|-------|
+| 🟦 **cyan** | repo & stack names |
+| 🟨 **yellow** | revisions, branches, and a dirty working tree |
+| ⬛ dim | short SHAs |
+| 🟩 **green** | clean / in sync |
+| 🟥 **red** ⚠ | drift, conflict, or a repo that isn't cloned |
 
 ## The manifest
 
@@ -293,49 +318,22 @@ on a background worker, so the UI never freezes.
  [s]ync [f]iles [x]shell [!]exec [/]filter [p]roblems [:]cmd [Enter]drill [?]help
 ```
 
-**See problems first.** Any repo that has drifted from the lock, is dirty, or isn't
-cloned turns red with a ⚠. Press `p` to filter the fleet down to just those rows.
+The grid auto-refreshes (~5s idle, or `F5`/`ctrl-r`) without disturbing your input;
+network views (PR/MR, CI, governance) stay on-demand. The essentials:
 
-**Stay current, hands-free.** The grid auto-refreshes (~5s idle, or `F5`/`ctrl-r` on
-demand) without disturbing input or in-flight work. Network views stay on-demand.
+| Key | Does |
+|-----|------|
+| `Enter` | **Drill in** — repo git detail · PR reviewers + checks · CI live progress + runner + logs |
+| `p` · `/` · `>` `<` `.` | Problems-only · fuzzy filter (`/knl`→`kernel`) · move/toggle sort column |
+| `f` · `x` · `!` | Browse **files** (local, or `R` for the forge API) · **shell** in the repo · run one **command** |
+| `M` · `A` · `C` · `F` | **Merge** · **approve** · **checkout** a PR locally · **fetch** one repo *(confirm-gated)* |
+| `m` · `i` · `v` | Fleet-wide open **PR/MRs** · recent **CI** runs · **governance** (plugins, SBOM, findings) |
+| `space` · `s` `r` | **Mark** repos (`◉`); then `s`/`r` act on the marked set · `o` opens the row in a browser |
+| `:` | **Command bar** — mirrors the CLI: `:sync`, `:grep TODO`, `:switch NAME`, `:theme nord`, or `:name` to jump |
 
-**Find and order.** `/` is a fuzzy filter (`/knl` matches `kernel`). `>`/`<` move the
-sort column, `.` toggles direction; a `▲`/`▼` caret marks it.
-
-**Search the whole fleet.** `:grep <pattern>` runs `git grep` across every cloned repo
-and lists the hits; `Enter` opens the file at the matching line. Same as `haw grep` on
-the CLI.
-
-**Drill in (`Enter`).** On a repo: a scrollable git detail — branch, SHA, `status`,
-recent `log`, diffstat, remotes. On a PR/MR: reviewers, checks, body, URL. On a CI run:
-a live progress bar, its jobs and steps, the runner, and the logs. `j/k` and
-`PageUp`/`PageDown` scroll; `b` goes back.
-
-**Browse files and shell in.** `f` opens a file browser for the cursor repo — local
-clone by default, or the forge over the API with `R` when the repo isn't checked out;
-`Enter` walks into a directory or opens a file. `x` drops you into a shell in the repo;
-`!` runs one command there and shows the output.
-
-**Act (confirm-gated — these reach the network).** `M` merges a PR/MR, `A` approves,
-`C` checks its branch out locally to review; `F` fetches a single repo. Cross-repo
-changesets `R` request and `L` land in dependency order. Each asks `y/n` first.
-
-**Mark and batch.** `space` marks repos (shown `◉`); with marks set, `s` and `r` act on
-the marked set instead of the cursor row.
-
-**Views.** stacks → fleet grid → repo detail; changesets with per-repo PR/MR + CI cells;
-fleet-wide open PR/MRs (`m`) and recent CI runs (`i`); governance (`v`) for plugins,
-SBOM/provenance, and findings. `o` opens the cursor row in your browser.
-
-**Command bar `:`** mirrors the CLI, so learning one teaches the other: `:sync`,
-`:switch NAME`, `:grep TODO`, `:run CMD`, `:sh CMD`, `:problems`, `:prs`, `:ci`,
-`:theme NAME`, `:help` — and a bare `:name` jumps the cursor to that repo.
-
-**Themes.** Six built-in skins — `catppuccin` (default), `dracula`, `nord`, `gruvbox`,
-`solarized`, `monochrome`. `NO_COLOR` forces `monochrome`; `HAW_THEME=<name>` sets one
-at startup; `:theme <name>` switches live.
-
-Full keymap: [docs/CLI-DESIGN.md](docs/CLI-DESIGN.md#tui-keymap).
+**Themes** — `catppuccin` (default), `dracula`, `nord`, `gruvbox`, `solarized`,
+`monochrome`. `NO_COLOR` forces `monochrome`; `HAW_THEME` sets one at startup;
+`:theme <name>` switches live. Full keymap: [docs/CLI-DESIGN.md](docs/CLI-DESIGN.md#tui-keymap).
 
 ## Demos
 
