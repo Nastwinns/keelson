@@ -215,6 +215,7 @@ jobs:
           tag_name: ${{ steps.v.outputs.tag }}
           name: haw ${{ steps.v.outputs.tag }}
           generate_release_notes: true
+          prerelease: ${{ contains(steps.v.outputs.tag, '-') }}
           files: |
             artifacts/haw-*.tar.gz
             artifacts/haw-*.zip
