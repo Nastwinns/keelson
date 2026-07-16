@@ -99,6 +99,24 @@ tool solves one slice and gives up another:
 `haw` is the union nobody ships — reproducible composition **and** fleet orchestration
 **and** cross-forge PR flow **and** supply-chain governance, behind one binary.
 
+Feature by feature (✅ built-in · ~ partial/manual · ✗ not offered):
+
+| Capability | `haw` | `repo` | `west` | `gita` | `meta` | RepoFleet |
+|------------|:-----:|:------:|:------:|:------:|:------:|:---------:|
+| Committed lockfile (pinned SHAs) | ✅ | ~ | ✗ | ✗ | ✗ | ✗ |
+| Single static binary, no runtime | ✅ | ✗ | ✗ | ✗ | ✗ | ✅ |
+| Runs on Windows, no symlinks | ✅ | ✗ | ✅ | ✅ | ✅ | ✅ |
+| Stack composition + overlays | ✅ | ~ | ~ | ~ | ✗ | ✗ |
+| Parallel build / test / run | ✅ | ✅ | ~ | ✅ | ✅ | ✗ |
+| Cross-repo grep | ✅ | ~ | ✗ | ✗ | ✗ | ✗ |
+| Shallow / partial clone | ✅ | ✅ | ✅ | ✗ | ✗ | ✗ |
+| Cross-forge PR/MR (GitHub + GitLab) | ✅ | ✗ | ✗ | ✗ | ✗ | ~ |
+| Land PRs in dependency order | ✅ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| k9s-style TUI cockpit | ✅ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| SBOM + provenance + signing | ✅ | ✗ | ✗ | ✗ | ✗ | ✗ |
+
+Best-effort as of each tool's current release; corrections welcome via an issue.
+
 > **Why no symlinks, when `repo` needs them?** `repo` shares one object store across
 > hundreds of Android repos and wires each checkout to it with symlinks — a hard
 > requirement in 2008, before `git worktree` and partial clone existed. `haw` clones each
