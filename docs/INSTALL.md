@@ -50,6 +50,37 @@ scoop bucket add nastwinns https://github.com/Nastwinns/scoop-bucket
 scoop install hawser
 ```
 
+### AUR (Arch Linux)
+
+A `hawser-bin` package (prebuilt from the GitHub Release) — see
+[`packaging/aur/PKGBUILD`](../packaging/aur/PKGBUILD):
+
+```bash
+yay -S hawser-bin            # or: paru -S hawser-bin
+```
+
+### Nix (flake)
+
+Run without installing, or add to a profile — the flake builds `haw` from source
+and wraps it with `git`:
+
+```bash
+nix run github:Nastwinns/hawser              # run once
+nix profile install github:Nastwinns/hawser  # install
+```
+
+### Debian / RPM
+
+Each GitHub Release ships a `.deb` and `.rpm` for x86_64 Linux (gnu):
+
+```bash
+# Debian/Ubuntu
+curl -sSLO https://github.com/Nastwinns/hawser/releases/latest/download/hawser_0.1.1-1_amd64.deb
+sudo dpkg -i hawser_0.1.1-1_amd64.deb
+# Fedora/RHEL
+sudo rpm -i https://github.com/Nastwinns/hawser/releases/latest/download/hawser-0.1.1-1.x86_64.rpm
+```
+
 ## Static musl binary (Linux, zero-dependency, air-gap friendly)
 
 The recommended universal Linux install. The musl build is fully static — no glibc,
