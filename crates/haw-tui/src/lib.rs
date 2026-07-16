@@ -267,9 +267,14 @@ struct App {
     gov: Option<Governance>,
 }
 
+/// Case-insensitive substring match; an empty needle matches everything.
+fn hit(haystack: &str, needle: &str) -> bool {
+    needle.is_empty() || haystack.to_lowercase().contains(&needle.to_lowercase())
+}
+
 /// A repo matches a filter if its name or any of its groups contains it.
 fn repo_matches(name: &str, groups: &[String], filter: &str) -> bool {
-    filter.is_empty() || name.contains(filter) || groups.iter().any(|g| g.contains(filter))
+    filter.is_empty() || hit(name, filter) || groups.iter().any(|g| hit(g, filter))
 }
 
 impl App {
@@ -293,7 +298,7 @@ impl App {
             .stacks
             .iter()
             .map(String::as_str)
-            .filter(|s| self.filter.is_empty() || s.contains(&self.filter))
+            .filter(|s| hit(s, &self.filter))
             .collect()
     }
 
@@ -301,7 +306,7 @@ impl App {
         self.snapshot
             .changesets
             .iter()
-            .filter(|c| self.filter.is_empty() || c.id.contains(&self.filter))
+            .filter(|c| hit(&c.id, &self.filter))
             .collect()
     }
 
@@ -315,7 +320,7 @@ impl App {
             .map(|c| {
                 c.repos
                     .iter()
-                    .filter(|r| self.filter.is_empty() || r.name.contains(&self.filter))
+                    .filter(|r| hit(&r.name, &self.filter))
                     .collect()
             })
             .unwrap_or_default()
@@ -326,11 +331,7 @@ impl App {
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .filter(|p| {
-                self.filter.is_empty()
-                    || p.repo.contains(&self.filter)
-                    || p.title.contains(&self.filter)
-            })
+            .filter(|p| hit(&p.repo, &self.filter) || hit(&p.title, &self.filter))
             .collect()
     }
 
@@ -340,10 +341,9 @@ impl App {
             .unwrap_or_default()
             .iter()
             .filter(|r| {
-                self.filter.is_empty()
-                    || r.repo.contains(&self.filter)
-                    || r.branch.contains(&self.filter)
-                    || r.name.contains(&self.filter)
+                hit(&r.repo, &self.filter)
+                    || hit(&r.branch, &self.filter)
+                    || hit(&r.name, &self.filter)
             })
             .collect()
     }
@@ -355,9 +355,8 @@ impl App {
                 g.plugins
                     .iter()
                     .filter(|p| {
-                        self.filter.is_empty()
-                            || p.name.contains(&self.filter)
-                            || p.phases.iter().any(|ph| ph.contains(&self.filter))
+                        hit(&p.name, &self.filter)
+                            || p.phases.iter().any(|ph| hit(ph, &self.filter))
                     })
                     .collect()
             })

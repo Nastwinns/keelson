@@ -148,29 +148,25 @@ impl Forge for GitLab {
             ),
             None,
         )?;
-        let mut out = Vec::new();
-        for mr in list.as_array().into_iter().flatten() {
-            let number = mr["iid"].as_u64().unwrap_or_default();
-            let approvals = self.call(
-                Method::GET,
-                &format!("{api}/merge_requests/{number}/approvals"),
-                None,
-            )?;
-            let approved = approvals["approved"].as_bool().unwrap_or(false);
-            let ci_passing = match mr["head_pipeline"]["status"].as_str() {
-                None | Some("created" | "pending" | "running" | "waiting_for_resource") => None,
-                Some("success") => Some(true),
-                Some(_) => Some(false),
-            };
-            out.push(crate::OpenPr {
-                number,
+        // Cheap fleet list: one call per repo. CI status is free from the list
+        // payload; the per-MR approvals call (an N+1) is deferred to drill-in.
+        let out = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|mr| crate::OpenPr {
+                number: mr["iid"].as_u64().unwrap_or_default(),
                 title: mr["title"].as_str().unwrap_or_default().to_string(),
                 url: mr["web_url"].as_str().unwrap_or_default().to_string(),
                 state: state_of(mr),
-                approved,
-                ci_passing,
-            });
-        }
+                approved: false,
+                ci_passing: match mr["head_pipeline"]["status"].as_str() {
+                    None | Some("created" | "pending" | "running" | "waiting_for_resource") => None,
+                    Some("success") => Some(true),
+                    Some(_) => Some(false),
+                },
+            })
+            .collect();
         Ok(out)
     }
 

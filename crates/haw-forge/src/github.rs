@@ -183,36 +183,22 @@ impl Forge for GitHub {
                 crate::OPEN_PRS_LIMIT
             ),
         )?;
-        let mut out = Vec::new();
-        for pr in list.as_array().into_iter().flatten() {
-            let number = pr["number"].as_u64().unwrap_or_default();
-            let reviews = self.get(&host, &format!("/repos/{path}/pulls/{number}/reviews"))?;
-            let approved = reviews
-                .as_array()
-                .is_some_and(|list| list.iter().any(|r| r["state"] == "APPROVED"));
-            let ci_passing = match pr["head"]["sha"].as_str() {
-                Some(sha) => {
-                    let status = self.get(&host, &format!("/repos/{path}/commits/{sha}/status"))?;
-                    match (
-                        status["total_count"].as_u64().unwrap_or(0),
-                        status["state"].as_str(),
-                    ) {
-                        (0, _) | (_, Some("pending")) => None,
-                        (_, Some("success")) => Some(true),
-                        _ => Some(false),
-                    }
-                }
-                None => None,
-            };
-            out.push(crate::OpenPr {
-                number,
+        // The fleet-wide list stays cheap: one call per repo, no per-PR review/CI
+        // enrichment (that N+1 made the view take tens of seconds). `approved`
+        // and `ci_passing` are filled in on drill-in via `pr_status`.
+        let out = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|pr| crate::OpenPr {
+                number: pr["number"].as_u64().unwrap_or_default(),
                 title: pr["title"].as_str().unwrap_or_default().to_string(),
                 url: pr["html_url"].as_str().unwrap_or_default().to_string(),
                 state: state_of(pr),
-                approved,
-                ci_passing,
-            });
-        }
+                approved: false,
+                ci_passing: None,
+            })
+            .collect();
         Ok(out)
     }
 
