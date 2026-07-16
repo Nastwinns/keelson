@@ -129,12 +129,19 @@ impl Forge for FakeForge {
     }
     fn list_ci_runs(&self, repo_url: &str) -> Result<Vec<haw_forge::CiRun>, ForgeError> {
         Ok(vec![haw_forge::CiRun {
+            id: 1,
             name: "build".to_string(),
             branch: "main".to_string(),
             event: "push".to_string(),
             status: haw_forge::CiStatus::Passed,
             url: format!("https://forge.example{repo_url}/runs/1"),
         }])
+    }
+    fn pr_detail(&self, _repo_url: &str, _number: u64) -> Result<String, ForgeError> {
+        Ok(String::new())
+    }
+    fn ci_run_detail(&self, _repo_url: &str, _run_id: u64) -> Result<String, ForgeError> {
+        Ok(String::new())
     }
 }
 

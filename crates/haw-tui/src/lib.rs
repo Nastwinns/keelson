@@ -149,6 +149,8 @@ pub struct Governance {
 #[derive(Debug, Clone)]
 pub struct FleetCiRun {
     pub repo: String,
+    /// Run/pipeline id, used to fetch its drill-in detail.
+    pub id: u64,
     pub name: String,
     pub branch: String,
     pub event: String,
@@ -184,6 +186,10 @@ pub trait Controller: Send {
     fn governance(&mut self) -> io::Result<Governance>;
     /// A live, plain-text git detail report for one repo (drill-in on `Enter`).
     fn repo_detail(&mut self, repo: &str) -> io::Result<String>;
+    /// A plain-text drill-in report for one PR/MR (reviewers, checks, body).
+    fn pr_detail(&mut self, repo: &str, number: u64) -> io::Result<String>;
+    /// A plain-text drill-in report for one CI run/pipeline (jobs, steps).
+    fn ci_detail(&mut self, repo: &str, run_id: u64) -> io::Result<String>;
 }
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -199,6 +205,8 @@ enum View {
     Ci,
     Governance,
     RepoDetail,
+    PrDetail,
+    CiDetail,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -216,6 +224,8 @@ enum Job {
     FleetCi,
     Governance,
     RepoDetail(String),
+    PrDetail(String, u64),
+    CiDetail(String, u64),
     Action(&'static str, ActionKind),
 }
 
@@ -239,7 +249,8 @@ enum Outcome {
     FleetPrs(Box<io::Result<Vec<FleetPr>>>),
     FleetCi(Box<io::Result<Vec<FleetCiRun>>>),
     Governance(Box<io::Result<Governance>>),
-    RepoDetail(Box<io::Result<String>>),
+    /// A shared drill-in detail (repo git / PR / CI); carries its panel title.
+    Detail(String, Box<io::Result<String>>),
     Action(&'static str, io::Result<String>),
 }
 
@@ -270,11 +281,12 @@ struct App {
     ci: Option<Vec<FleetCiRun>>,
     /// Plugin/governance surface; `None` until first fetched (`v` view).
     gov: Option<Governance>,
-    /// Live git detail report for the drilled-in repo; `None` while loading.
-    repo_detail: Option<String>,
-    /// Which repo the detail view is showing (`repo:<name>` in crumbs).
-    detail_repo: Option<String>,
-    /// Scroll offset for the repo detail (and reused nowhere else).
+    /// Plain-text report for the shared scrollable detail view (repo git / PR /
+    /// CI); `None` while loading.
+    detail_text: Option<String>,
+    /// Panel title + crumb label for the shared detail view.
+    detail_title: String,
+    /// Scroll offset for the shared detail view.
     detail_scroll: u16,
 }
 
@@ -384,7 +396,7 @@ impl App {
             View::Prs => self.pr_rows().len(),
             View::Ci => self.ci_rows().len(),
             View::Governance => self.gov_rows().len(),
-            View::RepoDetail => 0,
+            View::RepoDetail | View::PrDetail | View::CiDetail => 0,
         }
     }
 
@@ -454,6 +466,14 @@ impl App {
         }
     }
 
+    /// Whether the current view is one of the shared scrollable detail views.
+    fn is_detail_view(&self) -> bool {
+        matches!(
+            self.view,
+            View::RepoDetail | View::PrDetail | View::CiDetail
+        )
+    }
+
     fn go_back(&mut self) {
         if let Some(previous) = self.back.pop() {
             self.view = previous;
@@ -488,9 +508,18 @@ fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: 
                 Job::FleetPrs => Outcome::FleetPrs(Box::new(controller.fleet_prs())),
                 Job::FleetCi => Outcome::FleetCi(Box::new(controller.fleet_ci())),
                 Job::Governance => Outcome::Governance(Box::new(controller.governance())),
-                Job::RepoDetail(name) => {
-                    Outcome::RepoDetail(Box::new(controller.repo_detail(&name)))
-                }
+                Job::RepoDetail(name) => Outcome::Detail(
+                    format!("repo {name}"),
+                    Box::new(controller.repo_detail(&name)),
+                ),
+                Job::PrDetail(repo, number) => Outcome::Detail(
+                    format!("PR {repo}#{number}"),
+                    Box::new(controller.pr_detail(&repo, number)),
+                ),
+                Job::CiDetail(repo, run_id) => Outcome::Detail(
+                    format!("CI {repo} #{run_id}"),
+                    Box::new(controller.ci_detail(&repo, run_id)),
+                ),
                 Job::Action(label, kind) => {
                     let result = match kind {
                         ActionKind::SyncStack(stack) => controller.sync_stack(&stack),
@@ -542,16 +571,60 @@ fn open_changeset(app: &mut App, jobs: &Sender<Job>, id: &str) {
     }
 }
 
+/// Navigate into the shared scrollable detail view and fetch its report.
+/// `title` seeds the panel/crumb label; `busy` labels the spinner.
+fn open_detail(
+    app: &mut App,
+    jobs: &Sender<Job>,
+    view: View,
+    title: String,
+    busy: &'static str,
+    job: Job,
+) {
+    app.detail_title = title;
+    app.detail_text = None;
+    app.detail_scroll = 0;
+    app.goto_view(view);
+    if app.busy.is_none() {
+        app.busy = Some(busy);
+        let _ = jobs.send(job);
+    }
+}
+
 /// Navigate into a repo's live git detail view and fetch its report.
 fn open_repo_detail(app: &mut App, jobs: &Sender<Job>, repo: &str) {
-    app.detail_repo = Some(repo.to_string());
-    app.repo_detail = None;
-    app.detail_scroll = 0;
-    app.goto_view(View::RepoDetail);
-    if app.busy.is_none() {
-        app.busy = Some("git detail");
-        let _ = jobs.send(Job::RepoDetail(repo.to_string()));
-    }
+    open_detail(
+        app,
+        jobs,
+        View::RepoDetail,
+        format!("repo {repo}"),
+        "git detail",
+        Job::RepoDetail(repo.to_string()),
+    );
+}
+
+/// Navigate into a PR/MR's drill-in detail view and fetch its report.
+fn open_pr_detail(app: &mut App, jobs: &Sender<Job>, repo: &str, number: u64) {
+    open_detail(
+        app,
+        jobs,
+        View::PrDetail,
+        format!("PR {repo}#{number}"),
+        "PR detail",
+        Job::PrDetail(repo.to_string(), number),
+    );
+}
+
+/// Navigate into a CI run's drill-in detail view and fetch its report.
+fn open_ci_detail(app: &mut App, jobs: &Sender<Job>, repo: &str, run_id: u64, name: &str) {
+    open_detail(
+        app,
+        jobs,
+        View::CiDetail,
+        format!("CI {repo} {name}"),
+        "CI detail",
+        Job::CiDetail(repo.to_string(), run_id),
+    );
 }
 
 /// Navigate to a fleet-wide network view (`m`/`i`) and (re)fetch its rows.
@@ -721,8 +794,8 @@ fn event_loop(
         prs: None,
         ci: None,
         gov: None,
-        repo_detail: None,
-        detail_repo: None,
+        detail_text: None,
+        detail_title: String::new(),
         detail_scroll: 0,
     };
     app.cursor.select(Some(0));
@@ -807,17 +880,18 @@ fn event_loop(
                         Err(err) => app.message = format!("governance fetch failed: {err}"),
                     }
                 }
-                Outcome::RepoDetail(result) => {
+                Outcome::Detail(title, result) => {
                     app.busy = None;
                     app.detail_scroll = 0;
+                    app.detail_title = title;
                     match *result {
                         Ok(report) => {
-                            app.repo_detail = Some(report);
-                            app.message = "git detail loaded".to_string();
+                            app.detail_text = Some(report);
+                            app.message = "detail loaded".to_string();
                         }
                         Err(err) => {
-                            app.repo_detail = Some(format!("failed to load git detail: {err}"));
-                            app.message = format!("git detail failed: {err}");
+                            app.detail_text = Some(format!("failed to load detail: {err}"));
+                            app.message = format!("detail failed: {err}");
                         }
                     }
                 }
@@ -979,22 +1053,22 @@ fn event_loop(
                     app.go_back();
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') if app.view == View::RepoDetail => {
+            KeyCode::Down | KeyCode::Char('j') if app.is_detail_view() => {
                 app.detail_scroll = app
                     .detail_scroll
                     .saturating_add(1)
                     .min(detail_max_scroll(&app));
             }
-            KeyCode::Up | KeyCode::Char('k') if app.view == View::RepoDetail => {
+            KeyCode::Up | KeyCode::Char('k') if app.is_detail_view() => {
                 app.detail_scroll = app.detail_scroll.saturating_sub(1);
             }
-            KeyCode::PageDown if app.view == View::RepoDetail => {
+            KeyCode::PageDown if app.is_detail_view() => {
                 app.detail_scroll = app
                     .detail_scroll
                     .saturating_add(10)
                     .min(detail_max_scroll(&app));
             }
-            KeyCode::PageUp if app.view == View::RepoDetail => {
+            KeyCode::PageUp if app.is_detail_view() => {
                 app.detail_scroll = app.detail_scroll.saturating_sub(10);
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -1049,6 +1123,24 @@ fn event_loop(
                 View::Fleet => {
                     if let Some(repo) = app.cursor_repo() {
                         open_repo_detail(&mut app, jobs, &repo);
+                    }
+                }
+                View::Prs => {
+                    if let Some((repo, number)) = app
+                        .pr_rows()
+                        .get(selected)
+                        .map(|p| (p.repo.clone(), p.number))
+                    {
+                        open_pr_detail(&mut app, jobs, &repo, number);
+                    }
+                }
+                View::Ci => {
+                    if let Some((repo, id, name)) = app
+                        .ci_rows()
+                        .get(selected)
+                        .map(|r| (r.repo.clone(), r.id, r.name.clone()))
+                    {
+                        open_ci_detail(&mut app, jobs, &repo, id, &name);
                     }
                 }
                 _ => {}
@@ -1135,14 +1227,14 @@ fn view_name(app: &App, view: View) -> String {
         View::Prs => "pr/mr".to_string(),
         View::Ci => "ci".to_string(),
         View::Governance => "governance".to_string(),
-        View::RepoDetail => format!("repo:{}", app.detail_repo.as_deref().unwrap_or("—")),
+        View::RepoDetail | View::PrDetail | View::CiDetail => app.detail_title.clone(),
     }
 }
 
-/// Max scroll offset for the repo detail: total lines minus a rough page.
+/// Max scroll offset for the shared detail view: total lines minus one.
 fn detail_max_scroll(app: &App) -> u16 {
     let lines = app
-        .repo_detail
+        .detail_text
         .as_deref()
         .map_or(0, |report| report.lines().count());
     u16::try_from(lines.saturating_sub(1)).unwrap_or(u16::MAX)
@@ -1197,6 +1289,7 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
         ],
         View::Tree => &[("b", "back"), ("q", "quit")],
         View::Prs => &[
+            ("enter", "detail"),
             ("o", "open in browser"),
             ("m", "refetch"),
             ("i", "CI runs"),
@@ -1205,6 +1298,7 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("?", "help"),
         ],
         View::Ci => &[
+            ("enter", "detail"),
             ("o", "open in browser"),
             ("i", "refetch"),
             ("m", "PR/MRs"),
@@ -1219,7 +1313,9 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("/", "filter"),
             ("?", "help"),
         ],
-        View::RepoDetail => &[("j/k", "scroll"), ("b", "back"), ("q", "quit")],
+        View::RepoDetail | View::PrDetail | View::CiDetail => {
+            &[("j/k", "scroll"), ("b", "back"), ("q", "quit")]
+        }
     }
 }
 
@@ -1244,7 +1340,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         View::Prs => draw_prs(frame, app, zones[1]),
         View::Ci => draw_ci(frame, app, zones[1]),
         View::Governance => draw_governance(frame, app, zones[1]),
-        View::RepoDetail => draw_repo_detail(frame, app, zones[1]),
+        View::RepoDetail | View::PrDetail | View::CiDetail => draw_detail(frame, app, zones[1]),
     }
     draw_status(frame, app, zones[2]);
     draw_crumbs(frame, app, zones[3]);
@@ -2304,9 +2400,9 @@ fn detail_line(raw: &str) -> Line<'static> {
     Line::styled(raw.to_string(), style)
 }
 
-fn draw_repo_detail(frame: &mut Frame, app: &mut App, area: Rect) {
-    let title = format!("repo {}", app.detail_repo.as_deref().unwrap_or("—"));
-    match &app.repo_detail {
+fn draw_detail(frame: &mut Frame, app: &mut App, area: Rect) {
+    let title = app.detail_title.clone();
+    match &app.detail_text {
         Some(report) => {
             let text: Vec<Line> = report.lines().map(detail_line).collect();
             frame.render_widget(
@@ -2475,6 +2571,7 @@ fn draw_help(frame: &mut Frame) {
         help_entry("m", "open PR/MRs across every repo"),
         help_entry("i", "recent CI runs across every repo"),
         help_entry("v", "governance — plugins, artifacts, findings"),
+        help_entry("enter", "drill into a PR/MR or CI run (scrollable)"),
         help_entry("o", "open the row's PR / run / artifact"),
         Line::raw(""),
         help_section("changeset"),
@@ -2561,8 +2658,8 @@ mod tests {
             prs: None,
             ci: None,
             gov: None,
-            repo_detail: None,
-            detail_repo: None,
+            detail_text: None,
+            detail_title: "detail".to_string(),
             detail_scroll: 0,
         }
     }
@@ -2659,7 +2756,7 @@ mod tests {
         }
     }
 
-    const ALL_VIEWS: [View; 9] = [
+    const ALL_VIEWS: [View; 11] = [
         View::Stacks,
         View::Fleet,
         View::Changesets,
@@ -2669,6 +2766,8 @@ mod tests {
         View::Ci,
         View::Governance,
         View::RepoDetail,
+        View::PrDetail,
+        View::CiDetail,
     ];
 
     /// Every key advertised in `key_hints` must be one the event loop actually
@@ -2689,7 +2788,7 @@ mod tests {
     fn key_is_handled(view: View, key: &str) -> bool {
         match key {
             "enter" | "space" | "?" | "/" | ":" | "b" | "q" | "j" | "k" => true,
-            "j/k" => view == View::RepoDetail,
+            "j/k" => matches!(view, View::RepoDetail | View::PrDetail | View::CiDetail),
             "t" | "c" | "m" | "i" | "v" | "r" | "g" => true,
             "s" => matches!(view, View::Fleet | View::Stacks),
             "S" => true,
@@ -2817,6 +2916,7 @@ mod tests {
     fn ci_run(repo: &str, name: &str, branch: &str) -> FleetCiRun {
         FleetCiRun {
             repo: repo.to_string(),
+            id: 1,
             name: name.to_string(),
             branch: branch.to_string(),
             event: "push".to_string(),
@@ -2997,9 +3097,9 @@ mod tests {
     fn repo_detail_view_has_no_rows() {
         let mut app = fleet_app();
         app.view = View::RepoDetail;
-        app.detail_repo = Some("kernel".to_string());
+        app.detail_title = "repo kernel".to_string();
         assert_eq!(app.rows_len(), 0);
-        assert_eq!(view_name(&app, View::RepoDetail), "repo:kernel");
+        assert_eq!(view_name(&app, View::RepoDetail), "repo kernel");
     }
 
     #[test]

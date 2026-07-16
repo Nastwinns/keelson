@@ -84,6 +84,9 @@ pub enum CiStatus {
 /// CI view.
 #[derive(Debug, Clone)]
 pub struct CiRun {
+    /// Run id (GitHub `run["id"]`) or pipeline id (GitLab `pipeline["id"]`);
+    /// used to fetch a run's drill-in detail.
+    pub id: u64,
     /// Workflow name (GitHub) or `#<pipeline id>` (GitLab).
     pub name: String,
     /// Branch (or ref) the run executed on.
@@ -126,6 +129,12 @@ pub trait Forge {
     /// Recent CI runs/pipelines on the repo, newest first, capped at
     /// [`CI_RUNS_LIMIT`] (fleet-wide CI view).
     fn list_ci_runs(&self, repo_url: &str) -> Result<Vec<CiRun>, ForgeError>;
+    /// A readable, plain-text drill-in report for one PR/MR: header, reviewers,
+    /// checks, and body. No ANSI — the caller styles it.
+    fn pr_detail(&self, repo_url: &str, number: u64) -> Result<String, ForgeError>;
+    /// A readable, plain-text drill-in report for one CI run/pipeline: header,
+    /// jobs, and steps. No ANSI — the caller styles it.
+    fn ci_run_detail(&self, repo_url: &str, run_id: u64) -> Result<String, ForgeError>;
 }
 
 /// Turns a repo URL into a ready-to-call [`Forge`] client.

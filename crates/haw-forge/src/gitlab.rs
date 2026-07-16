@@ -180,6 +180,131 @@ impl Forge for GitLab {
         let pipelines = list.as_array().cloned().unwrap_or_default();
         Ok(pipelines.iter().map(run_of).collect())
     }
+
+    fn pr_detail(&self, repo_url: &str, number: u64) -> Result<String, ForgeError> {
+        let api = self.project_api(repo_url)?;
+        let mr = self.call(Method::GET, &format!("{api}/merge_requests/{number}"), None)?;
+
+        let title = mr["title"].as_str().unwrap_or_default();
+        let source_branch = mr["source_branch"].as_str().unwrap_or("—");
+        let target_branch = mr["target_branch"].as_str().unwrap_or("—");
+        let head_sha = mr["sha"].as_str().unwrap_or_default();
+        let web_url = mr["web_url"].as_str().unwrap_or_default();
+
+        let mut out = String::new();
+        out.push_str(&format!(
+            "#{number} {title} — {}\n",
+            match state_of(&mr) {
+                PrState::Open => "open",
+                PrState::Draft => "draft",
+                PrState::Merged => "merged",
+                PrState::Closed => "closed",
+            }
+        ));
+        out.push_str(&format!(
+            "head {source_branch} @ {}  ->  base {target_branch}\n",
+            &head_sha[..7.min(head_sha.len())]
+        ));
+        if let Some(status) = mr["merge_status"].as_str() {
+            out.push_str(&format!("mergeable: {status}\n"));
+        }
+
+        out.push_str("\n-- reviewers --\n");
+        match self.call(
+            Method::GET,
+            &format!("{api}/merge_requests/{number}/approvals"),
+            None,
+        ) {
+            Ok(approvals) => {
+                let approved = approvals["approved"].as_bool().unwrap_or(false);
+                out.push_str(&format!(
+                    "  approved: {}\n",
+                    if approved { "yes" } else { "no" }
+                ));
+                if let Some(list) = approvals["approved_by"].as_array() {
+                    for entry in list {
+                        let who = entry["user"]["username"].as_str().unwrap_or("?");
+                        out.push_str(&format!("  {who}: approved\n"));
+                    }
+                }
+            }
+            Err(err) => out.push_str(&format!("  (approvals unavailable: {err})\n")),
+        }
+
+        out.push_str("\n-- checks --\n");
+        match mr["head_pipeline"]["id"].as_u64() {
+            Some(pipeline_id) => {
+                let pipeline_status = mr["head_pipeline"]["status"].as_str().unwrap_or("—");
+                out.push_str(&format!("  pipeline #{pipeline_id}: {pipeline_status}\n"));
+                match self.call(
+                    Method::GET,
+                    &format!("{api}/pipelines/{pipeline_id}/jobs"),
+                    None,
+                ) {
+                    Ok(jobs) => {
+                        if let Some(list) = jobs.as_array() {
+                            for job in list {
+                                let job_name = job["name"].as_str().unwrap_or("?");
+                                let job_status = job["status"].as_str().unwrap_or("—");
+                                out.push_str(&format!("  {job_name}: {job_status}\n"));
+                            }
+                        }
+                    }
+                    Err(err) => out.push_str(&format!("  (jobs unavailable: {err})\n")),
+                }
+            }
+            None => out.push_str("  (no pipeline for this MR)\n"),
+        }
+
+        out.push_str("\n-- body --\n");
+        let body = mr["description"].as_str().unwrap_or("");
+        if body.trim().is_empty() {
+            out.push_str("  (no description)\n");
+        } else {
+            for line in body.lines().take(60) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+
+        out.push_str(&format!("\nurl: {web_url}\n"));
+        Ok(out)
+    }
+
+    fn ci_run_detail(&self, repo_url: &str, run_id: u64) -> Result<String, ForgeError> {
+        let api = self.project_api(repo_url)?;
+        let pipeline = self.call(Method::GET, &format!("{api}/pipelines/{run_id}"), None)?;
+
+        let status = pipeline["status"].as_str().unwrap_or("—");
+        let branch = pipeline["ref"].as_str().unwrap_or("—");
+        let source = pipeline["source"].as_str().unwrap_or("—");
+        let sha = pipeline["sha"].as_str().unwrap_or_default();
+        let web_url = pipeline["web_url"].as_str().unwrap_or_default();
+
+        let mut out = String::new();
+        out.push_str(&format!("pipeline #{run_id} — {status}\n"));
+        out.push_str(&format!(
+            "branch {branch}  source {source}  @ {}\n",
+            &sha[..7.min(sha.len())]
+        ));
+
+        out.push_str("\n-- jobs --\n");
+        let jobs = self.call(Method::GET, &format!("{api}/pipelines/{run_id}/jobs"), None)?;
+        match jobs.as_array().filter(|list| !list.is_empty()) {
+            Some(list) => {
+                for job in list {
+                    let job_name = job["name"].as_str().unwrap_or("?");
+                    let stage = job["stage"].as_str().unwrap_or("—");
+                    let job_status = job["status"].as_str().unwrap_or("—");
+                    out.push_str(&format!("  [{stage}] {job_name}: {job_status}\n"));
+                }
+            }
+            None => out.push_str("  (no jobs reported)\n"),
+        }
+
+        out.push_str(&format!("\nweb_url: {web_url}\n"));
+        Ok(out)
+    }
 }
 
 /// Map a GitLab pipeline object to the forge-neutral [`crate::CiRun`].
@@ -193,8 +318,10 @@ fn run_of(pipeline: &Value) -> crate::CiRun {
         }
         _ => crate::CiStatus::Running,
     };
+    let id = pipeline["id"].as_u64().unwrap_or_default();
     crate::CiRun {
-        name: format!("#{}", pipeline["id"].as_u64().unwrap_or_default()),
+        id,
+        name: format!("#{id}"),
         branch: pipeline["ref"].as_str().unwrap_or_default().to_string(),
         event: pipeline["source"].as_str().unwrap_or_default().to_string(),
         status,

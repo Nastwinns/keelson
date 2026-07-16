@@ -217,6 +217,143 @@ impl Forge for GitHub {
             .unwrap_or_default();
         Ok(runs.iter().map(run_of).collect())
     }
+
+    fn pr_detail(&self, repo_url: &str, number: u64) -> Result<String, ForgeError> {
+        let (host, path) = self.split(repo_url)?;
+        let pr = self.get(&host, &format!("/repos/{path}/pulls/{number}"))?;
+
+        let title = pr["title"].as_str().unwrap_or_default();
+        let head_branch = pr["head"]["ref"].as_str().unwrap_or("—");
+        let head_sha = pr["head"]["sha"].as_str().unwrap_or_default();
+        let base_branch = pr["base"]["ref"].as_str().unwrap_or("—");
+        let html_url = pr["html_url"].as_str().unwrap_or_default();
+
+        let mut out = String::new();
+        out.push_str(&format!(
+            "#{number} {title} — {}\n",
+            match state_of(&pr) {
+                PrState::Open => "open",
+                PrState::Draft => "draft",
+                PrState::Merged => "merged",
+                PrState::Closed => "closed",
+            }
+        ));
+        out.push_str(&format!(
+            "head {head_branch} @ {}  ->  base {base_branch}\n",
+            &head_sha[..7.min(head_sha.len())]
+        ));
+        if let Some(mergeable) = pr["mergeable"].as_bool() {
+            out.push_str(&format!(
+                "mergeable: {}\n",
+                if mergeable { "yes" } else { "no" }
+            ));
+        }
+
+        out.push_str("\n-- reviewers --\n");
+        let reviews = self.get(&host, &format!("/repos/{path}/pulls/{number}/reviews"))?;
+        match reviews.as_array().filter(|list| !list.is_empty()) {
+            Some(list) => {
+                for review in list {
+                    let who = review["user"]["login"].as_str().unwrap_or("?");
+                    let state = review["state"].as_str().unwrap_or("");
+                    out.push_str(&format!("  {who}: {state}\n"));
+                }
+            }
+            None => out.push_str("  (no reviews yet)\n"),
+        }
+
+        out.push_str("\n-- checks --\n");
+        if head_sha.is_empty() {
+            out.push_str("  (no head sha)\n");
+        } else {
+            let check_runs = self.get(
+                &host,
+                &format!("/repos/{path}/commits/{head_sha}/check-runs"),
+            )?;
+            let mut any = false;
+            if let Some(list) = check_runs["check_runs"].as_array() {
+                for check in list {
+                    any = true;
+                    let name = check["name"].as_str().unwrap_or("?");
+                    let status = check["status"].as_str().unwrap_or("");
+                    let conclusion = check["conclusion"].as_str().unwrap_or("—");
+                    out.push_str(&format!("  {name}: {status}/{conclusion}\n"));
+                }
+            }
+            // Fall back to the combined commit status for repos using the older
+            // statuses API (or when no check-runs are registered).
+            let status = self.get(&host, &format!("/repos/{path}/commits/{head_sha}/status"))?;
+            if let Some(list) = status["statuses"].as_array() {
+                for entry in list {
+                    any = true;
+                    let context = entry["context"].as_str().unwrap_or("?");
+                    let state = entry["state"].as_str().unwrap_or("—");
+                    out.push_str(&format!("  {context}: {state}\n"));
+                }
+            }
+            if !any {
+                out.push_str("  (no checks reported)\n");
+            }
+        }
+
+        out.push_str("\n-- body --\n");
+        let body = pr["body"].as_str().unwrap_or("");
+        if body.trim().is_empty() {
+            out.push_str("  (no description)\n");
+        } else {
+            for line in body.lines().take(60) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+
+        out.push_str(&format!("\nurl: {html_url}\n"));
+        Ok(out)
+    }
+
+    fn ci_run_detail(&self, repo_url: &str, run_id: u64) -> Result<String, ForgeError> {
+        let (host, path) = self.split(repo_url)?;
+        let run = self.get(&host, &format!("/repos/{path}/actions/runs/{run_id}"))?;
+
+        let name = run["name"].as_str().unwrap_or("—");
+        let status = run["status"].as_str().unwrap_or("");
+        let conclusion = run["conclusion"].as_str().unwrap_or("—");
+        let branch = run["head_branch"].as_str().unwrap_or("—");
+        let event = run["event"].as_str().unwrap_or("—");
+        let sha = run["head_sha"].as_str().unwrap_or_default();
+        let html_url = run["html_url"].as_str().unwrap_or_default();
+
+        let mut out = String::new();
+        out.push_str(&format!("{name} — {status}/{conclusion}\n"));
+        out.push_str(&format!(
+            "branch {branch}  event {event}  @ {}\n",
+            &sha[..7.min(sha.len())]
+        ));
+
+        out.push_str("\n-- jobs --\n");
+        let jobs = self.get(&host, &format!("/repos/{path}/actions/runs/{run_id}/jobs"))?;
+        match jobs["jobs"].as_array().filter(|list| !list.is_empty()) {
+            Some(list) => {
+                for job in list {
+                    let job_name = job["name"].as_str().unwrap_or("?");
+                    let job_status = job["status"].as_str().unwrap_or("");
+                    let job_conclusion = job["conclusion"].as_str().unwrap_or("—");
+                    out.push_str(&format!("  {job_name}: {job_status}/{job_conclusion}\n"));
+                    if let Some(steps) = job["steps"].as_array() {
+                        for step in steps.iter().take(30) {
+                            let step_name = step["name"].as_str().unwrap_or("?");
+                            let step_conclusion = step["conclusion"].as_str().unwrap_or("—");
+                            out.push_str(&format!("    - {step_name}: {step_conclusion}\n"));
+                        }
+                    }
+                }
+            }
+            None => out.push_str("  (no jobs reported)\n"),
+        }
+
+        out.push_str(&format!("\nurl: {html_url}\n"));
+        Ok(out)
+    }
 }
 
 /// Map a GitHub Actions run object to the forge-neutral [`crate::CiRun`].
@@ -229,6 +366,7 @@ fn run_of(run: &Value) -> crate::CiRun {
         _ => crate::CiStatus::Running,
     };
     crate::CiRun {
+        id: run["id"].as_u64().unwrap_or_default(),
         name: run["name"].as_str().unwrap_or_default().to_string(),
         branch: run["head_branch"].as_str().unwrap_or_default().to_string(),
         event: run["event"].as_str().unwrap_or_default().to_string(),

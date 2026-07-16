@@ -2456,6 +2456,7 @@ impl haw_tui::Controller for CliController {
             match result {
                 Ok(runs) => out.extend(runs.into_iter().map(|run| haw_tui::FleetCiRun {
                     repo: name.clone(),
+                    id: run.id,
                     name: run.name,
                     branch: run.branch,
                     event: run.event,
@@ -2539,6 +2540,47 @@ impl haw_tui::Controller for CliController {
         let path = ws.root.join(spec.checkout_path(repo));
         Ok(git_detail_report(repo, &path))
     }
+
+    fn pr_detail(&mut self, repo: &str, number: u64) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let (forge, url) = forge_for_repo(&ws, repo)?;
+        forge.pr_detail(&url, number).map_err(std::io::Error::other)
+    }
+
+    fn ci_detail(&mut self, repo: &str, run_id: u64) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let (forge, url) = forge_for_repo(&ws, repo)?;
+        forge
+            .ci_run_detail(&url, run_id)
+            .map_err(std::io::Error::other)
+    }
+}
+
+/// Resolve a repo's clone URL and a ready-to-call forge client, honoring the
+/// manifest's explicit `forge =` key (mirrors `orchestrate::forge_hint`).
+fn forge_for_repo(
+    ws: &Workspace,
+    repo: &str,
+) -> std::io::Result<(Box<dyn haw_forge::Forge>, String)> {
+    use haw_forge::ForgeFactory;
+    let spec =
+        ws.manifest.repos.get(repo).ok_or_else(|| {
+            std::io::Error::other(format!("repo `{repo}` is not in the manifest"))
+        })?;
+    let url = spec.clone_url(&ws.manifest.remotes).ok_or_else(|| {
+        std::io::Error::other(format!("repo `{repo}` has no resolvable clone URL"))
+    })?;
+    let hint = spec
+        .remote
+        .as_deref()
+        .and_then(|name| ws.manifest.remotes.get(name))
+        .and_then(|remote| remote.forge.as_deref())
+        .and_then(haw_forge::kind_from_key);
+    let tokens = Tokens::from_env();
+    let forge = tokens
+        .client_for(&url, hint)
+        .map_err(std::io::Error::other)?;
+    Ok((forge, url))
 }
 
 /// Run `git -C <path> <args...>`, returning trimmed stdout or an error note.
@@ -2963,28 +3005,45 @@ impl haw_tui::Controller for DemoController {
     }
 
     fn fleet_ci(&mut self) -> std::io::Result<Vec<haw_tui::FleetCiRun>> {
-        let run =
-            |repo: &str, name: &str, branch: &str, event: &str, status: &str| haw_tui::FleetCiRun {
+        let run = |repo: &str, id: u64, name: &str, branch: &str, event: &str, status: &str| {
+            haw_tui::FleetCiRun {
                 repo: repo.to_string(),
+                id,
                 name: name.to_string(),
                 branch: branch.to_string(),
                 event: event.to_string(),
                 status: status.to_string(),
-                url: format!("https://github.com/acme/{repo}/actions"),
-            };
+                url: format!("https://github.com/acme/{repo}/actions/runs/{id}"),
+            }
+        };
         Ok(vec![
-            run("kernel", "build-and-test", "release/6.1", "push", "passed"),
+            run(
+                "kernel",
+                9001,
+                "build-and-test",
+                "release/6.1",
+                "push",
+                "passed",
+            ),
             run(
                 "hal",
+                9002,
                 "firmware-ci",
                 "feature/i2c-dma",
                 "pull_request",
                 "running",
             ),
-            run("app-mqtt", "integration", "main", "push", "failed"),
-            run("telemetry", "lint", "main", "pull_request", "queued"),
-            run("sensor-drv", "nightly", "main", "schedule", "cancelled"),
-            run("edge-daemon", "build", "main", "push", "passed"),
+            run("app-mqtt", 9003, "integration", "main", "push", "failed"),
+            run("telemetry", 9004, "lint", "main", "pull_request", "queued"),
+            run(
+                "sensor-drv",
+                9005,
+                "nightly",
+                "main",
+                "schedule",
+                "cancelled",
+            ),
+            run("edge-daemon", 9006, "build", "main", "push", "passed"),
         ])
     }
 
@@ -3057,6 +3116,54 @@ a1c9f4e i2c: add DMA-backed transfers\n\
 -- remotes --\n\
 origin\tgit@github.com:acme/{repo}.git (fetch)\n\
 origin\tgit@github.com:acme/{repo}.git (push)\n"
+        ))
+    }
+
+    fn pr_detail(&mut self, repo: &str, number: u64) -> std::io::Result<String> {
+        Ok(format!(
+            "#{number} i2c: add DMA-backed transfers — open\n\
+head feature/i2c-dma @ a1c9f4e  ->  base release/6.1\n\
+mergeable: yes\n\
+\n\
+-- reviewers --\n\
+  octavia: APPROVED\n\
+  rui: CHANGES_REQUESTED\n\
+\n\
+-- checks --\n\
+  build-and-test: completed/success\n\
+  clippy: completed/success\n\
+  integration: completed/failure\n\
+\n\
+-- body --\n\
+Adds DMA-backed transfers to the {repo} i2c driver.\n\
+\n\
+- new descriptor ring in drivers/i2c/dma.c\n\
+- falls back to PIO when no channel is free\n\
+- part of changeset FEAT-42\n\
+\n\
+url: https://github.com/acme/{repo}/pull/{number}\n"
+        ))
+    }
+
+    fn ci_detail(&mut self, repo: &str, run_id: u64) -> std::io::Result<String> {
+        Ok(format!(
+            "build-and-test — completed/success\n\
+branch release/6.1  event push  @ a1c9f4e\n\
+\n\
+-- jobs --\n\
+  build: completed/success\n\
+    - checkout: success\n\
+    - configure: success\n\
+    - compile: success\n\
+  test: completed/success\n\
+    - checkout: success\n\
+    - unit: success\n\
+    - integration: success\n\
+  lint: completed/success\n\
+    - clippy: success\n\
+    - fmt: success\n\
+\n\
+url: https://github.com/acme/{repo}/actions/runs/{run_id}\n"
         ))
     }
 }
