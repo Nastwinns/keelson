@@ -1,6 +1,6 @@
 # Maintainer: Jean Balin <pros.balin@gmail.com>
 pkgname=hawser-bin
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="Reproducible multi-repo stacks + cross-repo PR/MR orchestration, with a k9s-style TUI (haw)"
 arch=('x86_64' 'aarch64')
@@ -11,8 +11,8 @@ provides=('hawser' 'haw')
 conflicts=('hawser' 'haw')
 source_x86_64=("$pkgname-$pkgver-x86_64.tar.gz::https://github.com/Nastwinns/hawser/releases/download/v$pkgver/haw-$pkgver-x86_64-unknown-linux-gnu.tar.gz")
 source_aarch64=("$pkgname-$pkgver-aarch64.tar.gz::https://github.com/Nastwinns/hawser/releases/download/v$pkgver/haw-$pkgver-aarch64-unknown-linux-gnu.tar.gz")
-sha256sums_x86_64=('4e0c41163f562bc9df6cde51e557f1d1f43742dc8336e0e3a8b71e234f094622')
-sha256sums_aarch64=('be9b2f7133ffeacb15ff071e4514d502b39216a607e9e2e9903ffa094c3a5555')
+sha256sums_x86_64=('7b0f5a01080321d344525010db5028f3f1b9c4b30a6532387fcba47804b84c76')
+sha256sums_aarch64=('81859d3415d078deeac4b722f94cd49a31ea2df83e2c52f5de99ed4558e99c40')
 
 package() {
     install -Dm755 "$srcdir/haw" "$pkgdir/usr/bin/haw"

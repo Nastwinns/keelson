@@ -75,10 +75,10 @@ Each GitHub Release ships a `.deb` and `.rpm` for x86_64 Linux (gnu):
 
 ```bash
 # Debian/Ubuntu
-curl -sSLO https://github.com/Nastwinns/hawser/releases/latest/download/hawser_0.1.1-1_amd64.deb
-sudo dpkg -i hawser_0.1.1-1_amd64.deb
+curl -sSLO https://github.com/Nastwinns/hawser/releases/latest/download/hawser_0.1.2-1_amd64.deb
+sudo dpkg -i hawser_0.1.2-1_amd64.deb
 # Fedora/RHEL
-sudo rpm -i https://github.com/Nastwinns/hawser/releases/latest/download/hawser-0.1.1-1.x86_64.rpm
+sudo rpm -i https://github.com/Nastwinns/hawser/releases/latest/download/hawser-0.1.2-1.x86_64.rpm
 ```
 
 ## Static musl binary (Linux, zero-dependency, air-gap friendly)
@@ -88,7 +88,7 @@ no runtime — so it runs identically on any Linux host, drops into minimal cont
 and installs cleanly on air-gapped machines as a single file.
 
 ```bash
-curl -sSL https://github.com/Nastwinns/hawser/releases/download/v0.1.0/haw-0.1.0-x86_64-unknown-linux-musl.tar.gz \
+curl -sSL https://github.com/Nastwinns/hawser/releases/download/v0.1.2/haw-0.1.2-x86_64-unknown-linux-musl.tar.gz \
   | tar xz && sudo install haw /usr/local/bin/
 ```
 
