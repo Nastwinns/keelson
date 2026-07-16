@@ -794,7 +794,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "haw-artifact"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "haw-compliance"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "haw-plugin",
  "serde",
@@ -812,7 +812,7 @@ dependencies = [
 
 [[package]]
 name = "haw-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "indexmap",
  "quick-xml",
@@ -827,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "haw-forge"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "haw-core",
  "octocrab",
@@ -840,7 +840,7 @@ dependencies = [
 
 [[package]]
 name = "haw-git"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "directories",
  "haw-core",
@@ -849,7 +849,7 @@ dependencies = [
 
 [[package]]
 name = "haw-git-gate"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "haw-merge"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "tempfile",
@@ -868,7 +868,7 @@ dependencies = [
 
 [[package]]
 name = "haw-plugin"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "haw-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "haw-core",
  "nucleo-matcher",
@@ -885,7 +885,7 @@ dependencies = [
 
 [[package]]
 name = "hawser"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3028,7 +3028,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
 ]

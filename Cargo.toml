@@ -3,19 +3,19 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Nastwinns/hawser"
 
 [workspace.dependencies]
-haw-core = { path = "crates/haw-core", version = "0.1.0" }
-haw-git = { path = "crates/haw-git", version = "0.1.0" }
-haw-forge = { path = "crates/haw-forge", version = "0.1.0" }
-haw-merge = { path = "crates/haw-merge", version = "0.1.0" }
-haw-tui = { path = "crates/haw-tui", version = "0.1.0" }
-haw-plugin = { path = "crates/haw-plugin", version = "0.1.0" }
+haw-core = { path = "crates/haw-core", version = "0.1.1" }
+haw-git = { path = "crates/haw-git", version = "0.1.1" }
+haw-forge = { path = "crates/haw-forge", version = "0.1.1" }
+haw-merge = { path = "crates/haw-merge", version = "0.1.1" }
+haw-tui = { path = "crates/haw-tui", version = "0.1.1" }
+haw-plugin = { path = "crates/haw-plugin", version = "0.1.1" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
