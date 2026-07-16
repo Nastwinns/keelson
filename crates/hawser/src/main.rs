@@ -2395,6 +2395,24 @@ impl haw_tui::Controller for CliController {
         }
     }
 
+    fn pr_merge(&mut self, repo: &str, number: u64) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let (forge, url) = forge_for_repo(&ws, repo)?;
+        forge
+            .merge_pr(&url, number)
+            .map_err(std::io::Error::other)?;
+        Ok(format!("merged {repo}#{number}"))
+    }
+
+    fn pr_approve(&mut self, repo: &str, number: u64) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let (forge, url) = forge_for_repo(&ws, repo)?;
+        forge
+            .approve_pr(&url, number)
+            .map_err(std::io::Error::other)?;
+        Ok(format!("approved {repo}#{number}"))
+    }
+
     fn merge_cleanup(&mut self, repo: &str) -> std::io::Result<String> {
         let ws = self.workspace()?;
         let (name, path) = merge_repo(&ws, Some(repo)).map_err(std::io::Error::other)?;
@@ -2917,6 +2935,14 @@ impl haw_tui::Controller for DemoController {
 
     fn change_land(&mut self, id: &str) -> std::io::Result<String> {
         Ok(format!("landed `{id}` (3 repos)"))
+    }
+
+    fn pr_merge(&mut self, repo: &str, number: u64) -> std::io::Result<String> {
+        Ok(format!("merged {repo}#{number}"))
+    }
+
+    fn pr_approve(&mut self, repo: &str, number: u64) -> std::io::Result<String> {
+        Ok(format!("approved {repo}#{number}"))
     }
 
     fn merge_cleanup(&mut self, repo: &str) -> std::io::Result<String> {

@@ -121,6 +121,8 @@ pub trait Forge {
     fn open_pr(&self, repo_url: &str, spec: &PrSpec) -> Result<PrHandle, ForgeError>;
     fn pr_status(&self, repo_url: &str, number: u64) -> Result<PrStatus, ForgeError>;
     fn merge_pr(&self, repo_url: &str, number: u64) -> Result<(), ForgeError>;
+    /// Approve the PR/MR on its forge (GitHub review event / GitLab approve).
+    fn approve_pr(&self, repo_url: &str, number: u64) -> Result<(), ForgeError>;
     /// Rewrite the PR/MR description (used for cross-linking a changeset).
     fn update_pr_body(&self, repo_url: &str, number: u64, body: &str) -> Result<(), ForgeError>;
     /// Every open PR/MR on the repo, capped at [`OPEN_PRS_LIMIT`] (fleet-wide

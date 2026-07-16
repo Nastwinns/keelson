@@ -163,6 +163,17 @@ impl Forge for GitHub {
         Ok(())
     }
 
+    fn approve_pr(&self, repo_url: &str, number: u64) -> Result<(), ForgeError> {
+        let (host, path) = self.split(repo_url)?;
+        self.send(
+            &host,
+            "POST",
+            &format!("/repos/{path}/pulls/{number}/reviews"),
+            &json!({ "event": "APPROVE" }),
+        )?;
+        Ok(())
+    }
+
     fn update_pr_body(&self, repo_url: &str, number: u64, body: &str) -> Result<(), ForgeError> {
         let (host, path) = self.split(repo_url)?;
         self.send(

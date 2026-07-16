@@ -62,6 +62,7 @@ impl GitBackend for FakeGit {
 struct Journal {
     opened: Vec<String>,
     merged: Vec<String>,
+    approved: Vec<String>,
     bodies: Vec<(String, String)>,
 }
 
@@ -106,6 +107,14 @@ impl Forge for FakeForge {
             .lock()
             .unwrap()
             .merged
+            .push(repo_url.to_string());
+        Ok(())
+    }
+    fn approve_pr(&self, repo_url: &str, _number: u64) -> Result<(), ForgeError> {
+        self.journal
+            .lock()
+            .unwrap()
+            .approved
             .push(repo_url.to_string());
         Ok(())
     }

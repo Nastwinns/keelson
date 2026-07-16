@@ -174,6 +174,10 @@ pub trait Controller: Send {
     fn change_start(&mut self, id: &str) -> io::Result<String>;
     fn change_request(&mut self, id: &str, only: Option<Vec<String>>) -> io::Result<String>;
     fn change_land(&mut self, id: &str) -> io::Result<String>;
+    /// Merge one open PR/MR on its forge (fleet PR view / PR drill-in).
+    fn pr_merge(&mut self, repo: &str, number: u64) -> io::Result<String>;
+    /// Approve one open PR/MR on its forge (fleet PR view / PR drill-in).
+    fn pr_approve(&mut self, repo: &str, number: u64) -> io::Result<String>;
     /// Seal a fully-resolved merge plan for `repo` (see `haw merge cleanup`).
     fn merge_cleanup(&mut self, repo: &str) -> io::Result<String>;
     /// Abort a planned merge for `repo` (see `haw merge abort`).
@@ -239,6 +243,8 @@ enum ActionKind {
     ChangeStart(String),
     ChangeRequest(String, Option<Vec<String>>),
     ChangeLand(String),
+    MergePr(String, u64),
+    ApprovePr(String, u64),
     MergeCleanup(String),
     MergeAbort(String),
 }
@@ -288,6 +294,9 @@ struct App {
     detail_title: String,
     /// Scroll offset for the shared detail view.
     detail_scroll: u16,
+    /// The PR currently drilled into (`repo`, `number`, `title`), so the
+    /// PR detail view can merge/approve it; `None` outside a PR drill-in.
+    detail_pr: Option<(String, u64, String)>,
 }
 
 /// Case-insensitive substring match; an empty needle matches everything.
@@ -435,6 +444,21 @@ impl App {
         }
     }
 
+    /// The PR to act on (merge/approve): the cursor row in the `Prs` list, or
+    /// the drilled-in PR in `PrDetail`. `(repo, number, title)`.
+    fn current_pr(&self) -> Option<(String, u64, String)> {
+        match self.view {
+            View::Prs => {
+                let index = self.cursor.selected()?;
+                self.pr_rows()
+                    .get(index)
+                    .map(|p| (p.repo.clone(), p.number, p.title.clone()))
+            }
+            View::PrDetail => self.detail_pr.clone(),
+            _ => None,
+        }
+    }
+
     fn repo_path(&self, repo: &str) -> Option<PathBuf> {
         self.snapshot
             .paths
@@ -531,6 +555,8 @@ fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: 
                         ActionKind::ChangeStart(id) => controller.change_start(&id),
                         ActionKind::ChangeRequest(id, only) => controller.change_request(&id, only),
                         ActionKind::ChangeLand(id) => controller.change_land(&id),
+                        ActionKind::MergePr(repo, number) => controller.pr_merge(&repo, number),
+                        ActionKind::ApprovePr(repo, number) => controller.pr_approve(&repo, number),
                         ActionKind::MergeCleanup(repo) => controller.merge_cleanup(&repo),
                         ActionKind::MergeAbort(repo) => controller.merge_abort(&repo),
                     };
@@ -604,7 +630,9 @@ fn open_repo_detail(app: &mut App, jobs: &Sender<Job>, repo: &str) {
 }
 
 /// Navigate into a PR/MR's drill-in detail view and fetch its report.
-fn open_pr_detail(app: &mut App, jobs: &Sender<Job>, repo: &str, number: u64) {
+/// `title` seeds `detail_pr` so the view can merge/approve the current PR.
+fn open_pr_detail(app: &mut App, jobs: &Sender<Job>, repo: &str, number: u64, title: &str) {
+    app.detail_pr = Some((repo.to_string(), number, title.to_string()));
     open_detail(
         app,
         jobs,
@@ -677,6 +705,16 @@ fn open_in_browser(url: &str) -> io::Result<()> {
 enum Confirm {
     Land(String),
     Request(String, Option<Vec<String>>),
+    MergePr {
+        repo: String,
+        number: u64,
+        title: String,
+    },
+    ApprovePr {
+        repo: String,
+        number: u64,
+        title: String,
+    },
     MergeCleanup(String),
 }
 
@@ -797,6 +835,7 @@ fn event_loop(
         detail_text: None,
         detail_title: String::new(),
         detail_scroll: 0,
+        detail_pr: None,
     };
     app.cursor.select(Some(0));
     request_refresh(&mut app, jobs);
@@ -905,7 +944,17 @@ fn event_loop(
                         Ok(message) => app.message = message,
                         Err(err) => app.message = format!("{label} failed: {err}"),
                     }
-                    request_refresh(&mut app, jobs);
+                    // A merge/approve changes the fleet PR list — re-fetch it so a
+                    // merged PR disappears and approvals show, when we're on it.
+                    if (label == "merge PR" || label == "approve PR")
+                        && matches!(app.view, View::Prs | View::PrDetail)
+                        && app.busy.is_none()
+                    {
+                        app.busy = Some("PR/MRs");
+                        let _ = jobs.send(Job::FleetPrs);
+                    } else {
+                        request_refresh(&mut app, jobs);
+                    }
                     last_refresh = Instant::now();
                 }
             }
@@ -976,6 +1025,24 @@ fn event_loop(
                             jobs,
                             "change request",
                             ActionKind::ChangeRequest(id, only),
+                        );
+                    }
+                    Confirm::MergePr { repo, number, .. } => {
+                        app.message = format!("→ haw merge PR {repo}#{number}");
+                        dispatch(
+                            &mut app,
+                            jobs,
+                            "merge PR",
+                            ActionKind::MergePr(repo, number),
+                        );
+                    }
+                    Confirm::ApprovePr { repo, number, .. } => {
+                        app.message = format!("→ haw approve PR {repo}#{number}");
+                        dispatch(
+                            &mut app,
+                            jobs,
+                            "approve PR",
+                            ActionKind::ApprovePr(repo, number),
                         );
                     }
                     Confirm::MergeCleanup(repo) => {
@@ -1126,12 +1193,12 @@ fn event_loop(
                     }
                 }
                 View::Prs => {
-                    if let Some((repo, number)) = app
+                    if let Some((repo, number, title)) = app
                         .pr_rows()
                         .get(selected)
-                        .map(|p| (p.repo.clone(), p.number))
+                        .map(|p| (p.repo.clone(), p.number, p.title.clone()))
                     {
-                        open_pr_detail(&mut app, jobs, &repo, number);
+                        open_pr_detail(&mut app, jobs, &repo, number, &title);
                     }
                 }
                 View::Ci => {
@@ -1212,6 +1279,30 @@ fn event_loop(
                     app.pending_confirm = Some(Confirm::Land(id));
                 }
             }
+            KeyCode::Char('M') if app.view == View::Prs || app.view == View::PrDetail => {
+                match app.current_pr() {
+                    Some((repo, number, title)) => {
+                        app.pending_confirm = Some(Confirm::MergePr {
+                            repo,
+                            number,
+                            title,
+                        });
+                    }
+                    None => app.message = "merge: put the cursor on a PR row".to_string(),
+                }
+            }
+            KeyCode::Char('A') if app.view == View::Prs || app.view == View::PrDetail => {
+                match app.current_pr() {
+                    Some((repo, number, title)) => {
+                        app.pending_confirm = Some(Confirm::ApprovePr {
+                            repo,
+                            number,
+                            title,
+                        });
+                    }
+                    None => app.message = "approve: put the cursor on a PR row".to_string(),
+                }
+            }
             _ => {}
         }
     }
@@ -1290,6 +1381,8 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
         View::Tree => &[("b", "back"), ("q", "quit")],
         View::Prs => &[
             ("enter", "detail"),
+            ("M", "merge"),
+            ("A", "approve"),
             ("o", "open in browser"),
             ("m", "refetch"),
             ("i", "CI runs"),
@@ -1313,9 +1406,14 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("/", "filter"),
             ("?", "help"),
         ],
-        View::RepoDetail | View::PrDetail | View::CiDetail => {
-            &[("j/k", "scroll"), ("b", "back"), ("q", "quit")]
-        }
+        View::PrDetail => &[
+            ("j/k", "scroll"),
+            ("M", "merge"),
+            ("A", "approve"),
+            ("b", "back"),
+            ("q", "quit"),
+        ],
+        View::RepoDetail | View::CiDetail => &[("j/k", "scroll"), ("b", "back"), ("q", "quit")],
     }
 }
 
@@ -1413,6 +1511,24 @@ fn draw_confirm(frame: &mut Frame, confirm: &Confirm) {
                 ),
                 None => "open PR/MRs for every repo in the changeset".to_string(),
             },
+        ),
+        Confirm::MergePr {
+            repo,
+            number,
+            title,
+        } => (
+            format!("haw merge PR #{number} ({repo})"),
+            "this reaches the network:",
+            format!("merge the PR/MR on its forge — {title}"),
+        ),
+        Confirm::ApprovePr {
+            repo,
+            number,
+            title,
+        } => (
+            format!("haw approve PR #{number} ({repo})"),
+            "this reaches the network:",
+            format!("approve the PR/MR on its forge — {title}"),
         ),
         Confirm::MergeCleanup(repo) => (
             format!("haw merge cleanup --repo {repo}"),
@@ -2573,6 +2689,7 @@ fn draw_help(frame: &mut Frame) {
         help_entry("v", "governance — plugins, artifacts, findings"),
         help_entry("enter", "drill into a PR/MR or CI run (scrollable)"),
         help_entry("o", "open the row's PR / run / artifact"),
+        help_entry("M / A", "merge / approve the PR/MR (asks y/n)"),
         Line::raw(""),
         help_section("changeset"),
         help_entry("n", "new · space select repos"),
@@ -2661,6 +2778,7 @@ mod tests {
             detail_text: None,
             detail_title: "detail".to_string(),
             detail_scroll: 0,
+            detail_pr: None,
         }
     }
 
@@ -2795,6 +2913,7 @@ mod tests {
             "p" | "l" => matches!(view, View::Fleet | View::Stacks),
             "n" => matches!(view, View::Changesets | View::Changeset),
             "R" | "L" => view == View::Changeset,
+            "M" | "A" => matches!(view, View::Prs | View::PrDetail),
             "o" => matches!(view, View::Prs | View::Ci | View::Governance),
             _ => false,
         }
@@ -2952,6 +3071,60 @@ mod tests {
         assert_eq!(app.ci_rows().len(), 1);
         app.filter = "build".to_string();
         assert_eq!(app.ci_rows().len(), 1);
+    }
+
+    #[test]
+    fn current_pr_follows_cursor_and_drill_in() {
+        let mut app = fleet_app();
+        app.prs = Some(vec![pr("kernel", "fix boot"), pr("hal", "add driver")]);
+        // Fleet list: the cursor row.
+        assert_eq!(app.current_pr(), None);
+        app.view = View::Prs;
+        app.cursor.select(Some(1));
+        assert_eq!(
+            app.current_pr(),
+            Some(("hal".to_string(), 1, "add driver".to_string()))
+        );
+        // Drill-in: the stored PR, regardless of cursor.
+        app.view = View::PrDetail;
+        assert_eq!(app.current_pr(), None);
+        app.detail_pr = Some(("kernel".to_string(), 42, "fix boot".to_string()));
+        assert_eq!(
+            app.current_pr(),
+            Some(("kernel".to_string(), 42, "fix boot".to_string()))
+        );
+    }
+
+    #[test]
+    fn merge_and_approve_pr_dispatch_the_right_actions() {
+        let mut app = fleet_app();
+        let (tx, rx) = channel();
+        dispatch(
+            &mut app,
+            &tx,
+            "merge PR",
+            ActionKind::MergePr("kernel".to_string(), 7),
+        );
+        app.busy = None;
+        dispatch(
+            &mut app,
+            &tx,
+            "approve PR",
+            ActionKind::ApprovePr("kernel".to_string(), 7),
+        );
+        assert_eq!(drain(&rx), vec!["merge PR", "approve PR"]);
+    }
+
+    #[test]
+    fn open_pr_detail_stores_the_current_pr() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        open_pr_detail(&mut app, &tx, "kernel", 7, "fix boot");
+        assert_eq!(app.view, View::PrDetail);
+        assert_eq!(
+            app.detail_pr,
+            Some(("kernel".to_string(), 7, "fix boot".to_string()))
+        );
     }
 
     #[test]

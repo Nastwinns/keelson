@@ -128,6 +128,16 @@ impl Forge for GitLab {
         Ok(())
     }
 
+    fn approve_pr(&self, repo_url: &str, number: u64) -> Result<(), ForgeError> {
+        let api = self.project_api(repo_url)?;
+        self.call(
+            Method::POST,
+            &format!("{api}/merge_requests/{number}/approve"),
+            Some(json!({})),
+        )?;
+        Ok(())
+    }
+
     fn update_pr_body(&self, repo_url: &str, number: u64, body: &str) -> Result<(), ForgeError> {
         let api = self.project_api(repo_url)?;
         self.call(
