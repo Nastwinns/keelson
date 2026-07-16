@@ -239,6 +239,84 @@ mystack/
 Sharing objects across stacks on one machine is opt-in via git's native `alternates`
 (`git clone --reference`, enabled by `haw sync --shared`) — a text file, not a symlink.
 
+## Build & test the fleet
+
+`haw` stays build-system-agnostic: each repo declares the shell command to build or test
+it, and `haw` runs them across the fleet in parallel. Declare them in the manifest:
+
+```toml
+[repo.kernel]
+remote = "internal"
+repo   = "kernel.git"
+rev    = "v6.1.2"
+build  = "make -j$(nproc)"        # `haw build` runs this in kernel/
+test   = "ctest --output-on-failure"
+
+[repo.app-mqtt]
+url    = "git@github.com:acme/app-mqtt.git"
+rev    = "release/2.x"
+build  = "cargo build --release"  # any toolchain — haw only shells out
+test   = "cargo test"
+```
+
+**Locally** — run every declared command in parallel, filter by group, cap concurrency:
+
+```bash
+haw build                     # every repo's `build =`, in parallel
+haw test                      # every repo's `test =`
+haw build --group firmware    # only firmware-grouped repos
+haw test  -j 4                # at most 4 at a time
+```
+
+Repos without the command (or not cloned) are skipped. Pre/post hooks
+(`pre-build`/`post-build`, `pre-test`/`post-test`) fire around the run. `haw build` exits
+**non-zero if any repo fails** — so it doubles as a CI step.
+
+**In CI/CD** — the pipeline is always the same three moves: `sync` to the locked SHAs,
+`verify` the tree matches the lock (a drift gate — exit 3), then `build`/`test`.
+
+<details>
+<summary><b>GitHub Actions</b></summary>
+
+```yaml
+jobs:
+  fleet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4          # the manifest repo (haw.toml + haw.lock)
+      - run: cargo install hawser          # or download the signed musl binary
+      - run: haw sync --filter=blob:none   # partial clone → fast on large fleets
+      - run: haw verify                    # exit 3 if the tree drifts from haw.lock
+      - run: haw build
+      - run: haw test
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # only if a step hits the forge API
+```
+
+</details>
+
+<details>
+<summary><b>GitLab CI</b></summary>
+
+```yaml
+fleet:
+  image: rust:latest
+  script:
+    - cargo install hawser
+    - haw sync --filter=blob:none
+    - haw verify            # drift gate
+    - haw build
+    - haw test
+  variables:
+    GITLAB_TOKEN: $CI_JOB_TOKEN
+```
+
+</details>
+
+On a big fleet, pair `haw sync --filter=blob:none` (partial clone — all history, lazy
+blobs) with a cache of the shared object store to keep CI clones fast without breaking
+the pinned SHAs.
+
 ## Secrets & tokens
 
 `haw` never stores a credential. It reads forge tokens from the environment at call
