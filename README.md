@@ -25,7 +25,7 @@ cross-repo PR, review, and CI run from one keyboard cockpit. One binary. In Rust
 
 **`haw` is a multi-repo platform for teams that ship a product spread across many Git
 repositories.** It composes them into a reproducible stack, orchestrates work across the
-whole fleet, drives cross-repo PRs on GitHub and GitLab, and ships with supply-chain
+whole fleet, drives cross-repo PRs on GitHub, GitLab, and Bitbucket, and ships with supply-chain
 governance built in — all from one static binary and a k9s-style cockpit.
 
 It's not a git wrapper. It's the layer above git: the manifest, the lockfile, the
@@ -57,7 +57,7 @@ Five capabilities, one binary — each solving a slice of the multi-repo problem
 ### 🔀 Collaborate — cross-repo, cross-forge change flow
 
 - **Changesets.** One feature = one branch across N repos, with cross-linked PR/MRs on
-  GitHub **and** GitLab, an aggregated review + CI status, and `land` to merge them in
+  GitHub, GitLab, **and** Bitbucket, an aggregated review + CI status, and `land` to merge them in
   dependency order.
 - **Collaborative merge.** Slice a big merge per-directory, resolve each unit in
   parallel, then seal — or abort cleanly.
@@ -110,7 +110,7 @@ Feature by feature (✅ built-in · ~ partial/manual · ✗ not offered):
 | Parallel build / test / run | ✅ | ✅ | ~ | ✅ | ✅ | ✗ |
 | Cross-repo grep | ✅ | ~ | ✗ | ✗ | ✗ | ✗ |
 | Shallow / partial clone | ✅ | ✅ | ✅ | ✗ | ✗ | ✗ |
-| Cross-forge PR/MR (GitHub + GitLab) | ✅ | ✗ | ✗ | ✗ | ✗ | ~ |
+| Cross-forge PR/MR (GitHub + GitLab + Bitbucket) | ✅ | ✗ | ✗ | ✗ | ✗ | ~ |
 | Land PRs in dependency order | ✅ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | k9s-style TUI cockpit | ✅ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | SBOM + provenance + signing | ✅ | ✗ | ✗ | ✗ | ✗ | ✗ |
@@ -345,6 +345,7 @@ stays with your existing SSH keys or git credential helper — `haw` doesn't tou
 |-------|--------------------------------|
 | GitHub | `HAW_GITHUB_TOKEN` → `GITHUB_TOKEN` → `GH_TOKEN` → `HAW_FORGE_TOKEN` |
 | GitLab | `HAW_GITLAB_TOKEN` → `GITLAB_TOKEN` → `HAW_FORGE_TOKEN` |
+| Bitbucket | `HAW_BITBUCKET_TOKEN` → `BITBUCKET_TOKEN` → `HAW_FORGE_TOKEN` (+ `BITBUCKET_USER` for Basic auth) |
 
 ```bash
 export GITHUB_TOKEN=$(gh auth token)     # or any PAT, in your shell / CI secret store
@@ -435,6 +436,7 @@ haw                              Open the TUI cockpit (no subcommand)
 │   ├── resolve <slice>          Resolve one slice (--take ours|theirs, or by hand)
 │   └── status / cleanup / abort Track, seal, or undo the planned merge
 │
+├── publish <files> --to <t>    Upload fleet artifacts to Nexus/Artifactory/GitLab/Bitbucket
 ├── import --from <west.yml|default.xml>   Convert a west/repo manifest to haw.toml
 └── dash                         Open the fleet dashboard (same as bare `haw`)
 ```
