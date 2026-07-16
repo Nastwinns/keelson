@@ -68,6 +68,43 @@ impl GitHub {
             .block_on(call)
             .map_err(|err| ForgeError::Api(format!("{method} {route}: {err}")))
     }
+
+    /// Raw-text GET against the GitHub REST API. `octocrab`'s helpers decode
+    /// JSON, but diffs and job logs are plain text (the latter served via a 302
+    /// redirect), so this uses a small blocking `reqwest` call with a custom
+    /// `Accept` header, following redirects. `route` is API-relative (e.g.
+    /// `/repos/o/r/pulls/1`). Returns `Ok(None)` on 404 (no diff/expired logs).
+    fn get_text(
+        &self,
+        host: &str,
+        route: &str,
+        accept: &str,
+    ) -> Result<Option<String>, ForgeError> {
+        let url = format!("{}{route}", api_base(host));
+        let mut request = reqwest::blocking::Client::new()
+            .get(&url)
+            .header(reqwest::header::ACCEPT, accept)
+            .header(reqwest::header::USER_AGENT, "haw")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+        if !self.token.is_empty() {
+            request = request.bearer_auth(&self.token);
+        }
+        let response = request
+            .send()
+            .map_err(|err| ForgeError::Api(format!("GET {url}: {err}")))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().unwrap_or_default();
+            return Err(ForgeError::Api(format!("GET {url} -> {status}: {detail}")));
+        }
+        response
+            .text()
+            .map(Some)
+            .map_err(|err| ForgeError::Api(format!("reading {url}: {err}")))
+    }
 }
 
 /// REST base URL for a GitHub host.
@@ -364,6 +401,67 @@ impl Forge for GitHub {
 
         out.push_str(&format!("\nurl: {html_url}\n"));
         Ok(out)
+    }
+
+    fn pr_diff(&self, repo_url: &str, number: u64) -> Result<String, ForgeError> {
+        let (host, path) = self.split(repo_url)?;
+        // The pulls endpoint returns the unified diff verbatim when asked for the
+        // `.diff` media type.
+        match self.get_text(
+            &host,
+            &format!("/repos/{path}/pulls/{number}"),
+            "application/vnd.github.v3.diff",
+        )? {
+            Some(diff) if !diff.trim().is_empty() => {
+                Ok(crate::cap_lines(&diff, crate::DIFF_LINE_CAP))
+            }
+            Some(_) => Ok("(empty diff)\n".to_string()),
+            None => Ok(format!("(no diff for #{number} — not found)\n")),
+        }
+    }
+
+    fn ci_logs(&self, repo_url: &str, run_id: u64) -> Result<String, ForgeError> {
+        let (host, path) = self.split(repo_url)?;
+        let jobs = self.get(&host, &format!("/repos/{path}/actions/runs/{run_id}/jobs"))?;
+        let list = jobs["jobs"].as_array().cloned().unwrap_or_default();
+        if list.is_empty() {
+            return Ok(format!("(no jobs for run #{run_id})\n"));
+        }
+        // Failed jobs are the interesting ones — surface them first, then fill in
+        // the rest up to a small per-run cap on the number of jobs fetched.
+        let mut ordered: Vec<&Value> = list.iter().collect();
+        ordered.sort_by_key(|job| u8::from(job["conclusion"].as_str() != Some("failure")));
+
+        let mut out = String::new();
+        for job in ordered.into_iter().take(6) {
+            let job_id = job["id"].as_u64().unwrap_or_default();
+            let job_name = job["name"].as_str().unwrap_or("?");
+            let conclusion = job["conclusion"].as_str().unwrap_or("—");
+            out.push_str(&format!("== {job_name} ({conclusion}) ==\n"));
+            match self.get_text(
+                &host,
+                &format!("/repos/{path}/actions/jobs/{job_id}/logs"),
+                "text/plain",
+            ) {
+                Ok(Some(log)) if !log.trim().is_empty() => {
+                    // Keep the tail of each job (where failures land); cap per job
+                    // so no single job floods the whole report.
+                    let lines: Vec<&str> = log.lines().collect();
+                    let tail = lines.len().saturating_sub(200);
+                    if tail > 0 {
+                        out.push_str(&format!("… ({tail} earlier line(s) omitted)\n"));
+                    }
+                    for line in &lines[tail..] {
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                }
+                Ok(_) => out.push_str("  (logs unavailable — expired or empty)\n"),
+                Err(err) => out.push_str(&format!("  (logs unavailable: {err})\n")),
+            }
+            out.push('\n');
+        }
+        Ok(crate::cap_lines(&out, crate::LOG_LINE_CAP))
     }
 }
 

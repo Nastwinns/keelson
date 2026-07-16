@@ -152,6 +152,12 @@ impl Forge for FakeForge {
     fn ci_run_detail(&self, _repo_url: &str, _run_id: u64) -> Result<String, ForgeError> {
         Ok(String::new())
     }
+    fn pr_diff(&self, _repo_url: &str, _number: u64) -> Result<String, ForgeError> {
+        Ok(String::new())
+    }
+    fn ci_logs(&self, _repo_url: &str, _run_id: u64) -> Result<String, ForgeError> {
+        Ok(String::new())
+    }
 }
 
 struct FakeFactory {

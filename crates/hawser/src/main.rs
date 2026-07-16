@@ -2668,6 +2668,18 @@ impl haw_tui::Controller for CliController {
             .ci_run_detail(&url, run_id)
             .map_err(std::io::Error::other)
     }
+
+    fn pr_diff(&mut self, repo: &str, number: u64) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let (forge, url) = forge_for_repo(&ws, repo)?;
+        forge.pr_diff(&url, number).map_err(std::io::Error::other)
+    }
+
+    fn ci_logs(&mut self, repo: &str, run_id: u64) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let (forge, url) = forge_for_repo(&ws, repo)?;
+        forge.ci_logs(&url, run_id).map_err(std::io::Error::other)
+    }
 }
 
 /// Resolve a repo's clone URL and a ready-to-call forge client, honoring the
@@ -3322,6 +3334,50 @@ branch release/6.1  event push  @ a1c9f4e\n\
     - fmt: success\n\
 \n\
 url: https://github.com/acme/{repo}/actions/runs/{run_id}\n"
+        ))
+    }
+
+    fn pr_diff(&mut self, repo: &str, number: u64) -> std::io::Result<String> {
+        Ok(format!(
+            "diff --git a/drivers/i2c/dma.c b/drivers/i2c/dma.c\n\
+new file mode 100644\n\
+--- /dev/null\n\
++++ b/drivers/i2c/dma.c\n\
+@@ -0,0 +1,8 @@\n\
++// DMA-backed transfers for the {repo} i2c driver (PR #{number})\n\
++#include \"i2c.h\"\n\
++\n\
++int i2c_dma_xfer(struct i2c_bus *bus, struct i2c_msg *msg) {{\n\
++    if (!bus->dma) return i2c_pio_xfer(bus, msg);\n\
++    return dma_submit(bus->dma, msg->buf, msg->len);\n\
++}}\n\
+diff --git a/drivers/i2c/i2c.h b/drivers/i2c/i2c.h\n\
+--- a/drivers/i2c/i2c.h\n\
++++ b/drivers/i2c/i2c.h\n\
+@@ -12,6 +12,7 @@ struct i2c_bus {{\n\
+     int speed_hz;\n\
++    struct dma_chan *dma;\n\
+ }};\n\
++int i2c_dma_xfer(struct i2c_bus *bus, struct i2c_msg *msg);\n"
+        ))
+    }
+
+    fn ci_logs(&mut self, repo: &str, run_id: u64) -> std::io::Result<String> {
+        Ok(format!(
+            "== build (success) ==\n\
+[00:00:01] Checking out {repo}@a1c9f4e\n\
+[00:00:04] cargo build --release\n\
+[00:01:12]    Compiling {repo} v0.1.0\n\
+[00:02:03]     Finished release [optimized] target(s) in 1m 51s\n\
+\n\
+== test (success) ==\n\
+[00:00:02] cargo test --workspace\n\
+[00:00:48] test result: ok. 72 passed; 0 failed\n\
+\n\
+== integration (failure) ==\n\
+[00:00:03] running integration suite\n\
+[00:00:19] FAILED: i2c_dma_roundtrip — expected 8 bytes, got 0\n\
+[00:00:19] error: 1 test failed (run #{run_id})\n"
         ))
     }
 }

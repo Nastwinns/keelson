@@ -137,6 +137,31 @@ pub trait Forge {
     /// A readable, plain-text drill-in report for one CI run/pipeline: header,
     /// jobs, and steps. No ANSI — the caller styles it.
     fn ci_run_detail(&self, repo_url: &str, run_id: u64) -> Result<String, ForgeError>;
+    /// The unified diff for one PR/MR as plain text, capped to a readable length
+    /// (see [`DIFF_LINE_CAP`]). No ANSI — the caller styles it.
+    fn pr_diff(&self, repo_url: &str, number: u64) -> Result<String, ForgeError>;
+    /// The CI run/pipeline's job logs as plain text, concatenated with per-job
+    /// headers and capped to a readable length (see [`LOG_LINE_CAP`]). Returns a
+    /// clear message string (not an error) when logs are unavailable/expired.
+    fn ci_logs(&self, repo_url: &str, run_id: u64) -> Result<String, ForgeError>;
+}
+
+/// Cap on the number of lines a `pr_diff` returns before truncation.
+pub const DIFF_LINE_CAP: usize = 600;
+
+/// Cap on the number of lines a `ci_logs` returns before truncation.
+pub const LOG_LINE_CAP: usize = 800;
+
+/// Truncate `text` to at most `cap` lines, appending a truncation note that
+/// reports how many lines were dropped. A no-op when within the cap.
+pub fn cap_lines(text: &str, cap: usize) -> String {
+    let total = text.lines().count();
+    if total <= cap {
+        return text.to_string();
+    }
+    let mut out: String = text.lines().take(cap).collect::<Vec<_>>().join("\n");
+    out.push_str(&format!("\n… (truncated, {} more line(s))\n", total - cap));
+    out
 }
 
 /// Turns a repo URL into a ready-to-call [`Forge`] client.
@@ -282,7 +307,22 @@ pub fn detect(url: &str) -> ForgeKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{ForgeKind, RepoCoords, detect, repo_coords};
+    use super::{ForgeKind, RepoCoords, cap_lines, detect, repo_coords};
+
+    #[test]
+    fn cap_lines_is_noop_within_cap() {
+        assert_eq!(cap_lines("a\nb\nc", 5), "a\nb\nc");
+        assert_eq!(cap_lines("a\nb\nc", 3), "a\nb\nc");
+    }
+
+    #[test]
+    fn cap_lines_truncates_and_notes_the_remainder() {
+        let text = "l1\nl2\nl3\nl4\nl5";
+        let out = cap_lines(text, 2);
+        assert!(out.starts_with("l1\nl2\n"));
+        assert!(out.contains("truncated, 3 more line(s)"));
+        assert!(!out.contains("l3"));
+    }
 
     #[test]
     fn detects_github() {

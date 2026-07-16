@@ -370,6 +370,10 @@ pub trait Controller: Send {
     fn pr_detail(&mut self, repo: &str, number: u64) -> io::Result<String>;
     /// A plain-text drill-in report for one CI run/pipeline (jobs, steps).
     fn ci_detail(&mut self, repo: &str, run_id: u64) -> io::Result<String>;
+    /// The unified diff for one PR/MR as plain text (scrollable detail view).
+    fn pr_diff(&mut self, repo: &str, number: u64) -> io::Result<String>;
+    /// The CI run/pipeline's job logs as plain text (scrollable detail view).
+    fn ci_logs(&mut self, repo: &str, run_id: u64) -> io::Result<String>;
 }
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -406,6 +410,8 @@ enum Job {
     RepoDetail(String),
     PrDetail(String, u64),
     CiDetail(String, u64),
+    PrDiff(String, u64),
+    CiLogs(String, u64),
     Action(&'static str, ActionKind),
 }
 
@@ -479,6 +485,13 @@ struct App {
     /// The PR currently drilled into (`repo`, `number`, `title`), so the
     /// PR detail view can merge/approve it; `None` outside a PR drill-in.
     detail_pr: Option<(String, u64, String)>,
+    /// The CI run currently drilled into (`repo`, `run_id`, `name`), so the CI
+    /// detail view can open its logs; `None` outside a CI drill-in.
+    detail_ci: Option<(String, u64, String)>,
+    /// Rows visible in the last-drawn table body — the page step for
+    /// PageDown/PageUp/Ctrl-d/Ctrl-u. Updated each frame; defaults to a sane
+    /// fallback before the first draw.
+    page_size: usize,
 }
 
 thread_local! {
@@ -722,6 +735,20 @@ impl App {
             .select(Some(self.cursor.selected().unwrap_or(0).min(last)));
     }
 
+    /// Move the row cursor by roughly one visible page, clamped to the row
+    /// range. `down` picks direction; the step is the last-drawn body height.
+    fn move_page(&mut self, down: bool) {
+        let step = self.page_size.max(1);
+        let last = self.rows_len().saturating_sub(1);
+        let current = self.cursor.selected().unwrap_or(0);
+        let next = if down {
+            current.saturating_add(step).min(last)
+        } else {
+            current.saturating_sub(step)
+        };
+        self.cursor.select(Some(next));
+    }
+
     fn goto_view(&mut self, view: View) {
         if self.view != view {
             self.back.push(self.view);
@@ -851,6 +878,14 @@ fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: 
                     format!("CI {repo} #{run_id}"),
                     Box::new(controller.ci_detail(&repo, run_id)),
                 ),
+                Job::PrDiff(repo, number) => Outcome::Detail(
+                    format!("diff {repo}#{number}"),
+                    Box::new(controller.pr_diff(&repo, number)),
+                ),
+                Job::CiLogs(repo, run_id) => Outcome::Detail(
+                    format!("logs {repo} #{run_id}"),
+                    Box::new(controller.ci_logs(&repo, run_id)),
+                ),
                 Job::Action(label, kind) => {
                     let result = match kind {
                         ActionKind::SyncStack(stack) => controller.sync_stack(&stack),
@@ -957,6 +992,7 @@ fn open_pr_detail(app: &mut App, jobs: &Sender<Job>, repo: &str, number: u64, ti
 
 /// Navigate into a CI run's drill-in detail view and fetch its report.
 fn open_ci_detail(app: &mut App, jobs: &Sender<Job>, repo: &str, run_id: u64, name: &str) {
+    app.detail_ci = Some((repo.to_string(), run_id, name.to_string()));
     open_detail(
         app,
         jobs,
@@ -964,6 +1000,32 @@ fn open_ci_detail(app: &mut App, jobs: &Sender<Job>, repo: &str, run_id: u64, na
         format!("CI {repo} {name}"),
         "CI detail",
         Job::CiDetail(repo.to_string(), run_id),
+    );
+}
+
+/// Navigate into a PR/MR's diff (the "read the code" ask) — the shared
+/// scrollable detail view, titled `diff <repo>#<number>`.
+fn open_pr_diff(app: &mut App, jobs: &Sender<Job>, repo: &str, number: u64) {
+    open_detail(
+        app,
+        jobs,
+        View::RepoDetail,
+        format!("diff {repo}#{number}"),
+        "PR diff",
+        Job::PrDiff(repo.to_string(), number),
+    );
+}
+
+/// Navigate into a CI run's logs — the shared scrollable detail view, titled
+/// `logs <repo> <name>`.
+fn open_ci_logs(app: &mut App, jobs: &Sender<Job>, repo: &str, run_id: u64, name: &str) {
+    open_detail(
+        app,
+        jobs,
+        View::RepoDetail,
+        format!("logs {repo} {name}"),
+        "CI logs",
+        Job::CiLogs(repo.to_string(), run_id),
     );
 }
 
@@ -1177,6 +1239,8 @@ fn event_loop(
         detail_title: String::new(),
         detail_scroll: 0,
         detail_pr: None,
+        detail_ci: None,
+        page_size: 10,
     };
     app.cursor.select(Some(0));
     request_refresh(&mut app, jobs);
@@ -1488,6 +1552,14 @@ fn event_loop(
             KeyCode::PageUp if app.is_detail_view() => {
                 app.detail_scroll = app.detail_scroll.saturating_sub(10);
             }
+            KeyCode::PageDown => app.move_page(true),
+            KeyCode::PageUp => app.move_page(false),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.move_page(true);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.move_page(false);
+            }
             KeyCode::Down | KeyCode::Char('j') => {
                 app.cursor
                     .select(Some((selected + 1).min(app.rows_len().saturating_sub(1))));
@@ -1672,6 +1744,29 @@ fn event_loop(
                     None => app.message = "checkout: put the cursor on a PR row".to_string(),
                 }
             }
+            KeyCode::Char('d') if app.view == View::Prs || app.view == View::PrDetail => {
+                match app.current_pr() {
+                    Some((repo, number, _)) => open_pr_diff(&mut app, jobs, &repo, number),
+                    None => app.message = "diff: put the cursor on a PR row".to_string(),
+                }
+            }
+            KeyCode::Char('l') if app.view == View::Ci => {
+                let run = app
+                    .ci_rows()
+                    .get(selected)
+                    .map(|r| (r.repo.clone(), r.id, r.name.clone()));
+                match run {
+                    Some((repo, id, name)) => open_ci_logs(&mut app, jobs, &repo, id, &name),
+                    None => app.message = "logs: put the cursor on a CI row".to_string(),
+                }
+            }
+            KeyCode::Char('l') if app.view == View::CiDetail => match &app.detail_ci {
+                Some((repo, id, name)) => {
+                    let (repo, id, name) = (repo.clone(), *id, name.clone());
+                    open_ci_logs(&mut app, jobs, &repo, id, &name);
+                }
+                None => app.message = "logs: no CI run in view".to_string(),
+            },
             _ => {}
         }
     }
@@ -1729,6 +1824,7 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("t", "tree"),
             ("<>", "sort"),
             (".", "dir"),
+            ("PgUp/PgDn", "page"),
             ("/", "filter"),
             (":", "cmd"),
         ],
@@ -1746,6 +1842,7 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("L", "land"),
             ("n", "new"),
             ("g", "goto"),
+            ("PgUp/PgDn", "page"),
             ("b", "back"),
             ("/", "filter"),
             (":", "cmd"),
@@ -1753,6 +1850,7 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
         View::Tree => &[("b", "back"), ("q", "quit")],
         View::Prs => &[
             ("enter", "detail"),
+            ("d", "diff"),
             ("M", "merge"),
             ("A", "approve"),
             ("C", "checkout"),
@@ -1761,17 +1859,20 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("i", "CI runs"),
             ("<>", "sort"),
             (".", "dir"),
+            ("PgUp/PgDn", "page"),
             ("b", "back"),
             ("/", "filter"),
             ("?", "help"),
         ],
         View::Ci => &[
             ("enter", "detail"),
+            ("l", "logs"),
             ("o", "open in browser"),
             ("i", "refetch"),
             ("m", "PR/MRs"),
             ("<>", "sort"),
             (".", "dir"),
+            ("PgUp/PgDn", "page"),
             ("b", "back"),
             ("/", "filter"),
             ("?", "help"),
@@ -1785,13 +1886,20 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
         ],
         View::PrDetail => &[
             ("j/k", "scroll"),
+            ("d", "diff"),
             ("M", "merge"),
             ("A", "approve"),
             ("C", "checkout"),
             ("b", "back"),
             ("q", "quit"),
         ],
-        View::RepoDetail | View::CiDetail => &[("j/k", "scroll"), ("b", "back"), ("q", "quit")],
+        View::CiDetail => &[
+            ("j/k", "scroll"),
+            ("l", "logs"),
+            ("b", "back"),
+            ("q", "quit"),
+        ],
+        View::RepoDetail => &[("j/k", "scroll"), ("b", "back"), ("q", "quit")],
     }
 }
 
@@ -1805,6 +1913,11 @@ fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Length(1),
         ])
         .split(frame.area());
+
+    // The page step for PageDown/PageUp: the table body height (content area
+    // minus the panel's top/bottom border and the header row). A floor keeps it
+    // useful on tiny terminals.
+    app.page_size = usize::from(zones[1].height).saturating_sub(3).max(1);
 
     draw_header(frame, app, zones[0]);
     match app.view {
@@ -1987,6 +2100,54 @@ fn kv(key: &str, value: Span<'static>) -> Line<'static> {
     ])
 }
 
+/// The width one hint cell occupies: `<key>` in a fixed field plus a
+/// left-padded label field. Both fields are sized to the widest entry so the
+/// cells align into a tidy grid, k9s-style.
+fn hint_cell_widths(hints: &[(&str, &str)]) -> (usize, usize) {
+    let key_w = hints
+        .iter()
+        .map(|(k, _)| k.chars().count() + 2) // +2 for the surrounding <>
+        .max()
+        .unwrap_or(3);
+    let label_w = hints
+        .iter()
+        .map(|(_, l)| l.chars().count())
+        .max()
+        .unwrap_or(6);
+    (key_w, label_w)
+}
+
+/// Lay the key hints out as an aligned grid that fits `width`. Columns are
+/// even and sized to the widest cell; on narrow terminals the grid degrades to
+/// fewer columns (down to one). A blank in each cell keeps `<key> label`
+/// pairs from touching their neighbor.
+fn hint_grid(hints: &[(&'static str, &'static str)], width: u16) -> Vec<Line<'static>> {
+    let (key_w, label_w) = hint_cell_widths(hints);
+    // One extra leading space + one trailing gutter space keeps cells apart.
+    let cell_w = key_w + 1 + label_w + 1;
+    let cols = (usize::from(width).saturating_sub(1) / cell_w.max(1)).max(1);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for row in hints.chunks(cols) {
+        let mut spans = Vec::new();
+        for (key, label) in row {
+            let padded_key = format!("{:<key_w$}", format!("<{key}>"));
+            spans.push(Span::styled(
+                format!(" {padded_key}"),
+                Style::default()
+                    .fg(theme::accent())
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                format!(" {label:<label_w$} "),
+                Style::default().fg(theme::dim()),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -2039,24 +2200,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     ];
     frame.render_widget(Paragraph::new(Text::from(info)), columns[0]);
 
-    let hints = key_hints(app.view);
-    let mut key_lines: Vec<Line> = Vec::new();
-    for pair in hints.chunks(2) {
-        let mut spans = Vec::new();
-        for (key, label) in pair {
-            spans.push(Span::styled(
-                format!("<{key}>"),
-                Style::default()
-                    .fg(theme::accent())
-                    .add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled(
-                format!(" {label:<12}"),
-                Style::default().fg(theme::dim()),
-            ));
-        }
-        key_lines.push(Line::from(spans));
-    }
+    let mut key_lines = hint_grid(key_hints(app.view), columns[1].width);
     key_lines.push(Line::from(vec![
         Span::styled(
             "<q>",
@@ -2092,6 +2236,16 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Text::from(logo)).alignment(Alignment::Right),
         columns[2],
     );
+}
+
+/// A `row N/T` cursor-position suffix for a row-based panel title, so the user
+/// knows where they are in a long list. Empty when there are no rows.
+fn row_indicator(app: &App, total: usize) -> String {
+    if total == 0 {
+        return String::new();
+    }
+    let n = app.cursor.selected().unwrap_or(0).min(total - 1) + 1;
+    format!(" · row {n}/{total}")
 }
 
 fn panel(title: String) -> Block<'static> {
@@ -2305,7 +2459,10 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
         app.sort
             .map(|(col, desc)| ([1usize, 3, 4, 5, 6, 7][col.min(5) as usize], desc)),
     ))
-    .block(panel(format!("fleet({count})")))
+    .block(panel(format!(
+        "fleet({count}){}",
+        row_indicator(app, count)
+    )))
     .row_highlight_style(cursor_style())
     .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
 
@@ -2577,8 +2734,9 @@ fn draw_changeset(frame: &mut Frame, app: &mut App, area: Rect) {
         "", "REPO", "BRANCH", "ON IT", "DIRTY", "HEAD", "FORGE", "PR / MR", "CI",
     ]))
     .block(panel(format!(
-        "change {}",
-        app.changeset.as_deref().unwrap_or_default()
+        "change {}{}",
+        app.changeset.as_deref().unwrap_or_default(),
+        row_indicator(app, app.change_repo_rows().len())
     )))
     .row_highlight_style(cursor_style())
     .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
@@ -2653,7 +2811,10 @@ fn draw_prs(frame: &mut Frame, app: &mut App, area: Rect) {
         app.sort
             .map(|(col, desc)| ([0usize, 2, 3, 4][col.min(3) as usize], desc)),
     ))
-    .block(panel(format!("open PR/MRs({count})")))
+    .block(panel(format!(
+        "open PR/MRs({count}){}",
+        row_indicator(app, count)
+    )))
     .row_highlight_style(cursor_style())
     .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
 
@@ -2723,7 +2884,10 @@ fn draw_ci(frame: &mut Frame, app: &mut App, area: Rect) {
         app.sort
             .map(|(col, desc)| ([0usize, 1, 2, 4][col.min(3) as usize], desc)),
     ))
-    .block(panel(format!("CI runs({count})")))
+    .block(panel(format!(
+        "CI runs({count}){}",
+        row_indicator(app, count)
+    )))
     .row_highlight_style(cursor_style())
     .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
 
@@ -2814,7 +2978,10 @@ fn draw_governance(frame: &mut Frame, app: &mut App, area: Rect) {
         ],
     )
     .header(header_row(&["PLUGIN", "PHASES", "STATUS"]))
-    .block(panel(format!("governance({count})")))
+    .block(panel(format!(
+        "governance({count}){}",
+        row_indicator(app, count)
+    )))
     .row_highlight_style(cursor_style())
     .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
 
@@ -3119,8 +3286,11 @@ fn draw_help(frame: &mut Frame) {
         help_entry("i", "recent CI runs across every repo"),
         help_entry("v", "governance — plugins, artifacts, findings"),
         help_entry("enter", "drill into a PR/MR or CI run (scrollable)"),
+        help_entry("d", "read the PR/MR's diff (scrollable)"),
+        help_entry("l", "read the CI run/pipeline's logs (scrollable)"),
         help_entry("o", "open the row's PR / run / artifact"),
         help_entry("< > .", "sort PR/CI columns (. toggles asc/desc)"),
+        help_entry("PgUp/PgDn", "page through long lists · ctrl-d/u also"),
         help_entry("M / A", "merge / approve the PR/MR (asks y/n)"),
         help_entry("C", "check out the PR/MR branch locally (asks y/n)"),
         Line::raw(""),
@@ -3214,6 +3384,8 @@ mod tests {
             detail_title: "detail".to_string(),
             detail_scroll: 0,
             detail_pr: None,
+            detail_ci: None,
+            page_size: 10,
         }
     }
 
@@ -3345,12 +3517,15 @@ mod tests {
             "t" | "c" | "m" | "i" | "v" | "r" | "g" => true,
             "s" => matches!(view, View::Fleet | View::Stacks),
             "S" => true,
-            "p" | "l" => matches!(view, View::Fleet | View::Stacks),
+            "p" => matches!(view, View::Fleet | View::Stacks),
             "n" => matches!(view, View::Changesets | View::Changeset),
             "R" | "L" => view == View::Changeset,
             "M" | "A" | "C" => matches!(view, View::Prs | View::PrDetail),
+            "d" => matches!(view, View::Prs | View::PrDetail),
+            "l" => matches!(view, View::Fleet | View::Stacks | View::Ci | View::CiDetail),
             "o" => matches!(view, View::Prs | View::Ci | View::Governance),
             "<>" | "." => matches!(view, View::Fleet | View::Prs | View::Ci),
+            "PgUp/PgDn" => matches!(view, View::Fleet | View::Changeset | View::Prs | View::Ci),
             _ => false,
         }
     }
@@ -3884,5 +4059,93 @@ mod tests {
         let (tx, _rx) = channel();
         run_command_bar(&mut app, &tx, "help");
         assert!(app.help);
+    }
+
+    // ---- diff / logs / pagination -----------------------------------------
+
+    #[test]
+    fn open_pr_diff_opens_the_shared_detail_with_a_diff_title() {
+        let mut app = fleet_app();
+        let (tx, rx) = channel();
+        open_pr_diff(&mut app, &tx, "kernel", 7);
+        assert_eq!(app.view, View::RepoDetail);
+        assert_eq!(app.detail_title, "diff kernel#7");
+        assert!(matches!(rx.try_recv(), Ok(Job::PrDiff(repo, 7)) if repo == "kernel"));
+    }
+
+    #[test]
+    fn open_ci_logs_opens_the_shared_detail_with_a_logs_title() {
+        let mut app = fleet_app();
+        let (tx, rx) = channel();
+        open_ci_logs(&mut app, &tx, "hal", 42, "firmware-ci");
+        assert_eq!(app.view, View::RepoDetail);
+        assert_eq!(app.detail_title, "logs hal firmware-ci");
+        assert!(matches!(rx.try_recv(), Ok(Job::CiLogs(repo, 42)) if repo == "hal"));
+    }
+
+    #[test]
+    fn open_ci_detail_records_the_run_for_logs() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        open_ci_detail(&mut app, &tx, "hal", 42, "firmware-ci");
+        assert_eq!(
+            app.detail_ci,
+            Some(("hal".to_string(), 42, "firmware-ci".to_string()))
+        );
+    }
+
+    #[test]
+    fn move_page_steps_by_a_page_and_clamps() {
+        let mut app = fleet_app();
+        app.prs = Some(vec![
+            pr("a", "t"),
+            pr("b", "t"),
+            pr("c", "t"),
+            pr("d", "t"),
+            pr("e", "t"),
+        ]);
+        app.view = View::Prs;
+        app.page_size = 3;
+        app.cursor.select(Some(0));
+        // one page down moves by page_size...
+        app.move_page(true);
+        assert_eq!(app.cursor.selected(), Some(3));
+        // ...and clamps to the last row (5 rows, index 4).
+        app.move_page(true);
+        assert_eq!(app.cursor.selected(), Some(4));
+        // page up steps back and floors at 0.
+        app.move_page(false);
+        assert_eq!(app.cursor.selected(), Some(1));
+        app.move_page(false);
+        assert_eq!(app.cursor.selected(), Some(0));
+    }
+
+    #[test]
+    fn move_page_is_safe_on_empty_lists() {
+        let mut app = fleet_app();
+        app.view = View::Prs;
+        app.prs = Some(Vec::new());
+        app.page_size = 5;
+        app.cursor.select(Some(0));
+        app.move_page(true);
+        assert_eq!(app.cursor.selected(), Some(0));
+    }
+
+    #[test]
+    fn hint_grid_uses_fewer_columns_on_narrow_widths() {
+        let hints: &[(&str, &str)] = &[("a", "one"), ("b", "two"), ("c", "three"), ("d", "four")];
+        // Very narrow: a single column, one line per hint.
+        assert_eq!(hint_grid(hints, 6).len(), 4);
+        // Wide enough for at least two columns: fewer lines than hints.
+        let wide = hint_grid(hints, 120);
+        assert!(wide.len() < 4);
+    }
+
+    #[test]
+    fn row_indicator_shows_position_and_is_empty_when_no_rows() {
+        let mut app = fleet_app();
+        app.cursor.select(Some(1));
+        assert_eq!(row_indicator(&app, 3), " · row 2/3");
+        assert_eq!(row_indicator(&app, 0), "");
     }
 }

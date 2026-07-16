@@ -54,6 +54,29 @@ impl GitLab {
             .json()
             .map_err(|err| ForgeError::Api(format!("invalid JSON from {url}: {err}")))
     }
+
+    /// Raw-text GET (job traces are plain text, not JSON). Returns `Ok(None)`
+    /// on 404 (no trace / expired).
+    fn call_text(&self, url: &str) -> Result<Option<String>, ForgeError> {
+        let response = self
+            .http
+            .get(url)
+            .header("PRIVATE-TOKEN", &self.token)
+            .send()
+            .map_err(|err| ForgeError::Api(format!("GET {url}: {err}")))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().unwrap_or_default();
+            return Err(ForgeError::Api(format!("GET {url} -> {status}: {detail}")));
+        }
+        response
+            .text()
+            .map(Some)
+            .map_err(|err| ForgeError::Api(format!("reading {url}: {err}")))
+    }
 }
 
 /// URL-encode a project path for the `/projects/:id` API (`/` -> `%2F`).
@@ -314,6 +337,74 @@ impl Forge for GitLab {
 
         out.push_str(&format!("\nweb_url: {web_url}\n"));
         Ok(out)
+    }
+
+    fn pr_diff(&self, repo_url: &str, number: u64) -> Result<String, ForgeError> {
+        let api = self.project_api(repo_url)?;
+        let changes = self.call(
+            Method::GET,
+            &format!("{api}/merge_requests/{number}/changes"),
+            None,
+        )?;
+        let list = changes["changes"].as_array().cloned().unwrap_or_default();
+        if list.is_empty() {
+            return Ok(format!("(no changes for !{number})\n"));
+        }
+        let mut out = String::new();
+        for change in &list {
+            let old_path = change["old_path"].as_str().unwrap_or("?");
+            let new_path = change["new_path"].as_str().unwrap_or("?");
+            if old_path == new_path {
+                out.push_str(&format!("diff --git a/{old_path} b/{new_path}\n"));
+            } else {
+                out.push_str(&format!(
+                    "diff --git a/{old_path} b/{new_path}\nrename from {old_path}\nrename to {new_path}\n"
+                ));
+            }
+            let patch = change["diff"].as_str().unwrap_or("");
+            out.push_str(patch);
+            if !patch.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        Ok(crate::cap_lines(&out, crate::DIFF_LINE_CAP))
+    }
+
+    fn ci_logs(&self, repo_url: &str, run_id: u64) -> Result<String, ForgeError> {
+        let api = self.project_api(repo_url)?;
+        let jobs = self.call(Method::GET, &format!("{api}/pipelines/{run_id}/jobs"), None)?;
+        let list = jobs.as_array().cloned().unwrap_or_default();
+        if list.is_empty() {
+            return Ok(format!("(no jobs for pipeline #{run_id})\n"));
+        }
+        // Failed jobs first, like the GitHub side.
+        let mut ordered: Vec<&Value> = list.iter().collect();
+        ordered.sort_by_key(|job| u8::from(job["status"].as_str() != Some("failed")));
+
+        let mut out = String::new();
+        for job in ordered.into_iter().take(6) {
+            let job_id = job["id"].as_u64().unwrap_or_default();
+            let job_name = job["name"].as_str().unwrap_or("?");
+            let status = job["status"].as_str().unwrap_or("—");
+            out.push_str(&format!("== {job_name} ({status}) ==\n"));
+            match self.call_text(&format!("{api}/jobs/{job_id}/trace")) {
+                Ok(Some(trace)) if !trace.trim().is_empty() => {
+                    let lines: Vec<&str> = trace.lines().collect();
+                    let tail = lines.len().saturating_sub(200);
+                    if tail > 0 {
+                        out.push_str(&format!("… ({tail} earlier line(s) omitted)\n"));
+                    }
+                    for line in &lines[tail..] {
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                }
+                Ok(_) => out.push_str("  (trace unavailable — expired or empty)\n"),
+                Err(err) => out.push_str(&format!("  (trace unavailable: {err})\n")),
+            }
+            out.push('\n');
+        }
+        Ok(crate::cap_lines(&out, crate::LOG_LINE_CAP))
     }
 }
 
