@@ -27,23 +27,190 @@ use ratatui::widgets::{
     TableState,
 };
 
-/// The cockpit skin: Catppuccin-Mocha-leaning, chosen to read on dark terms.
+/// The cockpit skin: k9s-style selectable palettes.
+///
+/// The default is Catppuccin-Mocha-leaning, chosen to read on dark terms.
+/// Rendering runs single-threaded on the main loop, so a `thread_local`
+/// current theme is both correct and cheap. Every `draw_*` helper reads the
+/// active palette through the accessor fns (`theme::accent()`, ...).
 mod theme {
     use ratatui::style::Color;
+    use std::cell::RefCell;
 
-    pub const ACCENT: Color = Color::Rgb(137, 180, 250);
-    pub const MAUVE: Color = Color::Rgb(203, 166, 247);
-    pub const GREEN: Color = Color::Rgb(166, 227, 161);
-    pub const YELLOW: Color = Color::Rgb(249, 226, 175);
-    pub const RED: Color = Color::Rgb(243, 139, 168);
-    pub const TEAL: Color = Color::Rgb(148, 226, 213);
-    pub const PEACH: Color = Color::Rgb(250, 179, 135);
-    pub const TEXT: Color = Color::Rgb(205, 214, 244);
-    pub const DIM: Color = Color::Rgb(127, 132, 156);
-    pub const SURFACE: Color = Color::Rgb(69, 71, 90);
-    pub const SURFACE0: Color = Color::Rgb(49, 50, 68);
-    pub const CRUST: Color = Color::Rgb(17, 17, 27);
+    /// A full cockpit palette. All fields are plain [`Color`]s so a palette can
+    /// mix RGB (rich terminals) and named ANSI (NO_COLOR / light terms).
+    #[derive(Debug, Clone, Copy)]
+    pub struct Theme {
+        pub accent: Color,
+        pub mauve: Color,
+        pub green: Color,
+        pub yellow: Color,
+        pub red: Color,
+        pub teal: Color,
+        pub peach: Color,
+        pub text: Color,
+        pub dim: Color,
+        pub surface: Color,
+        pub surface0: Color,
+        pub crust: Color,
+    }
+
+    impl Theme {
+        /// Catppuccin Mocha — the historical cockpit palette and the default.
+        pub const fn catppuccin() -> Self {
+            Self {
+                accent: Color::Rgb(137, 180, 250),
+                mauve: Color::Rgb(203, 166, 247),
+                green: Color::Rgb(166, 227, 161),
+                yellow: Color::Rgb(249, 226, 175),
+                red: Color::Rgb(243, 139, 168),
+                teal: Color::Rgb(148, 226, 213),
+                peach: Color::Rgb(250, 179, 135),
+                text: Color::Rgb(205, 214, 244),
+                dim: Color::Rgb(127, 132, 156),
+                surface: Color::Rgb(69, 71, 90),
+                surface0: Color::Rgb(49, 50, 68),
+                crust: Color::Rgb(17, 17, 27),
+            }
+        }
+
+        /// Dracula.
+        pub const fn dracula() -> Self {
+            Self {
+                accent: Color::Rgb(139, 233, 253),
+                mauve: Color::Rgb(189, 147, 249),
+                green: Color::Rgb(80, 250, 123),
+                yellow: Color::Rgb(241, 250, 140),
+                red: Color::Rgb(255, 85, 85),
+                teal: Color::Rgb(139, 233, 253),
+                peach: Color::Rgb(255, 184, 108),
+                text: Color::Rgb(248, 248, 242),
+                dim: Color::Rgb(98, 114, 164),
+                surface: Color::Rgb(68, 71, 90),
+                surface0: Color::Rgb(40, 42, 54),
+                crust: Color::Rgb(30, 31, 41),
+            }
+        }
+
+        /// Nord.
+        pub const fn nord() -> Self {
+            Self {
+                accent: Color::Rgb(136, 192, 208),
+                mauve: Color::Rgb(180, 142, 173),
+                green: Color::Rgb(163, 190, 140),
+                yellow: Color::Rgb(235, 203, 139),
+                red: Color::Rgb(191, 97, 106),
+                teal: Color::Rgb(143, 188, 187),
+                peach: Color::Rgb(208, 135, 112),
+                text: Color::Rgb(216, 222, 233),
+                dim: Color::Rgb(97, 110, 136),
+                surface: Color::Rgb(67, 76, 94),
+                surface0: Color::Rgb(59, 66, 82),
+                crust: Color::Rgb(46, 52, 64),
+            }
+        }
+
+        /// Gruvbox (dark).
+        pub const fn gruvbox() -> Self {
+            Self {
+                accent: Color::Rgb(131, 165, 152),
+                mauve: Color::Rgb(211, 134, 155),
+                green: Color::Rgb(184, 187, 38),
+                yellow: Color::Rgb(250, 189, 47),
+                red: Color::Rgb(251, 73, 52),
+                teal: Color::Rgb(142, 192, 124),
+                peach: Color::Rgb(254, 128, 25),
+                text: Color::Rgb(235, 219, 178),
+                dim: Color::Rgb(146, 131, 116),
+                surface: Color::Rgb(80, 73, 69),
+                surface0: Color::Rgb(60, 56, 54),
+                crust: Color::Rgb(40, 40, 40),
+            }
+        }
+
+        /// Solarized (dark).
+        pub const fn solarized() -> Self {
+            Self {
+                accent: Color::Rgb(38, 139, 210),
+                mauve: Color::Rgb(108, 113, 196),
+                green: Color::Rgb(133, 153, 0),
+                yellow: Color::Rgb(181, 137, 0),
+                red: Color::Rgb(220, 50, 47),
+                teal: Color::Rgb(42, 161, 152),
+                peach: Color::Rgb(203, 75, 22),
+                text: Color::Rgb(147, 161, 161),
+                dim: Color::Rgb(88, 110, 117),
+                surface: Color::Rgb(7, 54, 66),
+                surface0: Color::Rgb(0, 43, 54),
+                crust: Color::Rgb(0, 33, 43),
+            }
+        }
+
+        /// Monochrome — no RGB reliance. Uses `Color::Reset` and named ANSI so
+        /// it reads on `NO_COLOR` and light terminals. Pass/fail status still
+        /// maps to named green/yellow/red for legibility.
+        pub const fn monochrome() -> Self {
+            Self {
+                accent: Color::White,
+                mauve: Color::White,
+                green: Color::Green,
+                yellow: Color::Yellow,
+                red: Color::Red,
+                teal: Color::White,
+                peach: Color::White,
+                text: Color::Reset,
+                dim: Color::Gray,
+                surface: Color::Gray,
+                surface0: Color::Reset,
+                crust: Color::Reset,
+            }
+        }
+
+        /// Look up a built-in theme by name (case-insensitive).
+        pub fn by_name(name: &str) -> Option<Self> {
+            match name.trim().to_ascii_lowercase().as_str() {
+                "catppuccin" => Some(Self::catppuccin()),
+                "dracula" => Some(Self::dracula()),
+                "nord" => Some(Self::nord()),
+                "gruvbox" => Some(Self::gruvbox()),
+                "solarized" => Some(Self::solarized()),
+                "monochrome" => Some(Self::monochrome()),
+                _ => None,
+            }
+        }
+    }
+
+    /// Names of all built-in themes, in listing order.
+    pub const THEMES: &[&str] = &[
+        "catppuccin",
+        "dracula",
+        "nord",
+        "gruvbox",
+        "solarized",
+        "monochrome",
+    ];
+
+    thread_local! {
+        static CURRENT: RefCell<Theme> = const { RefCell::new(Theme::catppuccin()) };
+    }
+
+    /// Replace the active palette. Takes effect on the next render.
+    pub fn set(t: Theme) {
+        CURRENT.with(|c| *c.borrow_mut() = t);
+    }
+
+    macro_rules! accessor {
+        ($($f:ident),* $(,)?) => {
+            $(pub fn $f() -> Color { CURRENT.with(|t| t.borrow().$f) })*
+        };
+    }
+
+    accessor!(
+        accent, mauve, green, yellow, red, teal, peach, text, dim, surface, surface0, crust,
+    );
 }
+
+pub use theme::{THEMES, Theme};
 
 /// One repo of a changeset, with its rendered PR/CI cells.
 #[derive(Debug, Clone)]
@@ -634,10 +801,27 @@ pub fn run(controller: Box<dyn Controller>) -> io::Result<Option<PathBuf>> {
     let (out_tx, out_rx) = channel::<Outcome>();
     spawn_worker(controller, job_rx, out_tx);
 
+    theme::set(startup_theme());
+
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &job_tx, &out_rx);
     ratatui::restore();
     result
+}
+
+/// Pick the startup palette from the environment.
+///
+/// Per the NO_COLOR spec, presence of a non-empty `NO_COLOR` selects the
+/// `monochrome` skin. Otherwise `HAW_THEME` names a built-in theme; anything
+/// unset or unrecognized falls back to the default catppuccin palette.
+fn startup_theme() -> Theme {
+    if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+        return Theme::monochrome();
+    }
+    std::env::var("HAW_THEME")
+        .ok()
+        .and_then(|name| Theme::by_name(&name))
+        .unwrap_or_else(Theme::catppuccin)
 }
 
 fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: Sender<Outcome>) {
@@ -904,6 +1088,18 @@ fn run_command_bar(app: &mut App, jobs: &Sender<Job>, line: &str) {
         ("prs", "") => open_fleet_view(app, jobs, View::Prs),
         ("ci", "") => open_fleet_view(app, jobs, View::Ci),
         ("governance" | "plugins", "") => open_fleet_view(app, jobs, View::Governance),
+        ("theme", "") => {
+            app.message = format!("themes: {}", theme::THEMES.join(", "));
+        }
+        ("theme", name) => match Theme::by_name(name) {
+            Some(t) => {
+                theme::set(t);
+                app.message = format!("theme → {name}");
+            }
+            None => {
+                app.message = format!("unknown theme `{name}`; try: {}", theme::THEMES.join(", "));
+            }
+        },
         ("help", "") => app.help = true,
         ("merge", "") => {
             app.message = match app.snapshot.merges.len() {
@@ -1621,7 +1817,7 @@ fn draw_output(frame: &mut Frame, output: &str) {
     };
     let text: Vec<Line> = shown
         .iter()
-        .map(|l| Line::styled((*l).to_string(), Style::default().fg(theme::TEXT)))
+        .map(|l| Line::styled((*l).to_string(), Style::default().fg(theme::text())))
         .collect();
     frame.render_widget(Clear, popup);
     frame.render_widget(
@@ -1629,11 +1825,11 @@ fn draw_output(frame: &mut Frame, output: &str) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::TEAL))
+                .border_style(Style::default().fg(theme::teal()))
                 .title(Span::styled(
                     format!(" output ({} lines) — any key closes ", all_lines.len()),
                     Style::default()
-                        .fg(theme::MAUVE)
+                        .fg(theme::mauve())
                         .add_modifier(Modifier::BOLD),
                 )),
         ),
@@ -1698,27 +1894,29 @@ fn draw_confirm(frame: &mut Frame, confirm: &Confirm) {
             Span::styled(
                 command,
                 Style::default()
-                    .fg(theme::YELLOW)
+                    .fg(theme::yellow())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!(" — {reach}"), Style::default().fg(theme::TEXT)),
+            Span::styled(format!(" — {reach}"), Style::default().fg(theme::text())),
         ]),
         Line::raw(""),
-        Line::styled(format!(" {detail}"), Style::default().fg(theme::TEXT)),
+        Line::styled(format!(" {detail}"), Style::default().fg(theme::text())),
         Line::raw(""),
         Line::from(vec![
             Span::styled(
                 "y",
                 Style::default()
-                    .fg(theme::GREEN)
+                    .fg(theme::green())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("/enter confirm   ", Style::default().fg(theme::DIM)),
+            Span::styled("/enter confirm   ", Style::default().fg(theme::dim())),
             Span::styled(
                 "any other key",
-                Style::default().fg(theme::RED).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::red())
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" cancels", Style::default().fg(theme::DIM)),
+            Span::styled(" cancels", Style::default().fg(theme::dim())),
         ]),
     ];
     frame.render_widget(Clear, popup);
@@ -1727,11 +1925,11 @@ fn draw_confirm(frame: &mut Frame, confirm: &Confirm) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::YELLOW))
+                .border_style(Style::default().fg(theme::yellow()))
                 .title(Span::styled(
                     " confirm ",
                     Style::default()
-                        .fg(theme::YELLOW)
+                        .fg(theme::yellow())
                         .add_modifier(Modifier::BOLD),
                 )),
         ),
@@ -1741,7 +1939,7 @@ fn draw_confirm(frame: &mut Frame, confirm: &Confirm) {
 
 fn kv(key: &str, value: Span<'static>) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!(" {key:<12}"), Style::default().fg(theme::DIM)),
+        Span::styled(format!(" {key:<12}"), Style::default().fg(theme::dim())),
         value,
     ])
 }
@@ -1757,9 +1955,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let lock = if app.snapshot.lock_present {
-        Span::styled("✓ committed", Style::default().fg(theme::GREEN))
+        Span::styled("✓ committed", Style::default().fg(theme::green()))
     } else {
-        Span::styled("✗ absent — run haw lock", Style::default().fg(theme::RED))
+        Span::styled("✗ absent — run haw lock", Style::default().fg(theme::red()))
     };
     let info = vec![
         kv(
@@ -1767,7 +1965,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 app.snapshot.root_label.clone(),
                 Style::default()
-                    .fg(theme::TEXT)
+                    .fg(theme::text())
                     .add_modifier(Modifier::BOLD),
             ),
         ),
@@ -1776,7 +1974,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 app.stack.clone().unwrap_or_else(|| "—".to_string()),
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
         ),
@@ -1785,14 +1983,14 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             "repos:",
             Span::styled(
                 format!("{}", app.fleet_rows().len()),
-                Style::default().fg(theme::TEXT),
+                Style::default().fg(theme::text()),
             ),
         ),
         kv(
             "changesets:",
             Span::styled(
                 format!("{}", app.snapshot.changesets.len()),
-                Style::default().fg(theme::TEXT),
+                Style::default().fg(theme::text()),
             ),
         ),
     ];
@@ -1806,12 +2004,12 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled(
                 format!("<{key}>"),
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(
                 format!(" {label:<12}"),
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::dim()),
             ));
         }
         key_lines.push(Line::from(spans));
@@ -1819,31 +2017,33 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     key_lines.push(Line::from(vec![
         Span::styled(
             "<q>",
-            Style::default().fg(theme::RED).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::red())
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" quit ", Style::default().fg(theme::DIM)),
+        Span::styled(" quit ", Style::default().fg(theme::dim())),
         Span::styled(
             "<:>",
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(theme::accent())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" cmd ", Style::default().fg(theme::DIM)),
+        Span::styled(" cmd ", Style::default().fg(theme::dim())),
         Span::styled(
             "<?>",
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(theme::accent())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" help", Style::default().fg(theme::DIM)),
+        Span::styled(" help", Style::default().fg(theme::dim())),
     ]));
     frame.render_widget(Paragraph::new(Text::from(key_lines)), columns[1]);
 
     let logo = vec![
-        Line::styled("┬ ┬┌─┐┬ ┬", Style::default().fg(theme::MAUVE)),
-        Line::styled("├─┤├─┤│││", Style::default().fg(theme::MAUVE)),
-        Line::styled("┴ ┴┴ ┴└┴┘", Style::default().fg(theme::MAUVE)),
-        Line::styled(" cockpit ⚓", Style::default().fg(theme::DIM)),
+        Line::styled("┬ ┬┌─┐┬ ┬", Style::default().fg(theme::mauve())),
+        Line::styled("├─┤├─┤│││", Style::default().fg(theme::mauve())),
+        Line::styled("┴ ┴┴ ┴└┴┘", Style::default().fg(theme::mauve())),
+        Line::styled(" cockpit ⚓", Style::default().fg(theme::dim())),
     ];
     frame.render_widget(
         Paragraph::new(Text::from(logo)).alignment(Alignment::Right),
@@ -1855,11 +2055,11 @@ fn panel(title: String) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::SURFACE))
+        .border_style(Style::default().fg(theme::surface()))
         .title(Span::styled(
             format!(" {title} "),
             Style::default()
-                .fg(theme::MAUVE)
+                .fg(theme::mauve())
                 .add_modifier(Modifier::BOLD),
         ))
 }
@@ -1885,7 +2085,7 @@ fn sorted_header_row(cells: &[&'static str], active: Option<(usize, bool)>) -> R
                 Cell::from(Span::styled(
                     text,
                     Style::default()
-                        .fg(theme::ACCENT)
+                        .fg(theme::accent())
                         .add_modifier(Modifier::BOLD),
                 ))
             })
@@ -1895,7 +2095,7 @@ fn sorted_header_row(cells: &[&'static str], active: Option<(usize, bool)>) -> R
 
 fn cursor_style() -> Style {
     Style::default()
-        .bg(theme::SURFACE0)
+        .bg(theme::surface0())
         .add_modifier(Modifier::BOLD)
 }
 
@@ -1905,13 +2105,13 @@ fn short(sha: &str) -> &str {
 
 fn state_dot(repo: &RepoStatus) -> Span<'static> {
     let (dot, color) = if repo.missing {
-        ("○", theme::DIM)
+        ("○", theme::dim())
     } else if repo.drift {
-        ("●", theme::RED)
+        ("●", theme::red())
     } else if repo.dirty {
-        ("●", theme::YELLOW)
+        ("●", theme::yellow())
     } else {
-        ("●", theme::GREEN)
+        ("●", theme::green())
     };
     Span::styled(dot, Style::default().fg(color))
 }
@@ -1919,20 +2119,23 @@ fn state_dot(repo: &RepoStatus) -> Span<'static> {
 /// Spans for `↑N ↓N`, green ahead / red behind; `—` without an upstream.
 fn ahead_behind_spans(ahead_behind: Option<(u64, u64)>) -> Vec<Span<'static>> {
     match ahead_behind {
-        None => vec![Span::styled("—", Style::default().fg(theme::DIM))],
-        Some((0, 0)) => vec![Span::styled("up to date", Style::default().fg(theme::DIM))],
+        None => vec![Span::styled("—", Style::default().fg(theme::dim()))],
+        Some((0, 0)) => vec![Span::styled(
+            "up to date",
+            Style::default().fg(theme::dim()),
+        )],
         Some((ahead, behind)) => {
             let mut spans = Vec::new();
             if ahead > 0 {
                 spans.push(Span::styled(
                     format!("↑{ahead} "),
-                    Style::default().fg(theme::GREEN),
+                    Style::default().fg(theme::green()),
                 ));
             }
             if behind > 0 {
                 spans.push(Span::styled(
                     format!("↓{behind}"),
-                    Style::default().fg(theme::RED),
+                    Style::default().fg(theme::red()),
                 ));
             }
             spans
@@ -1942,16 +2145,16 @@ fn ahead_behind_spans(ahead_behind: Option<(u64, u64)>) -> Vec<Span<'static>> {
 
 fn ahead_behind_cell(ahead_behind: Option<(u64, u64)>) -> Line<'static> {
     match ahead_behind {
-        Some((0, 0)) => Line::styled("·", Style::default().fg(theme::DIM)),
+        Some((0, 0)) => Line::styled("·", Style::default().fg(theme::dim())),
         other => Line::from(ahead_behind_spans(other)),
     }
 }
 
 fn groups_label(groups: &[String]) -> (String, ratatui::style::Color) {
     if groups.is_empty() {
-        ("—".to_string(), theme::DIM)
+        ("—".to_string(), theme::dim())
     } else {
-        (groups.join(","), theme::TEAL)
+        (groups.join(","), theme::teal())
     }
 }
 
@@ -1969,7 +2172,7 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
             let marked = app.selected_repos.contains(&repo.name);
             let mark_cell = || {
                 if marked {
-                    Cell::from(Span::styled("◉", Style::default().fg(theme::TEAL)))
+                    Cell::from(Span::styled("◉", Style::default().fg(theme::teal())))
                 } else {
                     Cell::from(state_dot(repo))
                 }
@@ -1977,21 +2180,21 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
             let merge_cell = match app.merge_badge(&repo.name) {
                 Some(badge) => Cell::from(Span::styled(
                     format!("{}/{}", badge.resolved, badge.total),
-                    Style::default().fg(theme::YELLOW),
+                    Style::default().fg(theme::yellow()),
                 )),
-                None => Cell::from(Span::styled("—", Style::default().fg(theme::DIM))),
+                None => Cell::from(Span::styled("—", Style::default().fg(theme::dim()))),
             };
             if repo.missing {
                 return Row::new(vec![
                     mark_cell(),
                     Cell::from(Span::styled(
                         repo.name.clone(),
-                        Style::default().fg(theme::RED),
+                        Style::default().fg(theme::red()),
                     )),
                     Cell::from(Span::styled(groups, Style::default().fg(groups_color))),
                     Cell::from(Span::styled(
                         "not cloned — press s",
-                        Style::default().fg(theme::DIM),
+                        Style::default().fg(theme::dim()),
                     )),
                 ]);
             }
@@ -2000,27 +2203,27 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(Span::styled(
                     repo.name.clone(),
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::text())
                         .add_modifier(Modifier::BOLD),
                 )),
                 Cell::from(Span::styled(groups, Style::default().fg(groups_color))),
                 Cell::from(Span::styled(
                     repo.branch.clone().unwrap_or_else(|| "(detached)".into()),
-                    Style::default().fg(theme::YELLOW),
+                    Style::default().fg(theme::yellow()),
                 )),
                 Cell::from(Span::styled(
                     repo.head.as_deref().map_or("—", short).to_string(),
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::dim()),
                 )),
                 Cell::from(if repo.dirty {
-                    Span::styled("yes", Style::default().fg(theme::YELLOW))
+                    Span::styled("yes", Style::default().fg(theme::yellow()))
                 } else {
-                    Span::styled("·", Style::default().fg(theme::DIM))
+                    Span::styled("·", Style::default().fg(theme::dim()))
                 }),
                 Cell::from(if repo.drift {
-                    Span::styled("DRIFT", Style::default().fg(theme::RED))
+                    Span::styled("DRIFT", Style::default().fg(theme::red()))
                 } else {
-                    Span::styled("·", Style::default().fg(theme::DIM))
+                    Span::styled("·", Style::default().fg(theme::dim()))
                 }),
                 Cell::from(ahead_behind_cell(repo.ahead_behind)),
                 merge_cell,
@@ -2061,7 +2264,7 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
     ))
     .block(panel(format!("fleet({count})")))
     .row_highlight_style(cursor_style())
-    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
+    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
 
     let mut state = TableState::default();
     state.select(app.cursor.selected());
@@ -2079,36 +2282,36 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
                     Span::styled(
                         format!(" {} ", repo.name),
                         Style::default()
-                            .fg(theme::ACCENT)
+                            .fg(theme::accent())
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("groups ", Style::default().fg(theme::DIM)),
+                    Span::styled("groups ", Style::default().fg(theme::dim())),
                     Span::styled(groups, Style::default().fg(groups_color)),
-                    Span::styled("  · path ", Style::default().fg(theme::DIM)),
+                    Span::styled("  · path ", Style::default().fg(theme::dim())),
                     Span::styled(
                         repo.path.display().to_string(),
-                        Style::default().fg(theme::TEXT),
+                        Style::default().fg(theme::text()),
                     ),
                 ]),
                 {
                     let mut spans = vec![
-                        Span::styled(" locked ", Style::default().fg(theme::DIM)),
+                        Span::styled(" locked ", Style::default().fg(theme::dim())),
                         Span::styled(
                             repo.locked_rev.as_deref().map_or("—", short).to_string(),
-                            Style::default().fg(theme::TEXT),
+                            Style::default().fg(theme::text()),
                         ),
-                        Span::styled("  · remote ", Style::default().fg(theme::DIM)),
+                        Span::styled("  · remote ", Style::default().fg(theme::dim())),
                     ];
                     spans.extend(ahead_behind_spans(repo.ahead_behind));
-                    spans.push(Span::styled("  · ", Style::default().fg(theme::DIM)));
+                    spans.push(Span::styled("  · ", Style::default().fg(theme::dim())));
                     spans.push(if repo.missing {
-                        Span::styled("NOT CLONED", Style::default().fg(theme::RED))
+                        Span::styled("NOT CLONED", Style::default().fg(theme::red()))
                     } else if repo.drift {
-                        Span::styled("DRIFT (head ≠ lock)", Style::default().fg(theme::RED))
+                        Span::styled("DRIFT (head ≠ lock)", Style::default().fg(theme::red()))
                     } else if repo.dirty {
-                        Span::styled("dirty worktree", Style::default().fg(theme::YELLOW))
+                        Span::styled("dirty worktree", Style::default().fg(theme::yellow()))
                     } else {
-                        Span::styled("in sync ✓", Style::default().fg(theme::GREEN))
+                        Span::styled("in sync ✓", Style::default().fg(theme::green()))
                     });
                     Line::from(spans)
                 },
@@ -2116,7 +2319,7 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         None => vec![Line::styled(
             " no repos — check haw.toml",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::dim()),
         )],
     };
     let mut lines = lines;
@@ -2127,15 +2330,15 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
         && let Some(badge) = app.merge_badge(&repo)
     {
         lines.push(Line::from(vec![
-            Span::styled(" merge ", Style::default().fg(theme::MAUVE)),
-            Span::styled(badge.source.clone(), Style::default().fg(theme::YELLOW)),
+            Span::styled(" merge ", Style::default().fg(theme::mauve())),
+            Span::styled(badge.source.clone(), Style::default().fg(theme::yellow())),
             Span::styled(
                 format!("  {}/{} slices resolved", badge.resolved, badge.total),
-                Style::default().fg(theme::TEXT),
+                Style::default().fg(theme::text()),
             ),
             Span::styled(
                 "  · :merge cleanup / :merge abort",
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::dim()),
             ),
         ]));
     }
@@ -2162,7 +2365,7 @@ fn draw_stacks(frame: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(
                     "▸ ",
                     Style::default()
-                        .fg(theme::ACCENT)
+                        .fg(theme::accent())
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
@@ -2174,17 +2377,17 @@ fn draw_stacks(frame: &mut Frame, app: &mut App, area: Rect) {
                 .map_or(0, |(_, c)| *c);
             let style = if is_current {
                 Style::default()
-                    .fg(theme::TEXT)
+                    .fg(theme::text())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(theme::TEXT)
+                Style::default().fg(theme::text())
             };
             ListItem::new(Line::from(vec![
                 marker,
                 Span::styled((*name).to_string(), style),
                 Span::styled(
                     format!("  · {count} repos"),
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::dim()),
                 ),
             ]))
         })
@@ -2208,12 +2411,12 @@ fn draw_changesets(frame: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(
                     format!("  {}", c.id),
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::text())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("  · {} repos", c.repos.len()),
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::dim()),
                 ),
             ]))
         })
@@ -2230,15 +2433,15 @@ fn draw_changesets(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn pr_span(text: &str) -> Span<'static> {
     let color = if text.contains("open") {
-        theme::GREEN
+        theme::green()
     } else if text.contains("merged") {
-        theme::MAUVE
+        theme::mauve()
     } else if text.contains("draft") {
-        theme::PEACH
+        theme::peach()
     } else if text.contains("closed") {
-        theme::RED
+        theme::red()
     } else {
-        theme::DIM
+        theme::dim()
     };
     Span::styled(text.to_string(), Style::default().fg(color))
 }
@@ -2246,17 +2449,17 @@ fn pr_span(text: &str) -> Span<'static> {
 fn ci_span(text: &str) -> Span<'static> {
     let lower = text.to_lowercase();
     let color = if text.contains('✓') || lower.contains("pass") {
-        theme::GREEN
+        theme::green()
     } else if lower.contains("fail") || text.contains('✗') {
-        theme::RED
+        theme::red()
     } else if lower.contains("run")
         || lower.contains("pend")
         || lower.contains("queue")
         || text.contains('⏳')
     {
-        theme::YELLOW
+        theme::yellow()
     } else {
-        theme::DIM
+        theme::dim()
     };
     Span::styled(text.to_string(), Style::default().fg(color))
 }
@@ -2269,42 +2472,42 @@ fn draw_changeset(frame: &mut Frame, app: &mut App, area: Rect) {
             let selected = app.selected_repos.contains(&repo.name);
             Row::new(vec![
                 Cell::from(if selected {
-                    Span::styled("◉", Style::default().fg(theme::TEAL))
+                    Span::styled("◉", Style::default().fg(theme::teal()))
                 } else {
-                    Span::styled("·", Style::default().fg(theme::DIM))
+                    Span::styled("·", Style::default().fg(theme::dim()))
                 }),
                 Cell::from(Span::styled(
                     repo.name.clone(),
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::text())
                         .add_modifier(Modifier::BOLD),
                 )),
                 Cell::from(Span::styled(
                     repo.branch.clone(),
-                    Style::default().fg(theme::YELLOW),
+                    Style::default().fg(theme::yellow()),
                 )),
                 Cell::from(if repo.on_branch {
-                    Span::styled("yes", Style::default().fg(theme::GREEN))
+                    Span::styled("yes", Style::default().fg(theme::green()))
                 } else {
-                    Span::styled("NO", Style::default().fg(theme::RED))
+                    Span::styled("NO", Style::default().fg(theme::red()))
                 }),
                 Cell::from(if repo.dirty {
-                    Span::styled("yes", Style::default().fg(theme::YELLOW))
+                    Span::styled("yes", Style::default().fg(theme::yellow()))
                 } else {
-                    Span::styled("·", Style::default().fg(theme::DIM))
+                    Span::styled("·", Style::default().fg(theme::dim()))
                 }),
                 Cell::from(Span::styled(
                     repo.head.as_deref().map_or("—", short).to_string(),
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::dim()),
                 )),
                 Cell::from(Span::styled(
                     repo.forge.clone(),
                     Style::default().fg(if repo.forge == "github" {
-                        theme::ACCENT
+                        theme::accent()
                     } else if repo.forge == "gitlab" {
-                        theme::PEACH
+                        theme::peach()
                     } else {
-                        theme::DIM
+                        theme::dim()
                     }),
                 )),
                 Cell::from(pr_span(&repo.pr)),
@@ -2335,7 +2538,7 @@ fn draw_changeset(frame: &mut Frame, app: &mut App, area: Rect) {
         app.changeset.as_deref().unwrap_or_default()
     )))
     .row_highlight_style(cursor_style())
-    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
+    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
 
     let mut state = TableState::default();
     state.select(app.cursor.selected());
@@ -2344,9 +2547,9 @@ fn draw_changeset(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn forge_span(forge: &str) -> Span<'static> {
     let color = match forge {
-        "github" => theme::ACCENT,
-        "gitlab" => theme::PEACH,
-        _ => theme::DIM,
+        "github" => theme::accent(),
+        "gitlab" => theme::peach(),
+        _ => theme::dim(),
     };
     Span::styled(forge.to_string(), Style::default().fg(color))
 }
@@ -2361,23 +2564,23 @@ fn draw_prs(frame: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(Span::styled(
                     pr.repo.clone(),
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::text())
                         .add_modifier(Modifier::BOLD),
                 )),
                 Cell::from(forge_span(&pr.forge)),
                 Cell::from(Span::styled(
                     format!("#{}", pr.number),
-                    Style::default().fg(theme::YELLOW),
+                    Style::default().fg(theme::yellow()),
                 )),
                 Cell::from(Span::styled(
                     pr.title.clone(),
-                    Style::default().fg(theme::TEXT),
+                    Style::default().fg(theme::text()),
                 )),
                 Cell::from(pr_span(&pr.state)),
                 Cell::from(if pr.approved {
-                    Span::styled("✓", Style::default().fg(theme::GREEN))
+                    Span::styled("✓", Style::default().fg(theme::green()))
                 } else {
-                    Span::styled("·", Style::default().fg(theme::DIM))
+                    Span::styled("·", Style::default().fg(theme::dim()))
                 }),
                 Cell::from(ci_span(match pr.ci {
                     Some(true) => "✓ passed",
@@ -2409,7 +2612,7 @@ fn draw_prs(frame: &mut Frame, app: &mut App, area: Rect) {
     ))
     .block(panel(format!("open PR/MRs({count})")))
     .row_highlight_style(cursor_style())
-    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
+    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
 
     let mut state = TableState::default();
     state.select(app.cursor.selected());
@@ -2440,20 +2643,20 @@ fn draw_ci(frame: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(Span::styled(
                     run.repo.clone(),
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::text())
                         .add_modifier(Modifier::BOLD),
                 )),
                 Cell::from(Span::styled(
                     run.name.clone(),
-                    Style::default().fg(theme::TEXT),
+                    Style::default().fg(theme::text()),
                 )),
                 Cell::from(Span::styled(
                     run.branch.clone(),
-                    Style::default().fg(theme::YELLOW),
+                    Style::default().fg(theme::yellow()),
                 )),
                 Cell::from(Span::styled(
                     run.event.clone(),
-                    Style::default().fg(theme::TEAL),
+                    Style::default().fg(theme::teal()),
                 )),
                 Cell::from(ci_span(&run.status)),
             ])
@@ -2479,7 +2682,7 @@ fn draw_ci(frame: &mut Frame, app: &mut App, area: Rect) {
     ))
     .block(panel(format!("CI runs({count})")))
     .row_highlight_style(cursor_style())
-    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
+    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
 
     let mut state = TableState::default();
     state.select(app.cursor.selected());
@@ -2521,9 +2724,9 @@ fn gov_status_span(gov: &Governance, plugin: &str) -> Span<'static> {
 /// Color for a finding level: green info, yellow warn, red error.
 fn finding_color(level: &str) -> ratatui::style::Color {
     match level {
-        "error" => theme::RED,
-        "warn" => theme::YELLOW,
-        _ => theme::GREEN,
+        "error" => theme::red(),
+        "warn" => theme::yellow(),
+        _ => theme::green(),
     }
 }
 
@@ -2549,10 +2752,10 @@ fn draw_governance(frame: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(Span::styled(
                     plugin.name.clone(),
                     Style::default()
-                        .fg(theme::TEXT)
+                        .fg(theme::text())
                         .add_modifier(Modifier::BOLD),
                 )),
-                Cell::from(Span::styled(phases, Style::default().fg(theme::TEAL))),
+                Cell::from(Span::styled(phases, Style::default().fg(theme::teal()))),
                 Cell::from(gov_status_span(gov, &plugin.name)),
             ])
         })
@@ -2570,7 +2773,7 @@ fn draw_governance(frame: &mut Frame, app: &mut App, area: Rect) {
     .header(header_row(&["PLUGIN", "PHASES", "STATUS"]))
     .block(panel(format!("governance({count})")))
     .row_highlight_style(cursor_style())
-    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
+    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
 
     let mut state = TableState::default();
     state.select(app.cursor.selected());
@@ -2594,36 +2797,36 @@ fn draw_governance(frame: &mut Frame, app: &mut App, area: Rect) {
     lines.push(Line::styled(
         " artifacts",
         Style::default()
-            .fg(theme::MAUVE)
+            .fg(theme::mauve())
             .add_modifier(Modifier::BOLD),
     ));
     if gov.artifacts.is_empty() {
-        lines.push(Line::styled("   none", Style::default().fg(theme::DIM)));
+        lines.push(Line::styled("   none", Style::default().fg(theme::dim())));
     } else {
         for artifact in &gov.artifacts {
             let (mark, color) = if artifact.exists {
-                ("✓", theme::GREEN)
+                ("✓", theme::green())
             } else {
-                ("✗", theme::RED)
+                ("✗", theme::red())
             };
             lines.push(Line::from(vec![
                 Span::styled(format!("   {mark} "), Style::default().fg(color)),
                 Span::styled(
                     format!("{:<10}", artifact.kind),
-                    Style::default().fg(theme::TEAL),
+                    Style::default().fg(theme::teal()),
                 ),
-                Span::styled(artifact.path.clone(), Style::default().fg(theme::TEXT)),
+                Span::styled(artifact.path.clone(), Style::default().fg(theme::text())),
             ]));
         }
     }
     lines.push(Line::styled(
         " findings",
         Style::default()
-            .fg(theme::MAUVE)
+            .fg(theme::mauve())
             .add_modifier(Modifier::BOLD),
     ));
     if gov.findings.is_empty() {
-        lines.push(Line::styled("   none", Style::default().fg(theme::DIM)));
+        lines.push(Line::styled("   none", Style::default().fg(theme::dim())));
     } else {
         for finding in &gov.findings {
             let color = finding_color(&finding.level);
@@ -2634,9 +2837,9 @@ fn draw_governance(frame: &mut Frame, app: &mut App, area: Rect) {
                 ),
                 Span::styled(
                     format!("{}: ", finding.plugin),
-                    Style::default().fg(theme::DIM),
+                    Style::default().fg(theme::dim()),
                 ),
-                Span::styled(finding.message.clone(), Style::default().fg(theme::TEXT)),
+                Span::styled(finding.message.clone(), Style::default().fg(theme::text())),
             ]));
         }
     }
@@ -2657,7 +2860,7 @@ fn draw_empty_hint(frame: &mut Frame, area: Rect, hint: &str) {
     frame.render_widget(
         Paragraph::new(Line::styled(
             hint.to_string(),
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::dim()),
         ))
         .alignment(Alignment::Center),
         body,
@@ -2669,7 +2872,7 @@ fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect) {
         .snapshot
         .tree
         .lines()
-        .map(|l| Line::styled(l.to_string(), Style::default().fg(theme::TEXT)))
+        .map(|l| Line::styled(l.to_string(), Style::default().fg(theme::text())))
         .collect();
     frame.render_widget(
         Paragraph::new(Text::from(text)).block(panel("tree".to_string())),
@@ -2684,14 +2887,14 @@ fn draw_tree(frame: &mut Frame, app: &mut App, area: Rect) {
 fn detail_line(raw: &str) -> Line<'static> {
     let style = if raw.starts_with("== ") {
         Style::default()
-            .fg(theme::ACCENT)
+            .fg(theme::accent())
             .add_modifier(Modifier::BOLD)
     } else if raw.starts_with("-- ") {
         Style::default()
-            .fg(theme::MAUVE)
+            .fg(theme::mauve())
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(theme::TEXT)
+        Style::default().fg(theme::text())
     };
     Line::styled(raw.to_string(), style)
 }
@@ -2727,51 +2930,51 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(
                 " /",
                 Style::default()
-                    .fg(theme::MAUVE)
+                    .fg(theme::mauve())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(buffer.clone(), Style::default().fg(theme::TEXT)),
-            Span::styled(caret, Style::default().fg(theme::TEXT)),
+            Span::styled(buffer.clone(), Style::default().fg(theme::text())),
+            Span::styled(caret, Style::default().fg(theme::text())),
             Span::styled(
                 "   (live filter by name or group)",
-                Style::default().fg(theme::DIM),
+                Style::default().fg(theme::dim()),
             ),
         ]),
         (InputMode::Command(buffer), _) => Line::from(vec![
             Span::styled(
                 " ❯ ",
                 Style::default()
-                    .fg(theme::ACCENT)
+                    .fg(theme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(buffer.clone(), Style::default().fg(theme::TEXT)),
-            Span::styled(caret, Style::default().fg(theme::TEXT)),
+            Span::styled(buffer.clone(), Style::default().fg(theme::text())),
+            Span::styled(caret, Style::default().fg(theme::text())),
             Span::styled(
-                "   (mirrors the CLI — try: sync · switch <stack> · run <cmd> · tree)",
-                Style::default().fg(theme::DIM),
+                "   (mirrors the CLI — try: sync · switch <stack> · run <cmd> · tree · theme <name>)",
+                Style::default().fg(theme::dim()),
             ),
         ]),
         (InputMode::NewChangeset(buffer), _) => Line::from(vec![
-            Span::styled(" new changeset: ", Style::default().fg(theme::MAUVE)),
-            Span::styled(buffer.clone(), Style::default().fg(theme::TEXT)),
-            Span::styled(caret, Style::default().fg(theme::TEXT)),
+            Span::styled(" new changeset: ", Style::default().fg(theme::mauve())),
+            Span::styled(buffer.clone(), Style::default().fg(theme::text())),
+            Span::styled(caret, Style::default().fg(theme::text())),
         ]),
         (InputMode::None, Some(label)) => Line::from(vec![
             Span::styled(
                 format!(" {} ", SPINNER[app.spinner]),
-                Style::default().fg(theme::ACCENT),
+                Style::default().fg(theme::accent()),
             ),
-            Span::styled(format!("{label}…"), Style::default().fg(theme::TEXT)),
+            Span::styled(format!("{label}…"), Style::default().fg(theme::text())),
         ]),
         (InputMode::None, None) => {
             let msg = &app.message;
             let color =
                 if msg.contains("failed") || msg.contains("error") || msg.contains("unknown") {
-                    theme::RED
+                    theme::red()
                 } else if msg.starts_with('→') {
-                    theme::TEAL
+                    theme::teal()
                 } else {
-                    theme::DIM
+                    theme::dim()
                 };
             Line::styled(format!(" {msg}"), Style::default().fg(color))
         }
@@ -2784,15 +2987,15 @@ fn draw_crumbs(frame: &mut Frame, app: &App, area: Rect) {
     for view in &app.back {
         spans.push(Span::styled(
             format!(" {} ", view_name(app, *view)),
-            Style::default().fg(theme::DIM).bg(theme::SURFACE0),
+            Style::default().fg(theme::dim()).bg(theme::surface0()),
         ));
         spans.push(Span::raw(" "));
     }
     spans.push(Span::styled(
         format!(" {} ", view_name(app, app.view)),
         Style::default()
-            .fg(theme::CRUST)
-            .bg(theme::ACCENT)
+            .fg(theme::crust())
+            .bg(theme::accent())
             .add_modifier(Modifier::BOLD),
     ));
     if app.input == InputMode::None && !app.filter.is_empty() {
@@ -2800,8 +3003,8 @@ fn draw_crumbs(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled(
             format!(" filter: {} — esc clears ", app.filter),
             Style::default()
-                .fg(theme::CRUST)
-                .bg(theme::YELLOW)
+                .fg(theme::crust())
+                .bg(theme::yellow())
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -2809,7 +3012,7 @@ fn draw_crumbs(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::styled(
             "⚓ haw v0.1.0 ",
-            Style::default().fg(theme::DIM),
+            Style::default().fg(theme::dim()),
         ))
         .alignment(Alignment::Right),
         area,
@@ -2821,10 +3024,10 @@ fn help_entry(key: &'static str, desc: &'static str) -> Line<'static> {
         Span::styled(
             format!("  {key:<10}"),
             Style::default()
-                .fg(theme::ACCENT)
+                .fg(theme::accent())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(desc, Style::default().fg(theme::TEXT)),
+        Span::styled(desc, Style::default().fg(theme::text())),
     ])
 }
 
@@ -2832,7 +3035,7 @@ fn help_section(title: &'static str) -> Line<'static> {
     Line::styled(
         format!(" {title}"),
         Style::default()
-            .fg(theme::MAUVE)
+            .fg(theme::mauve())
             .add_modifier(Modifier::BOLD),
     )
 }
@@ -2895,8 +3098,9 @@ fn draw_help(frame: &mut Frame) {
         help_entry(":prs", "· :ci · :governance · :plugins · :help"),
         help_entry(":pin", "· :lock — pin HEADs / commit the lock"),
         help_entry(":change", "[ID | start ID | land ID | request ID]"),
+        help_entry(":theme <name>", "switch skin (catppuccin/dracula/nord/…)"),
         Line::raw(""),
-        Line::styled(" press any key to close", Style::default().fg(theme::DIM)),
+        Line::styled(" press any key to close", Style::default().fg(theme::dim())),
     ];
     frame.render_widget(Clear, popup);
     frame.render_widget(
@@ -2904,11 +3108,11 @@ fn draw_help(frame: &mut Frame) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::ACCENT))
+                .border_style(Style::default().fg(theme::accent()))
                 .title(Span::styled(
                     " help ",
                     Style::default()
-                        .fg(theme::MAUVE)
+                        .fg(theme::mauve())
                         .add_modifier(Modifier::BOLD),
                 )),
         ),
@@ -3364,6 +3568,47 @@ mod tests {
         let (tx, _rx) = channel();
         run_command_bar(&mut app, &tx, "frobnicate");
         assert!(app.message.contains("unknown command"));
+    }
+
+    #[test]
+    fn theme_by_name_known_and_unknown() {
+        assert!(Theme::by_name("dracula").is_some());
+        assert!(Theme::by_name("CATPPUCCIN").is_some());
+        assert!(Theme::by_name("monochrome").is_some());
+        assert!(Theme::by_name("nope").is_none());
+    }
+
+    #[test]
+    fn theme_list_covers_all_builtins() {
+        assert_eq!(THEMES.len(), 6);
+        for name in THEMES {
+            assert!(Theme::by_name(name).is_some(), "missing theme {name}");
+        }
+    }
+
+    #[test]
+    fn theme_command_switches() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        run_command_bar(&mut app, &tx, "theme dracula");
+        assert!(app.message.contains("dracula"));
+        assert!(!app.message.contains("unknown"));
+    }
+
+    #[test]
+    fn theme_command_unknown_reports() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        run_command_bar(&mut app, &tx, "theme bogus");
+        assert!(app.message.contains("unknown theme"));
+    }
+
+    #[test]
+    fn theme_command_bare_lists() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        run_command_bar(&mut app, &tx, "theme");
+        assert!(app.message.contains("catppuccin"));
     }
 
     fn gov() -> Governance {
