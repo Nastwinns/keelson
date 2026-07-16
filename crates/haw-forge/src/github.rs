@@ -27,6 +27,9 @@ impl GitHub {
                 .base_uri(api_base(host))
                 .map_err(|err| ForgeError::Api(format!("invalid GitHub base uri: {err}")))?;
         }
+        // octocrab's client spawns a tower::buffer worker on build, which needs a
+        // live Tokio reactor; enter the runtime so the spawn doesn't panic.
+        let _guard = self.runtime.enter();
         builder
             .build()
             .map_err(|err| ForgeError::Api(format!("GitHub client: {err}")))
@@ -259,5 +262,17 @@ mod tests {
             api_base("github.corp.example"),
             "https://github.corp.example/api/v3"
         );
+    }
+}
+
+#[cfg(test)]
+mod runtime_check {
+    // Building the octocrab client spawns a tower::buffer worker, which panicked
+    // ("no reactor running") when done outside the Tokio runtime context. This
+    // builds the client with no network to guard that regression.
+    #[test]
+    fn client_builds_inside_runtime_without_panic() {
+        let gh = super::GitHub::new(String::new()).expect("runtime");
+        assert!(gh.client("github.com").is_ok());
     }
 }
