@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 haw-core.workspace = true
+nucleo-matcher.workspace = true
 ratatui.workspace = true
 
 [lints]

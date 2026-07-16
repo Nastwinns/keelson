@@ -8,12 +8,15 @@
 //! All domain work goes through the [`Controller`] trait — this crate renders
 //! and dispatches, nothing more.
 
+use std::cell::RefCell;
 use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use haw_core::workspace::RepoStatus;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::Frame;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -167,10 +170,14 @@ pub trait Controller: Send {
     fn changeset_prs(&mut self, id: &str) -> io::Result<ChangesetSummary>;
     fn sync_stack(&mut self, stack: &str) -> io::Result<String>;
     fn sync_repo(&mut self, repo: &str) -> io::Result<String>;
+    /// Sync a specific marked set of repos (fleet bulk action).
+    fn sync_repos(&mut self, repos: &[String]) -> io::Result<String>;
     fn switch(&mut self, stack: &str) -> io::Result<String>;
     fn pin(&mut self) -> io::Result<String>;
     fn lock(&mut self) -> io::Result<String>;
     fn run_cmd(&mut self, cmd: &str) -> io::Result<String>;
+    /// Run `cmd` across a marked set of repos only (fleet bulk action).
+    fn run_cmd_in(&mut self, cmd: &str, repos: &[String]) -> io::Result<String>;
     fn change_start(&mut self, id: &str) -> io::Result<String>;
     fn change_request(&mut self, id: &str, only: Option<Vec<String>>) -> io::Result<String>;
     fn change_land(&mut self, id: &str) -> io::Result<String>;
@@ -236,10 +243,12 @@ enum Job {
 enum ActionKind {
     SyncStack(String),
     SyncRepo(String),
+    SyncRepos(Vec<String>),
     Switch(String),
     Pin,
     Lock,
     Run(String),
+    RunRepos(String, Vec<String>),
     ChangeStart(String),
     ChangeRequest(String, Option<Vec<String>>),
     ChangeLand(String),
@@ -267,6 +276,9 @@ struct App {
     stack: Option<String>,
     changeset: Option<String>,
     selected_repos: Vec<String>,
+    /// Active column sort for the Fleet/Prs/Ci tables: `(column index, descending)`.
+    /// Reset on view change / back.
+    sort: Option<(u16, bool)>,
     cursor: ListState,
     input: InputMode,
     filter: String,
@@ -299,9 +311,27 @@ struct App {
     detail_pr: Option<(String, u64, String)>,
 }
 
-/// Case-insensitive substring match; an empty needle matches everything.
+thread_local! {
+    /// A reusable fuzzy matcher; kept per-thread so filtering never re-allocates
+    /// its scratch buffers on each keystroke.
+    static MATCHER: RefCell<Matcher> = RefCell::new(Matcher::new(Config::DEFAULT));
+}
+
+/// Fuzzy match, case-insensitive; an empty needle matches everything. A
+/// superset of substring matching, so plain prefixes/substrings still hit.
 fn hit(haystack: &str, needle: &str) -> bool {
-    needle.is_empty() || haystack.to_lowercase().contains(&needle.to_lowercase())
+    if needle.is_empty() {
+        return true;
+    }
+    MATCHER.with(|cell| {
+        let mut matcher = cell.borrow_mut();
+        let pattern = Pattern::parse(needle, CaseMatching::Ignore, Normalization::Smart);
+        let mut buf = Vec::new();
+        let haystack = Utf32Str::new(haystack, &mut buf);
+        pattern
+            .score(haystack, &mut matcher)
+            .is_some_and(|score| score > 0)
+    })
 }
 
 /// A repo matches a filter if its name or any of its groups contains it.
@@ -312,7 +342,8 @@ fn repo_matches(name: &str, groups: &[String], filter: &str) -> bool {
 impl App {
     fn fleet_rows(&self) -> Vec<&RepoStatus> {
         let stack = self.stack.as_deref().unwrap_or_default();
-        self.snapshot
+        let mut rows: Vec<&RepoStatus> = self
+            .snapshot
             .fleet
             .iter()
             .find(|(name, _)| name == stack)
@@ -322,7 +353,21 @@ impl App {
                     .filter(|r| repo_matches(&r.name, &r.groups, &self.filter))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if let Some((col, desc)) = self.sort {
+            rows.sort_by(|a, b| {
+                let ord = match col {
+                    0 => a.name.cmp(&b.name),
+                    1 => a.branch.cmp(&b.branch),
+                    2 => a.head.cmp(&b.head),
+                    3 => a.dirty.cmp(&b.dirty),
+                    4 => a.drift.cmp(&b.drift),
+                    _ => a.ahead_behind.cmp(&b.ahead_behind),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
+        }
+        rows
     }
 
     fn stack_rows(&self) -> Vec<&str> {
@@ -359,16 +404,30 @@ impl App {
     }
 
     fn pr_rows(&self) -> Vec<&FleetPr> {
-        self.prs
+        let mut rows: Vec<&FleetPr> = self
+            .prs
             .as_deref()
             .unwrap_or_default()
             .iter()
             .filter(|p| hit(&p.repo, &self.filter) || hit(&p.title, &self.filter))
-            .collect()
+            .collect();
+        if let Some((col, desc)) = self.sort {
+            rows.sort_by(|a, b| {
+                let ord = match col {
+                    0 => a.repo.cmp(&b.repo),
+                    1 => a.number.cmp(&b.number),
+                    2 => a.title.cmp(&b.title),
+                    _ => a.state.cmp(&b.state),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
+        }
+        rows
     }
 
     fn ci_rows(&self) -> Vec<&FleetCiRun> {
-        self.ci
+        let mut rows: Vec<&FleetCiRun> = self
+            .ci
             .as_deref()
             .unwrap_or_default()
             .iter()
@@ -377,7 +436,19 @@ impl App {
                     || hit(&r.branch, &self.filter)
                     || hit(&r.name, &self.filter)
             })
-            .collect()
+            .collect();
+        if let Some((col, desc)) = self.sort {
+            rows.sort_by(|a, b| {
+                let ord = match col {
+                    0 => a.repo.cmp(&b.repo),
+                    1 => a.name.cmp(&b.name),
+                    2 => a.branch.cmp(&b.branch),
+                    _ => a.status.cmp(&b.status),
+                };
+                if desc { ord.reverse() } else { ord }
+            });
+        }
+        rows
     }
 
     fn gov_rows(&self) -> Vec<&GovPlugin> {
@@ -487,6 +558,8 @@ impl App {
             self.view = view;
             self.cursor.select(Some(0));
             self.filter.clear();
+            self.sort = None;
+            self.selected_repos.clear();
         }
     }
 
@@ -502,8 +575,55 @@ impl App {
         if let Some(previous) = self.back.pop() {
             self.view = previous;
             self.filter.clear();
+            self.sort = None;
+            self.selected_repos.clear();
             self.clamp_cursor();
         }
+    }
+
+    /// Sortable column count for the current view (0 = not sortable).
+    fn sortable_cols(&self) -> u16 {
+        match self.view {
+            View::Fleet => 6,
+            View::Prs => 4,
+            View::Ci => 4,
+            _ => 0,
+        }
+    }
+
+    /// Move the active sort column by `delta` (wrapping), starting from the
+    /// first column when unset. No-op on non-sortable views.
+    fn cycle_sort(&mut self, forward: bool) {
+        let cols = self.sortable_cols();
+        if cols == 0 {
+            return;
+        }
+        let next = match self.sort {
+            None => 0,
+            Some((col, _)) => {
+                if forward {
+                    (col + 1) % cols
+                } else {
+                    (col + cols - 1) % cols
+                }
+            }
+        };
+        let desc = self.sort.map(|(_, d)| d).unwrap_or(false);
+        self.sort = Some((next, desc));
+        self.clamp_cursor();
+    }
+
+    /// Toggle ascending/descending on the active sort column, defaulting the
+    /// column to the first when unset. No-op on non-sortable views.
+    fn toggle_sort_dir(&mut self) {
+        if self.sortable_cols() == 0 {
+            return;
+        }
+        self.sort = Some(match self.sort {
+            None => (0, true),
+            Some((col, desc)) => (col, !desc),
+        });
+        self.clamp_cursor();
     }
 }
 
@@ -548,10 +668,12 @@ fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: 
                     let result = match kind {
                         ActionKind::SyncStack(stack) => controller.sync_stack(&stack),
                         ActionKind::SyncRepo(repo) => controller.sync_repo(&repo),
+                        ActionKind::SyncRepos(repos) => controller.sync_repos(&repos),
                         ActionKind::Switch(stack) => controller.switch(&stack),
                         ActionKind::Pin => controller.pin(),
                         ActionKind::Lock => controller.lock(),
                         ActionKind::Run(cmd) => controller.run_cmd(&cmd),
+                        ActionKind::RunRepos(cmd, repos) => controller.run_cmd_in(&cmd, &repos),
                         ActionKind::ChangeStart(id) => controller.change_start(&id),
                         ActionKind::ChangeRequest(id, only) => controller.change_request(&id, only),
                         ActionKind::ChangeLand(id) => controller.change_land(&id),
@@ -738,8 +860,19 @@ fn run_command_bar(app: &mut App, jobs: &Sender<Job>, line: &str) {
             dispatch(app, jobs, "switch", ActionKind::Switch(name.to_string()));
         }
         ("run", cmd) if !cmd.is_empty() => {
-            app.message = format!("→ haw run '{cmd}'");
-            dispatch(app, jobs, "run", ActionKind::Run(cmd.to_string()));
+            if app.view == View::Fleet && !app.selected_repos.is_empty() {
+                let repos = app.selected_repos.clone();
+                app.message = format!("→ haw run '{cmd}' ({} marked repos)", repos.len());
+                dispatch(
+                    app,
+                    jobs,
+                    "run",
+                    ActionKind::RunRepos(cmd.to_string(), repos),
+                );
+            } else {
+                app.message = format!("→ haw run '{cmd}'");
+                dispatch(app, jobs, "run", ActionKind::Run(cmd.to_string()));
+            }
         }
         ("change", "") => app.goto_view(View::Changesets),
         ("change", "start") => app.input = InputMode::NewChangeset(String::new()),
@@ -818,6 +951,7 @@ fn event_loop(
         stack: None,
         changeset: None,
         selected_repos: Vec::new(),
+        sort: None,
         cursor: ListState::default(),
         input: InputMode::None,
         filter: String::new(),
@@ -1145,6 +1279,9 @@ fn event_loop(
             KeyCode::Up | KeyCode::Char('k') => {
                 app.cursor.select(Some(selected.saturating_sub(1)));
             }
+            KeyCode::Char('>') => app.cycle_sort(true),
+            KeyCode::Char('<') => app.cycle_sort(false),
+            KeyCode::Char('.') => app.toggle_sort_dir(),
             KeyCode::Char('t') => app.goto_view(View::Tree),
             KeyCode::Char('c') => app.goto_view(View::Changesets),
             KeyCode::Char('m') => open_fleet_view(&mut app, jobs, View::Prs),
@@ -1213,7 +1350,11 @@ fn event_loop(
                 _ => {}
             },
             KeyCode::Char('s') if app.view == View::Fleet => {
-                if let Some(repo) = app.cursor_repo() {
+                if !app.selected_repos.is_empty() {
+                    let repos = app.selected_repos.clone();
+                    app.message = format!("→ haw sync ({} marked repos)", repos.len());
+                    dispatch(&mut app, jobs, "sync", ActionKind::SyncRepos(repos));
+                } else if let Some(repo) = app.cursor_repo() {
                     app.message = format!("→ haw sync ({repo})");
                     dispatch(&mut app, jobs, "sync", ActionKind::SyncRepo(repo));
                 } else if let Some(stack) = app.stack.clone() {
@@ -1255,7 +1396,7 @@ fn event_loop(
             KeyCode::Char('n') if app.view == View::Changesets || app.view == View::Changeset => {
                 app.input = InputMode::NewChangeset(String::new());
             }
-            KeyCode::Char(' ') if app.view == View::Changeset => {
+            KeyCode::Char(' ') if app.view == View::Changeset || app.view == View::Fleet => {
                 if let Some(repo) = app.cursor_repo() {
                     if let Some(found) = app.selected_repos.iter().position(|r| r == &repo) {
                         app.selected_repos.remove(found);
@@ -1348,6 +1489,7 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
         View::Fleet => &[
             ("s", "sync"),
             ("S", "switch stack"),
+            ("space", "mark"),
             ("p", "pin"),
             ("l", "lock"),
             ("c", "changesets"),
@@ -1357,6 +1499,8 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("r", "run"),
             ("g", "goto"),
             ("t", "tree"),
+            ("<>", "sort"),
+            (".", "dir"),
             ("/", "filter"),
             (":", "cmd"),
         ],
@@ -1386,6 +1530,8 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("o", "open in browser"),
             ("m", "refetch"),
             ("i", "CI runs"),
+            ("<>", "sort"),
+            (".", "dir"),
             ("b", "back"),
             ("/", "filter"),
             ("?", "help"),
@@ -1395,6 +1541,8 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("o", "open in browser"),
             ("i", "refetch"),
             ("m", "PR/MRs"),
+            ("<>", "sort"),
+            (".", "dir"),
             ("b", "back"),
             ("/", "filter"),
             ("?", "help"),
@@ -1717,12 +1865,25 @@ fn panel(title: String) -> Block<'static> {
 }
 
 fn header_row(cells: &[&'static str]) -> Row<'static> {
+    sorted_header_row(cells, None)
+}
+
+/// A header row that shows a `▲`/`▼` caret on the header cell at the given
+/// index. `active` is `(header-column-index, descending)`.
+fn sorted_header_row(cells: &[&'static str], active: Option<(usize, bool)>) -> Row<'static> {
     Row::new(
         cells
             .iter()
-            .map(|c| {
+            .enumerate()
+            .map(|(i, c)| {
+                let text = match active {
+                    Some((idx, desc)) if idx == i => {
+                        format!("{c} {}", if desc { "▼" } else { "▲" })
+                    }
+                    _ => (*c).to_string(),
+                };
                 Cell::from(Span::styled(
-                    *c,
+                    text,
                     Style::default()
                         .fg(theme::ACCENT)
                         .add_modifier(Modifier::BOLD),
@@ -1805,6 +1966,14 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|repo| {
             let (groups, groups_color) = groups_label(&repo.groups);
+            let marked = app.selected_repos.contains(&repo.name);
+            let mark_cell = || {
+                if marked {
+                    Cell::from(Span::styled("◉", Style::default().fg(theme::TEAL)))
+                } else {
+                    Cell::from(state_dot(repo))
+                }
+            };
             let merge_cell = match app.merge_badge(&repo.name) {
                 Some(badge) => Cell::from(Span::styled(
                     format!("{}/{}", badge.resolved, badge.total),
@@ -1814,7 +1983,7 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
             };
             if repo.missing {
                 return Row::new(vec![
-                    Cell::from(state_dot(repo)),
+                    mark_cell(),
                     Cell::from(Span::styled(
                         repo.name.clone(),
                         Style::default().fg(theme::RED),
@@ -1827,7 +1996,7 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
                 ]);
             }
             Row::new(vec![
-                Cell::from(state_dot(repo)),
+                mark_cell(),
                 Cell::from(Span::styled(
                     repo.name.clone(),
                     Style::default()
@@ -1874,17 +2043,22 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(7),
         ],
     )
-    .header(header_row(&[
-        "",
-        "REPO",
-        "GROUPS",
-        "BRANCH",
-        "HEAD",
-        "DIRTY",
-        "DRIFT",
-        "↑ / ↓",
-        "MERGE",
-    ]))
+    .header(sorted_header_row(
+        &[
+            "",
+            "REPO",
+            "GROUPS",
+            "BRANCH",
+            "HEAD",
+            "DIRTY",
+            "DRIFT",
+            "↑ / ↓",
+            "MERGE",
+        ],
+        // Fleet sort cols → header indices (skips the mark and GROUPS columns).
+        app.sort
+            .map(|(col, desc)| ([1usize, 3, 4, 5, 6, 7][col.min(5) as usize], desc)),
+    ))
     .block(panel(format!("fleet({count})")))
     .row_highlight_style(cursor_style())
     .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
@@ -2227,9 +2401,12 @@ fn draw_prs(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(9),
         ],
     )
-    .header(header_row(&[
-        "REPO", "FORGE", "#", "TITLE", "STATE", "APPR", "CI",
-    ]))
+    .header(sorted_header_row(
+        &["REPO", "FORGE", "#", "TITLE", "STATE", "APPR", "CI"],
+        // PR sort cols → header indices (skips the FORGE column).
+        app.sort
+            .map(|(col, desc)| ([0usize, 2, 3, 4][col.min(3) as usize], desc)),
+    ))
     .block(panel(format!("open PR/MRs({count})")))
     .row_highlight_style(cursor_style())
     .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
@@ -2294,9 +2471,12 @@ fn draw_ci(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(11),
         ],
     )
-    .header(header_row(&[
-        "REPO", "WORKFLOW", "BRANCH", "EVENT", "STATUS",
-    ]))
+    .header(sorted_header_row(
+        &["REPO", "WORKFLOW", "BRANCH", "EVENT", "STATUS"],
+        // CI sort cols → header indices (skips the EVENT column).
+        app.sort
+            .map(|(col, desc)| ([0usize, 1, 2, 4][col.min(3) as usize], desc)),
+    ))
     .block(panel(format!("CI runs({count})")))
     .row_highlight_style(cursor_style())
     .highlight_symbol(Span::styled("▍", Style::default().fg(theme::ACCENT)));
@@ -2678,10 +2858,15 @@ fn draw_help(frame: &mut Frame) {
             "enter",
             "drill into the repo's live git detail (scrollable)",
         ),
-        help_entry("s", "sync repo under cursor (or stack)"),
+        help_entry("s", "sync marked repos, else cursor repo (or stack)"),
+        help_entry("space", "mark/unmark repo · s / r act on the marked set"),
         help_entry("S", "switch stack · p pin · l lock"),
         help_entry("t", "tree · c changesets · r run · g goto"),
-        help_entry("/", "filter by name or group — reopens with your text"),
+        help_entry("< >", "move sort column · . toggles asc/desc"),
+        help_entry(
+            "/",
+            "fuzzy filter by name or group — reopens with your text",
+        ),
         Line::raw(""),
         help_section("fleet-wide (network)"),
         help_entry("m", "open PR/MRs across every repo"),
@@ -2689,6 +2874,7 @@ fn draw_help(frame: &mut Frame) {
         help_entry("v", "governance — plugins, artifacts, findings"),
         help_entry("enter", "drill into a PR/MR or CI run (scrollable)"),
         help_entry("o", "open the row's PR / run / artifact"),
+        help_entry("< > .", "sort PR/CI columns (. toggles asc/desc)"),
         help_entry("M / A", "merge / approve the PR/MR (asks y/n)"),
         Line::raw(""),
         help_section("changeset"),
@@ -2761,6 +2947,7 @@ mod tests {
             stack: Some("gw".to_string()),
             changeset: None,
             selected_repos: Vec::new(),
+            sort: None,
             cursor,
             input: InputMode::None,
             filter: String::new(),
@@ -2915,6 +3102,7 @@ mod tests {
             "R" | "L" => view == View::Changeset,
             "M" | "A" => matches!(view, View::Prs | View::PrDetail),
             "o" => matches!(view, View::Prs | View::Ci | View::Governance),
+            "<>" | "." => matches!(view, View::Fleet | View::Prs | View::Ci),
             _ => false,
         }
     }
@@ -3273,6 +3461,102 @@ mod tests {
         app.detail_title = "repo kernel".to_string();
         assert_eq!(app.rows_len(), 0);
         assert_eq!(view_name(&app, View::RepoDetail), "repo kernel");
+    }
+
+    #[test]
+    fn hit_is_fuzzy_and_empty_matches_all() {
+        assert!(hit("kernel", ""));
+        assert!(hit("kernel", "kern"));
+        assert!(hit("kernel", "krnl")); // fuzzy, non-contiguous
+        assert!(hit("KERNEL", "kern")); // case-insensitive
+        assert!(!hit("kernel", "zzz"));
+    }
+
+    #[test]
+    fn fleet_rows_still_filter_after_fuzzy() {
+        let mut app = fleet_app();
+        assert_eq!(app.fleet_rows().len(), 3);
+        app.filter = "hal".to_string();
+        assert_eq!(app.fleet_rows().len(), 1);
+        app.filter = "firmware".to_string();
+        assert_eq!(app.fleet_rows().len(), 2);
+        app.filter = "zzz".to_string();
+        assert!(app.fleet_rows().is_empty());
+    }
+
+    #[test]
+    fn sort_reorders_fleet_rows_by_name() {
+        let mut app = fleet_app();
+        // unsorted: manifest order kernel, hal, app-mqtt
+        let names: Vec<_> = app.fleet_rows().iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names, vec!["kernel", "hal", "app-mqtt"]);
+        // `>` from unset starts on the first sortable column (name, ascending).
+        app.cycle_sort(true);
+        assert_eq!(app.sort, Some((0, false)));
+        let names: Vec<_> = app.fleet_rows().iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names, vec!["app-mqtt", "hal", "kernel"]);
+        // `.` toggles to descending.
+        app.toggle_sort_dir();
+        assert_eq!(app.sort, Some((0, true)));
+        let names: Vec<_> = app.fleet_rows().iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names, vec!["kernel", "hal", "app-mqtt"]);
+    }
+
+    #[test]
+    fn cycle_sort_wraps_and_is_noop_off_sortable_views() {
+        let mut app = fleet_app();
+        // From unset, either direction starts on the first sortable column.
+        app.cycle_sort(false);
+        assert_eq!(app.sort, Some((0, false)));
+        // Fleet has 6 sortable columns; going backward from 0 wraps to 5.
+        app.cycle_sort(false);
+        assert_eq!(app.sort, Some((5, false)));
+        app.cycle_sort(true);
+        assert_eq!(app.sort, Some((0, false)));
+        // Non-sortable view: no-op.
+        app.view = View::Governance;
+        app.sort = None;
+        app.cycle_sort(true);
+        assert_eq!(app.sort, None);
+    }
+
+    #[test]
+    fn goto_view_and_back_reset_sort_and_marks() {
+        let mut app = fleet_app();
+        app.sort = Some((1, true));
+        app.selected_repos = vec!["kernel".to_string()];
+        app.goto_view(View::Tree);
+        assert_eq!(app.sort, None);
+        assert!(app.selected_repos.is_empty());
+    }
+
+    #[test]
+    fn space_in_fleet_toggles_marks() {
+        // Mirror the event-loop's space handler for the Fleet view.
+        let mut app = fleet_app();
+        app.view = View::Fleet;
+        app.cursor.select(Some(0));
+        let repo = app.cursor_repo().unwrap();
+        assert_eq!(repo, "kernel");
+        // toggle on
+        app.selected_repos.push(repo.clone());
+        assert!(app.selected_repos.contains(&repo));
+        // Marked rows sync as a set.
+        let (tx, rx) = channel();
+        let repos = app.selected_repos.clone();
+        dispatch(&mut app, &tx, "sync", ActionKind::SyncRepos(repos));
+        assert_eq!(drain(&rx), vec!["sync"]);
+    }
+
+    #[test]
+    fn bulk_run_with_marks_dispatches_run_repos() {
+        let mut app = fleet_app();
+        app.view = View::Fleet;
+        app.selected_repos = vec!["kernel".to_string(), "hal".to_string()];
+        let (tx, rx) = channel();
+        run_command_bar(&mut app, &tx, "run echo hi");
+        // Still labelled "run" so the output overlay path is unchanged.
+        assert_eq!(drain(&rx), vec!["run"]);
     }
 
     #[test]

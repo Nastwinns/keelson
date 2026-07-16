@@ -2130,6 +2130,56 @@ impl CliController {
             Ok(format!("sync failed for: {}", failures.join(", ")))
         }
     }
+
+    /// Run `cmd` across every real repo, or only the given marked set.
+    fn run_cmd_filtered(&self, cmd: &str, only: Option<&[String]>) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let backend = ShellGit;
+        let repos: Vec<(String, PathBuf)> = ws
+            .manifest
+            .repos
+            .iter()
+            .filter(|(name, _)| only.is_none_or(|set| set.iter().any(|r| r == *name)))
+            .map(|(name, repo)| (name.clone(), ws.root.join(repo.checkout_path(name))))
+            .filter(|(_, path)| backend.is_repo(path))
+            .collect();
+        let results = fan_out(&repos, default_jobs(None), |(name, path)| {
+            let output = shell_command(cmd).current_dir(path).output();
+            (name.clone(), output)
+        });
+
+        let mut report = format!("$ {cmd}\n");
+        let mut failures = 0usize;
+        for (name, result) in &results {
+            report.push_str(&format!("── {name} ──\n"));
+            match result {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    if stdout.trim().is_empty() && stderr.trim().is_empty() {
+                        report.push_str("(no output)\n");
+                    } else {
+                        report.push_str(&stdout);
+                        report.push_str(&stderr);
+                    }
+                    if !out.status.success() {
+                        failures += 1;
+                        report.push_str(&format!("(exit: {})\n", out.status));
+                    }
+                }
+                Err(err) => {
+                    failures += 1;
+                    report.push_str(&format!("(failed to run: {err})\n"));
+                }
+            }
+        }
+        report.push_str(&format!(
+            "ran in {}/{} repos",
+            results.len() - failures,
+            results.len()
+        ));
+        Ok(report)
+    }
 }
 
 fn render_changeset(
@@ -2288,6 +2338,33 @@ impl haw_tui::Controller for CliController {
         self.sync_filtered(&stack, Some(repo))
     }
 
+    fn sync_repos(&mut self, repos: &[String]) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let stack = ws.pick_stack(None).map_err(std::io::Error::other)?;
+        let backend = ShellGit;
+        let plan = ws
+            .plan_sync(&stack, &[], &[], None, &backend)
+            .map_err(std::io::Error::other)?;
+        let tasks: Vec<_> = plan
+            .tasks
+            .into_iter()
+            .filter(|t| repos.iter().any(|r| r == &t.name))
+            .collect();
+        let results = fan_out(&tasks, default_jobs(None), |task| {
+            (task.name.clone(), sync_repo(task, &backend))
+        });
+        let failures: Vec<&str> = results
+            .iter()
+            .filter(|(_, r)| r.is_err())
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if failures.is_empty() {
+            Ok(format!("synced {} repo(s)", results.len()))
+        } else {
+            Ok(format!("sync failed for: {}", failures.join(", ")))
+        }
+    }
+
     fn switch(&mut self, stack: &str) -> std::io::Result<String> {
         let ws = self.workspace()?;
         ws.set_current_stack(stack).map_err(std::io::Error::other)?;
@@ -2316,51 +2393,11 @@ impl haw_tui::Controller for CliController {
     }
 
     fn run_cmd(&mut self, cmd: &str) -> std::io::Result<String> {
-        let ws = self.workspace()?;
-        let backend = ShellGit;
-        let repos: Vec<(String, PathBuf)> = ws
-            .manifest
-            .repos
-            .iter()
-            .map(|(name, repo)| (name.clone(), ws.root.join(repo.checkout_path(name))))
-            .filter(|(_, path)| backend.is_repo(path))
-            .collect();
-        let results = fan_out(&repos, default_jobs(None), |(name, path)| {
-            let output = shell_command(cmd).current_dir(path).output();
-            (name.clone(), output)
-        });
+        self.run_cmd_filtered(cmd, None)
+    }
 
-        let mut report = format!("$ {cmd}\n");
-        let mut failures = 0usize;
-        for (name, result) in &results {
-            report.push_str(&format!("── {name} ──\n"));
-            match result {
-                Ok(out) => {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    if stdout.trim().is_empty() && stderr.trim().is_empty() {
-                        report.push_str("(no output)\n");
-                    } else {
-                        report.push_str(&stdout);
-                        report.push_str(&stderr);
-                    }
-                    if !out.status.success() {
-                        failures += 1;
-                        report.push_str(&format!("(exit: {})\n", out.status));
-                    }
-                }
-                Err(err) => {
-                    failures += 1;
-                    report.push_str(&format!("(failed to run: {err})\n"));
-                }
-            }
-        }
-        report.push_str(&format!(
-            "ran in {}/{} repos",
-            results.len() - failures,
-            results.len()
-        ));
-        Ok(report)
+    fn run_cmd_in(&mut self, cmd: &str, repos: &[String]) -> std::io::Result<String> {
+        self.run_cmd_filtered(cmd, Some(repos))
     }
 
     fn change_start(&mut self, id: &str) -> std::io::Result<String> {
@@ -2906,6 +2943,10 @@ impl haw_tui::Controller for DemoController {
         Ok(format!("synced `{repo}` — up to date"))
     }
 
+    fn sync_repos(&mut self, repos: &[String]) -> std::io::Result<String> {
+        Ok(format!("synced {} repo(s) — up to date", repos.len()))
+    }
+
     fn switch(&mut self, stack: &str) -> std::io::Result<String> {
         Ok(format!("switched to `{stack}` — synced (4 repos)"))
     }
@@ -2922,6 +2963,15 @@ impl haw_tui::Controller for DemoController {
         Ok(format!(
             "$ {cmd}\n── kernel ──\nOK\n── hal ──\nOK\n── app-mqtt ──\nOK\nran in 3/3 repos"
         ))
+    }
+
+    fn run_cmd_in(&mut self, cmd: &str, repos: &[String]) -> std::io::Result<String> {
+        let mut report = format!("$ {cmd}\n");
+        for repo in repos {
+            report.push_str(&format!("── {repo} ──\nOK\n"));
+        }
+        report.push_str(&format!("ran in {}/{} repos", repos.len(), repos.len()));
+        Ok(report)
     }
 
     fn change_start(&mut self, id: &str) -> std::io::Result<String> {
