@@ -15,6 +15,7 @@ haw-git = { path = "crates/haw-git", version = "0.1.0" }
 haw-forge = { path = "crates/haw-forge", version = "0.1.0" }
 haw-merge = { path = "crates/haw-merge", version = "0.1.0" }
 haw-tui = { path = "crates/haw-tui", version = "0.1.0" }
+haw-plugin = { path = "crates/haw-plugin", version = "0.1.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

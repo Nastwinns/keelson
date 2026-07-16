@@ -793,6 +793,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
+name = "haw-artifact"
+version = "0.1.0"
+dependencies = [
+ "haw-plugin",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "haw-compliance"
+version = "0.1.0"
+dependencies = [
+ "haw-plugin",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "haw-core"
 version = "0.1.0"
 dependencies = [
@@ -830,6 +848,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "haw-git-gate"
+version = "0.1.0"
+dependencies = [
+ "haw-plugin",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "haw-merge"
 version = "0.1.0"
 dependencies = [
@@ -837,6 +864,14 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+]
+
+[[package]]
+name = "haw-plugin"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

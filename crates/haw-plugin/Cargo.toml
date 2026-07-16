@@ -1,0 +1,15 @@
+[package]
+name = "haw-plugin"
+description = "SDK for authoring haw-<name> plugins against the haw.plugin/1 contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
