@@ -117,6 +117,85 @@ Output is line-capped to keep the panel bounded. A plugin that produces no outpu
 a short placeholder. A plugin that is not on `PATH` reports a clear error in the cockpit
 rather than crashing it.
 
+## Managing plugins
+
+`haw plugins` (plural) is the management surface — discover what exists, see what's
+installed, and install first-party plugins. It is a defined subcommand, so it never
+collides with `haw <name>` dispatch: `haw plugins list` always runs the built-in, even
+if a `haw-plugins` binary sits on `PATH`.
+
+### `haw plugins list`
+
+A table merging three sources, deduped by name:
+
+- **Official catalog** — the first-party plugins shipped in this repo.
+- **Installed** — every `haw-<name>` executable found on `PATH`.
+- **Subscribed** — the workspace manifest `[plugins]` entries and their phases (when
+  run inside a workspace; it degrades gracefully when there is none).
+
+```
+$ haw plugins list
+NAME        STATUS     SUBSCRIBED    DESCRIPTION
+artifact    available  -             SLSA/in-toto provenance + cosign/minisign signing
+aspice      installed  pre-request   ASPICE/qualification traceability from the pinned fleet
+compliance  available  post-build    SBOM (CycloneDX + SPDX) generation
+...
+```
+
+`STATUS` is `installed` when the `haw-<name>` binary is on `PATH`, else `available`.
+`SUBSCRIBED` lists the phases from the manifest, or `-`. A plugin discovered on `PATH`
+that is not in the catalog still appears (with source `path`).
+
+`--format json` emits a `haw.plugins/1` document for tooling:
+
+```sh
+haw plugins list --format json | jq '.plugins[] | select(.installed | not) | .name'
+```
+
+```json
+{
+  "schema": "haw.plugins/1",
+  "plugins": [
+    {
+      "name": "aspice",
+      "crate": "haw-aspice",
+      "installed": true,
+      "subscribed_phases": ["pre-request"],
+      "description": "ASPICE/qualification traceability from the pinned fleet",
+      "source": "catalog"
+    }
+  ]
+}
+```
+
+### `haw plugins install <name>`
+
+Install a plugin binary via `cargo install`. A catalog name (`aspice`) resolves to its
+crate (`haw-aspice`); any other value is used verbatim, so a full crate name works too.
+The first-party plugins are workspace members (not yet on crates.io), so the default
+source is `--git https://github.com/Nastwinns/hawser`:
+
+```sh
+haw plugins install aspice                 # cargo install --git <repo> haw-aspice
+haw plugins install aspice --dry-run        # print the command, run nothing
+haw plugins install haw-foo --git https://example.com/me/plugins   # custom source
+haw plugins install some-crate --locked     # honor the crate's Cargo.lock
+```
+
+haw prints exactly what it will run (`$ cargo install …`) before running it, streams
+cargo's output, and propagates cargo's exit code. `--dry-run` prints the command and
+exits without touching cargo. If `cargo` is not on `PATH`, haw fails with an actionable
+error pointing at <https://rustup.rs>.
+
+### `haw plugins path`
+
+Print the directories haw scans for `haw-*` plugins (the `PATH` entries) — drop a
+`haw-<name>` executable into any of them to make it discoverable:
+
+```sh
+haw plugins path
+```
+
 ## Machine interface — consuming haw's own output
 
 Plugins rarely need to re-derive fleet state: haw's read commands already speak JSON.

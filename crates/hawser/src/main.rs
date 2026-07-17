@@ -469,9 +469,71 @@ Examples:
         #[arg(long, hide = true)]
         demo: bool,
     },
+    /// Discover, list, and install `haw-*` plugins.
+    #[command(after_help = "\
+Examples:
+  $ haw plugins list                        table of catalog/installed/subscribed plugins
+  $ haw plugins list --format json           machine-readable (schema haw.plugins/1)
+  $ haw plugins install aspice               cargo-install the first-party `haw-aspice`
+  $ haw plugins install aspice --dry-run      print the cargo command without running it
+  $ haw plugins path                          print the PATH dirs scanned for `haw-*`
+
+Run `haw plugins <subcommand> --help` for that subcommand's own examples.")]
+    Plugins {
+        #[command(subcommand)]
+        command: PluginsCommand,
+    },
     /// Anything else runs a `haw-<name>` plugin from PATH.
     #[command(external_subcommand)]
     Plugin(Vec<String>),
+}
+
+#[derive(Subcommand)]
+enum PluginsCommand {
+    /// List plugins: official catalog, PATH-installed, and manifest-subscribed.
+    #[command(after_help = "\
+Examples:
+  $ haw plugins list                   NAME/STATUS/SUBSCRIBED/DESCRIPTION table
+  $ haw plugins list --format json      machine-readable (schema haw.plugins/1)
+
+STATUS is `installed` when the `haw-<name>` binary is on PATH, else `available`.
+SUBSCRIBED shows the phases from the workspace manifest `[plugins]` (if any).")]
+    List {
+        /// `text` (default) or `json` (schema haw.plugins/1).
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Install a plugin binary via `cargo install`.
+    #[command(after_help = "\
+Examples:
+  $ haw plugins install aspice                       cargo install --git <repo> haw-aspice
+  $ haw plugins install aspice --dry-run              print the command, run nothing
+  $ haw plugins install haw-custom --git https://example.com/me/plugins   custom source
+  $ haw plugins install some-crate --locked           honor the crate's Cargo.lock
+
+The first-party plugins are workspace members (not yet on crates.io), so the
+default source is `--git https://github.com/Nastwinns/hawser`. Pass `--git <url>`
+to install from a different repository.")]
+    Install {
+        /// Plugin name (catalog name like `aspice`, or a crate like `haw-foo`).
+        name: String,
+        /// Install from this git URL instead of the first-party repository.
+        #[arg(long, value_name = "URL")]
+        git: Option<String>,
+        /// Pass `--locked` to `cargo install` (honor the crate's Cargo.lock).
+        #[arg(long)]
+        locked: bool,
+        /// Print the `cargo install` command and exit; run nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Print the directories scanned for `haw-*` plugins (the PATH entries).
+    #[command(after_help = "\
+Examples:
+  $ haw plugins path       list every PATH dir haw scans for `haw-*` binaries
+
+Drop a `haw-<name>` executable into any of these to make it discoverable.")]
+    Path,
 }
 
 #[derive(Subcommand)]
@@ -921,6 +983,16 @@ fn run() -> Result<ExitCode> {
         },
         Command::Completions { shell } => completions(shell),
         Command::Dash { demo } => dash(demo)?,
+        Command::Plugins { command } => match command {
+            PluginsCommand::List { format } => plugins_list(&format)?,
+            PluginsCommand::Install {
+                name,
+                git,
+                locked,
+                dry_run,
+            } => return plugins_install(&name, git.as_deref(), locked, dry_run),
+            PluginsCommand::Path => plugins_path(),
+        },
         Command::Plugin(args) => return plugin(&args),
     }
     Ok(ExitCode::SUCCESS)
@@ -2975,6 +3047,266 @@ fn fire_phase(ws: &Workspace, hook: hooks::Hook, extra: serde_json::Value) -> Re
     Ok(())
 }
 
+/// The first-party plugins shipped in this repository. `name` is the bare
+/// subcommand (`haw <name>` / `haw-<name>`), `krate` the workspace crate.
+struct CatalogPlugin {
+    name: &'static str,
+    krate: &'static str,
+    description: &'static str,
+}
+
+/// The official catalog. Kept hardcoded (not on crates.io yet); the default
+/// `haw plugins install` source is the first-party repository below.
+const PLUGIN_CATALOG: &[CatalogPlugin] = &[
+    CatalogPlugin {
+        name: "aspice",
+        krate: "haw-aspice",
+        description: "ASPICE/qualification traceability from the pinned fleet",
+    },
+    CatalogPlugin {
+        name: "jira",
+        krate: "haw-jira",
+        description: "link a changeset to a Jira issue and transition it on land",
+    },
+    CatalogPlugin {
+        name: "misra",
+        krate: "haw-misra",
+        description: "MISRA C static-analysis gate (cppcheck) for pre-request",
+    },
+    CatalogPlugin {
+        name: "compliance",
+        krate: "haw-compliance",
+        description: "SBOM (CycloneDX + SPDX) generation",
+    },
+    CatalogPlugin {
+        name: "artifact",
+        krate: "haw-artifact",
+        description: "SLSA/in-toto provenance + cosign/minisign signing",
+    },
+    CatalogPlugin {
+        name: "git-gate",
+        krate: "haw-git-gate",
+        description: "secret / hygiene pre-commit & lifecycle gate",
+    },
+];
+
+/// The first-party plugin source used by `haw plugins install` when no
+/// `--git <url>` is given (these crates are workspace members, not on crates.io).
+const PLUGIN_GIT_SOURCE: &str = "https://github.com/Nastwinns/hawser";
+
+/// One merged plugin row for `haw plugins list`, deduped by name across the
+/// catalog, PATH-discovered binaries, and manifest subscriptions.
+struct PluginRow {
+    name: String,
+    krate: Option<String>,
+    installed: bool,
+    subscribed_phases: Vec<String>,
+    description: String,
+    /// `catalog`, `path`, or `subscribed` — where the row first came from.
+    source: &'static str,
+}
+
+/// Merge the three plugin sources into a sorted, deduped-by-name row set.
+/// `installed_names` are the bare `haw-<name>` names found on PATH;
+/// `subscriptions` are `(name, phases)` from the manifest `[plugins]` map.
+/// Factored out so it is testable without touching the real PATH or a workspace.
+fn plugin_rows<'a, I>(installed_names: &[String], subscriptions: I) -> Vec<PluginRow>
+where
+    I: IntoIterator<Item = (&'a String, &'a Vec<String>)>,
+{
+    use std::collections::BTreeMap;
+
+    let subs: HashMap<String, Vec<String>> = subscriptions
+        .into_iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let installed: std::collections::HashSet<&str> =
+        installed_names.iter().map(String::as_str).collect();
+
+    // BTreeMap yields a stable, sorted, deduped-by-name result.
+    let mut by_name: BTreeMap<String, PluginRow> = BTreeMap::new();
+
+    for entry in PLUGIN_CATALOG {
+        by_name.insert(
+            entry.name.to_string(),
+            PluginRow {
+                name: entry.name.to_string(),
+                krate: Some(entry.krate.to_string()),
+                installed: installed.contains(entry.name),
+                subscribed_phases: subs.get(entry.name).cloned().unwrap_or_default(),
+                description: entry.description.to_string(),
+                source: "catalog",
+            },
+        );
+    }
+    // PATH-discovered plugins not in the catalog still surface (source "path").
+    for name in installed_names {
+        by_name.entry(name.clone()).or_insert_with(|| PluginRow {
+            name: name.clone(),
+            krate: None,
+            installed: true,
+            subscribed_phases: subs.get(name).cloned().unwrap_or_default(),
+            description: String::new(),
+            source: "path",
+        });
+    }
+    // Manifest subscriptions not otherwise known (source "subscribed").
+    for (name, phases) in &subs {
+        by_name.entry(name.clone()).or_insert_with(|| PluginRow {
+            name: name.clone(),
+            krate: None,
+            installed: installed.contains(name.as_str()),
+            subscribed_phases: phases.clone(),
+            description: String::new(),
+            source: "subscribed",
+        });
+    }
+    by_name.into_values().collect()
+}
+
+fn plugins_list(format: &str) -> Result<()> {
+    if !matches!(format, "text" | "json") {
+        bail!("unknown format `{format}` (use text or json)");
+    }
+    // A workspace is optional: subscriptions merge in when one is present.
+    let subs: Vec<(String, Vec<String>)> = open_workspace()
+        .map(|ws| {
+            ws.manifest
+                .plugins
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let installed = plugins_on_path();
+    let rows = plugin_rows(&installed, subs.iter().map(|(k, v)| (k, v)));
+
+    if format == "json" {
+        let plugins = rows
+            .iter()
+            .map(|r| {
+                json!({
+                    "name": r.name,
+                    "crate": r.krate,
+                    "installed": r.installed,
+                    "subscribed_phases": r.subscribed_phases,
+                    "description": r.description,
+                    "source": r.source,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "schema": "haw.plugins/1",
+                "plugins": plugins,
+            }))?
+        );
+        return Ok(());
+    }
+
+    let c = Palette::new();
+    let width = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max(4);
+    println!(
+        "{}",
+        c.header(&format!(
+            "{:<width$}  {:<10} {:<20} DESCRIPTION",
+            "NAME", "STATUS", "SUBSCRIBED"
+        ))
+    );
+    for r in &rows {
+        let status = if r.installed {
+            c.ok(&format!("{:<10}", "installed"))
+        } else {
+            c.dim(&format!("{:<10}", "available"))
+        };
+        let subscribed = if r.subscribed_phases.is_empty() {
+            "-".to_string()
+        } else {
+            r.subscribed_phases.join(",")
+        };
+        println!(
+            "{}  {status} {:<20} {}",
+            c.name(&format!("{:<width$}", r.name)),
+            c.rev(&subscribed),
+            c.dim(&r.description),
+        );
+    }
+    Ok(())
+}
+
+/// Resolve a plugin `name` to the crate to install: a catalog name maps to its
+/// crate (`haw-aspice`); anything else is used verbatim so a full crate name
+/// (e.g. `haw-foo` or a crates.io crate) still works.
+fn resolve_install_crate(name: &str) -> String {
+    PLUGIN_CATALOG
+        .iter()
+        .find(|e| e.name == name)
+        .map(|e| e.krate.to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// Build the `cargo install` argument vector for `haw plugins install`.
+/// A catalog `name` resolves to its crate; `--git` overrides the source.
+/// Factored out so the printed command is testable without running cargo.
+fn cargo_install_args(name: &str, git: Option<&str>, locked: bool) -> Vec<String> {
+    let krate = resolve_install_crate(name);
+    let source = git.unwrap_or(PLUGIN_GIT_SOURCE);
+    let mut args: Vec<String> = vec![
+        "install".to_string(),
+        "--git".to_string(),
+        source.to_string(),
+    ];
+    if locked {
+        args.push("--locked".to_string());
+    }
+    args.push(krate);
+    args
+}
+
+fn plugins_install(name: &str, git: Option<&str>, locked: bool, dry_run: bool) -> Result<ExitCode> {
+    let args = cargo_install_args(name, git, locked);
+
+    let c = Palette::new();
+    // Print exactly what will run before running it.
+    println!("{} cargo {}", c.dim("$"), args.join(" "));
+
+    if dry_run {
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let status = std::process::Command::new("cargo")
+        .args(&args)
+        .status()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                anyhow::anyhow!(
+                    "`cargo` not found on PATH — install Rust from https://rustup.rs \
+                     to use `haw plugins install`"
+                )
+            } else {
+                anyhow::Error::from(err).context("failed to launch `cargo install`")
+            }
+        })?;
+    Ok(ExitCode::from(
+        status.code().unwrap_or(1).clamp(0, 255) as u8
+    ))
+}
+
+fn plugins_path() {
+    let c = Palette::new();
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if dirs.is_empty() {
+        println!("PATH is empty — no directories are scanned for `haw-*` plugins");
+        return;
+    }
+    for dir in dirs {
+        println!("{}", c.dim(&dir.display().to_string()));
+    }
+}
+
 fn plugin(args: &[String]) -> Result<ExitCode> {
     let Some((name, rest)) = args.split_first() else {
         bail!("empty plugin invocation");
@@ -3024,7 +3356,10 @@ where
 /// Merge manifest subscriptions with a set of PATH-discovered plugin names into
 /// a sorted, deduped panel list. Factored out of [`discover_plugin_panels`] so
 /// the merge is testable without touching `PATH`.
-fn merge_plugin_panels<'a, I>(subscriptions: I, path_names: Vec<String>) -> Vec<haw_tui::PluginPanel>
+fn merge_plugin_panels<'a, I>(
+    subscriptions: I,
+    path_names: Vec<String>,
+) -> Vec<haw_tui::PluginPanel>
 where
     I: IntoIterator<Item = (&'a String, &'a Vec<String>)>,
 {
@@ -5012,6 +5347,118 @@ mod plugin_panel_tests {
         assert_eq!(sbom.phases, vec!["post-build".to_string()]);
         let scan = panels.iter().find(|p| p.name == "scan").unwrap();
         assert!(scan.phases.is_empty());
+    }
+
+    #[test]
+    fn catalog_has_the_six_first_party_plugins() {
+        let names: Vec<&str> = PLUGIN_CATALOG.iter().map(|e| e.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "aspice",
+                "jira",
+                "misra",
+                "compliance",
+                "artifact",
+                "git-gate"
+            ]
+        );
+    }
+
+    #[test]
+    fn list_marks_catalog_plugin_installed_when_binary_on_path() {
+        // Fabricate a PATH dir with a `haw-aspice` binary — do NOT touch real PATH.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("haw-aspice"), b"").unwrap();
+        let installed = plugins_in_dirs([dir.path().to_path_buf()]);
+
+        let no_subs: Vec<(String, Vec<String>)> = Vec::new();
+        let rows = plugin_rows(&installed, no_subs.iter().map(|(k, v)| (k, v)));
+
+        let aspice = rows.iter().find(|r| r.name == "aspice").unwrap();
+        assert!(
+            aspice.installed,
+            "haw-aspice binary is on the fabricated PATH"
+        );
+        assert_eq!(aspice.source, "catalog");
+        // A catalog plugin whose binary is absent is `available`, not installed.
+        let jira = rows.iter().find(|r| r.name == "jira").unwrap();
+        assert!(!jira.installed);
+    }
+
+    #[test]
+    fn list_merges_subscription_phases() {
+        let subs: Vec<(String, Vec<String>)> =
+            vec![("misra".to_string(), vec!["pre-request".to_string()])];
+        let installed: Vec<String> = Vec::new();
+        let rows = plugin_rows(&installed, subs.iter().map(|(k, v)| (k, v)));
+        let misra = rows.iter().find(|r| r.name == "misra").unwrap();
+        assert_eq!(misra.subscribed_phases, vec!["pre-request".to_string()]);
+    }
+
+    #[test]
+    fn install_crate_resolves_catalog_name_to_crate() {
+        assert_eq!(resolve_install_crate("aspice"), "haw-aspice");
+        // A verbatim crate name passes through unchanged.
+        assert_eq!(resolve_install_crate("haw-custom"), "haw-custom");
+    }
+
+    #[test]
+    fn install_dry_run_prints_expected_command_and_runs_nothing() {
+        // The exact command `haw plugins install aspice --dry-run` prints.
+        let args = cargo_install_args("aspice", None, false);
+        assert_eq!(
+            format!("cargo {}", args.join(" ")),
+            "cargo install --git https://github.com/Nastwinns/hawser haw-aspice"
+        );
+        // --dry-run must not launch cargo; it returns SUCCESS after printing.
+        let code = plugins_install("aspice", None, false, true).unwrap();
+        assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::SUCCESS));
+    }
+
+    #[test]
+    fn install_locked_and_custom_git_flow_into_the_command() {
+        let args = cargo_install_args("haw-foo", Some("https://example.com/me/plugins"), true);
+        assert_eq!(
+            args,
+            vec![
+                "install",
+                "--git",
+                "https://example.com/me/plugins",
+                "--locked",
+                "haw-foo",
+            ]
+        );
+    }
+
+    #[test]
+    fn list_json_schema_and_a_known_catalog_name() {
+        // Build rows the way `plugins_list` does, then assert the JSON shape.
+        let installed: Vec<String> = Vec::new();
+        let no_subs: Vec<(String, Vec<String>)> = Vec::new();
+        let rows = plugin_rows(&installed, no_subs.iter().map(|(k, v)| (k, v)));
+        let plugins = rows
+            .iter()
+            .map(|r| {
+                json!({
+                    "name": r.name,
+                    "crate": r.krate,
+                    "installed": r.installed,
+                    "subscribed_phases": r.subscribed_phases,
+                    "description": r.description,
+                    "source": r.source,
+                })
+            })
+            .collect::<Vec<_>>();
+        let doc = json!({"schema": "haw.plugins/1", "plugins": plugins});
+        assert_eq!(doc["schema"], "haw.plugins/1");
+        let names: Vec<&str> = doc["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["name"].as_str())
+            .collect();
+        assert!(names.contains(&"compliance"));
     }
 
     #[test]
