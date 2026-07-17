@@ -5,6 +5,21 @@ you'll take *one* feature that touches *several* repos and drive it as a single 
 branch across all of them, cross-linked pull requests, and a merge that lands in the right
 order.
 
+<img class="chapter-illus" src="../assets/img/code-review.svg" alt="Reviewing cross-repo pull requests as one changeset">
+
+*One feature, one review flow — even when the code is spread across repos and forges.*
+
+<div class="objectives">
+<strong>🎯 In this chapter, you'll learn to…</strong>
+<ul>
+<li>Understand what a <strong>changeset</strong> is: one feature = one branch across N repos.</li>
+<li>Start a changeset with <code>haw change start</code> — the same branch in every repo, in one move.</li>
+<li>Track the whole feature on one screen with <code>haw change status</code>.</li>
+<li>Open cross-linked PR/MRs with <code>haw change request</code> — across GitHub, GitLab, and Bitbucket.</li>
+<li>Merge in dependency order with <code>haw change land</code>, so <code>main</code> never breaks.</li>
+</ul>
+</div>
+
 ![Driving a cross-repo changeset from the CLI](../assets/cli-changeset.gif)
 
 *One feature, many repos: `change start` branches them all, `status` aggregates, `request` opens linked PRs.*
@@ -159,6 +174,16 @@ prints its path so you can `cd "$(haw change goto FEAT-42 api)"`. And `haw chang
 snapshot save <name>` records every repo's branch + HEAD so you can restore the exact
 multi-repo state later.
 
+</div>
+
+<div class="your-turn">
+<strong>🙌 Your turn</strong>
+<p>The local half of the flow needs no forge token, so try it in a workspace right now:</p>
+<ul>
+<li>Run <code>haw change start DEMO-1 --repos hello-world,spoon-knife</code> and confirm the same <code>change/DEMO-1</code> branch appears in both repos (peek with <code>haw run 'git branch --show-current'</code>).</li>
+<li>Run <code>haw change status DEMO-1</code> and read the aggregated branch/dirty/HEAD — one dashboard instead of two tabs.</li>
+<li>Now sketch it on paper: for a real feature spanning a shared lib and two services, in what order must they <code>land</code>? (Lib first — that's the <code>deps</code> key doing its job.)</li>
+</ul>
 </div>
 
 ## ✅ Recap

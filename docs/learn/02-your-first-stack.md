@@ -7,6 +7,21 @@ break something to see how `haw` catches drift.
 Everything here clones over HTTPS with no authentication, so you can actually run every
 command as you read. Grab a terminal.
 
+<img class="chapter-illus" src="../assets/img/building-blocks.svg" alt="Composing a stack from building blocks">
+
+*A stack is just building blocks — repos snapped together under one name.*
+
+<div class="objectives">
+<strong>🎯 In this chapter, you'll learn to…</strong>
+<ul>
+<li>Write a real <code>haw.toml</code> with a remote, two repos, and a stack.</li>
+<li>Run <code>haw sync</code> to clone the fleet and generate <code>haw.lock</code>.</li>
+<li>Read the fleet with <code>haw tree</code> and <code>haw status</code>, and understand every column.</li>
+<li>See how the lockfile pins exact SHAs — the whole reproducibility trick.</li>
+<li>Cause <strong>drift</strong> on purpose and catch it with <code>haw verify</code>.</li>
+</ul>
+</div>
+
 ![Composing a stack: sync, tree, status, and the lockfile](../assets/cli-compose.gif)
 
 *The full compose loop you're about to run: `sync` clones the fleet, then `tree` / `status` read it and the lock pins it.*
@@ -224,6 +239,16 @@ restore.**
 **You just did the core loop.** Declare intent, pin it, detect drift, and restore the
 baseline — the same four moves scale from two octocat repos to a hundred-repo fleet.
 
+</div>
+
+<div class="your-turn">
+<strong>🙌 Your turn</strong>
+<p>Make the stack your own and watch <code>haw</code> react:</p>
+<ul>
+<li>Add a third repo to <code>haw.toml</code> — try <code>octocat/git-consortium.git</code> — put it in a new group, and add it to the <code>site</code> stack. Run <code>haw sync</code> again and confirm it appears in <code>haw tree</code>.</li>
+<li>Open <code>haw.lock</code> and find the new repo's pinned SHA. Notice it froze the exact commit, not the branch name.</li>
+<li>Drift it on purpose (<code>git checkout HEAD~1</code> inside it), run <code>haw verify; echo $?</code>, and confirm you get exit code <code>3</code>. Then <code>haw sync</code> to restore.</li>
+</ul>
 </div>
 
 ## ✅ Recap

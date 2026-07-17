@@ -7,6 +7,21 @@ and *act* — merge, approve, checkout — without ever leaving the terminal.
 
 In this chapter you'll take a guided tour. Open it and follow along.
 
+<img class="chapter-illus" src="../assets/img/dashboard.svg" alt="The hawser TUI cockpit dashboard">
+
+*Mission control for the whole fleet — read, drill, and act without leaving the terminal.*
+
+<div class="objectives">
+<strong>🎯 In this chapter, you'll learn to…</strong>
+<ul>
+<li>Open the cockpit with bare <code>haw</code> (or <code>haw dash --demo</code> to explore offline).</li>
+<li>Read the live fleet grid — the same columns as <code>haw status</code>, refreshing themselves.</li>
+<li>Work the core loop: <strong>read → drill (<code>Enter</code>) → act → back (<code>Esc</code>)</strong>.</li>
+<li>Act from the home row: sync, mark, run, filter, and open the PR / CI / governance views.</li>
+<li>Use the command bar (<code>:</code>) that mirrors the CLI you already learned.</li>
+</ul>
+</div>
+
 ![The hawser TUI cockpit — mission control for the fleet](../assets/haw-tui.gif)
 
 *Your mission control: the fleet grid, drill-downs, PR/CI views, and keyboard actions — all in the terminal.*
@@ -141,6 +156,16 @@ Press **`?`** any time for the help overlay, and `q` (or `Ctrl-C`) to quit.
 **Tip:** Every heavy action runs on a background worker, so the UI never freezes while a
 sync, a fetch, or a forge call is in flight. Keep navigating.
 
+</div>
+
+<div class="your-turn">
+<strong>🙌 Your turn</strong>
+<p>No workspace or network needed — the demo controller has everything to poke at:</p>
+<ul>
+<li>Launch <code>haw dash --demo</code>. Move with <code>↑</code>/<code>↓</code>, then press <code>Enter</code> to drill into a repo and <code>Esc</code> to come back — feel the read → drill → act → back rhythm.</li>
+<li>Press <code>Space</code> to mark a couple of repos (watch the <code>◉</code>), then <code>/</code> to fuzzy-filter the grid. Press <code>?</code> to open the help overlay.</li>
+<li>Press <code>:</code> and type <code>:theme nord</code>. The skin changes live — and the status line echoes the exact command, so the cockpit is teaching you the CLI as you go.</li>
+</ul>
 </div>
 
 ## ✅ Recap

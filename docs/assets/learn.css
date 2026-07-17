@@ -129,3 +129,118 @@
   font-size: 0.9em;
   margin-top: -0.6em;
 }
+
+/* ------------------------------------------------------------
+   Chapter hero illustration (unDraw flat SVG, brand-violet)
+   Used as: <img class="chapter-illus" src="../assets/img/x.svg">
+   These SVGs have transparent bg — no frame/shadow box, just a
+   soft glow so they sit lightly on the navy background.
+   ------------------------------------------------------------ */
+.content img.chapter-illus,
+.content img.side-illus {
+  display: block;
+  margin: 1.2em auto 1.4em auto;
+  width: 100%;
+  height: auto;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent;
+  box-shadow: none !important;
+  filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.35));
+}
+
+.content img.chapter-illus { max-width: 360px; }
+.content img.side-illus    { max-width: 300px; }
+
+/* An italic caption directly following an illustration reads as a
+   centered, muted one-liner (already handled by the em:only-child
+   rule above; this just tightens spacing after SVG illustrations). */
+.content img.chapter-illus + p > em:only-child,
+.content img.side-illus + p > em:only-child {
+  margin-top: -0.4em;
+}
+
+/* ------------------------------------------------------------
+   Objectives panel — "🎯 In this chapter, you'll learn to…"
+   OpenClassrooms-style opener: violet left border + tinted bg.
+   Used as: <div class="objectives"><strong>🎯 …</strong><ul>…</ul></div>
+   ------------------------------------------------------------ */
+.objectives {
+  margin: 1.6em 0 1.8em 0;
+  padding: 1.05em 1.2em 1.1em 1.2em;
+  border-radius: 10px;
+  border: 1px solid rgba(179, 156, 255, 0.30);
+  border-left: 4px solid var(--hw-violet);
+  background: var(--hw-violet-dim);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+  line-height: 1.55;
+}
+
+.objectives > strong:first-child {
+  display: block;
+  color: var(--hw-violet);
+  font-size: 1.05em;
+  letter-spacing: 0.01em;
+  margin-bottom: 0.55em;
+}
+
+.objectives ul {
+  margin: 0;
+  padding-left: 1.3em;
+}
+
+.objectives li {
+  color: #e8ecf4;
+  margin: 0.28em 0;
+}
+
+.objectives li::marker { color: var(--hw-violet); }
+
+.objectives code {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f1eaff;
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+}
+
+/* ------------------------------------------------------------
+   "🙌 Your turn" exercise box — amber + teal accent so it reads
+   as a hands-on challenge, distinct from the callouts.
+   Used as: <div class="your-turn"><strong>🙌 Your turn</strong> … </div>
+   ------------------------------------------------------------ */
+.your-turn {
+  position: relative;
+  margin: 1.8em 0;
+  padding: 1.0em 1.2em 1.05em 1.2em;
+  border-radius: 10px;
+  border: 1px solid rgba(230, 168, 45, 0.35);
+  border-left: 4px solid var(--hw-amber);
+  background: linear-gradient(
+    100deg,
+    var(--hw-amber-dim) 0%,
+    var(--hw-teal-dim) 100%
+  );
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+  line-height: 1.55;
+}
+
+.your-turn > strong:first-child {
+  display: block;
+  color: var(--hw-amber);
+  font-size: 1.05em;
+  margin-bottom: 0.45em;
+}
+
+.your-turn > :last-child { margin-bottom: 0; }
+
+.your-turn p,
+.your-turn li { color: #e8ecf4; }
+
+.your-turn code {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f1eaff;
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+}
+
+.your-turn a { color: var(--hw-teal); }

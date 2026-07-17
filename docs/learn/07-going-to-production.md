@@ -5,9 +5,28 @@ This final chapter is about doing all of that *for real* — safely, in CI, with
 trail. It's the difference between a neat local tool and something you trust to gate
 releases.
 
+<img class="chapter-illus" src="../assets/img/launching.svg" alt="Taking haw to production">
+
+*From a neat local tool to something you trust to gate releases — let's launch.*
+
+<div class="objectives">
+<strong>🎯 In this chapter, you'll learn to…</strong>
+<ul>
+<li>Internalize the <strong>trust model</strong> — the manifest is trusted code, tokens live only in the environment.</li>
+<li>Wire the four-move CI pipeline: <strong><code>sync → verify → build → test</code></strong>.</li>
+<li>Enforce reproducibility with <code>haw sync --locked</code> and <code>haw verify</code>.</li>
+<li>Distribute artifacts with <code>haw publish</code>, and produce SBOM, provenance, and signatures.</li>
+<li>Bundle an audit trail with <code>haw evidence</code> and map it to compliance standards.</li>
+</ul>
+</div>
+
 ## 🛡️ 1. First, the trust model — because it matters
 
 Before you run `haw` on anything you didn't write, internalize one rule:
+
+<img class="side-illus" src="../assets/img/secure-server.svg" alt="The hawser trust model">
+
+*Treat a `haw.toml` like a Makefile: powerful, and only run one you trust.*
 
 <div class="callout warning">
 
@@ -173,6 +192,10 @@ ISO 26262 audit.
 - The same primitives map straight onto ASPICE / ISO 26262 / DO-178C / CRA compliance.
 
 ## 🎉 You did it
+
+<img class="chapter-illus" src="../assets/img/completed-tasks.svg" alt="Course complete — you've learned hawser">
+
+*The whole loop, checked off — compose, orchestrate, ship, extend, and govern.*
 
 You've gone from "what even is this?" to composing a fleet, working across it, shipping
 cross-repo changesets, living in the cockpit, writing a plugin, and running it all in

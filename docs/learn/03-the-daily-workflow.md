@@ -8,6 +8,21 @@ In this chapter you'll run arbitrary commands across the fleet, wire up `build` 
 `test`, search every repo in one shot, and control parallelism and scope. Keep the
 `my-first-stack` workspace from the last chapter open.
 
+<img class="chapter-illus" src="../assets/img/data-processing.svg" alt="Running commands across the whole fleet in parallel">
+
+*One command in, the whole fleet processed in parallel — no hand-rolled `for` loop.*
+
+<div class="objectives">
+<strong>🎯 In this chapter, you'll learn to…</strong>
+<ul>
+<li>Fan any command across every repo with <code>haw run</code>.</li>
+<li>Declare <code>build =</code> / <code>test =</code> per repo and drive the whole fleet with <code>haw build</code> / <code>haw test</code>.</li>
+<li>Search every repo at once with <code>haw grep</code>.</li>
+<li>Control the blast radius with <code>-j</code> (parallelism) and <code>--group</code> (scope).</li>
+<li>Pick the right verb for each job without thinking.</li>
+</ul>
+</div>
+
 ![Running commands and verifying across the fleet](../assets/cli-run-verify.gif)
 
 *`haw run` fans a command across every repo in parallel; `verify` gates the fleet against the lock.*
@@ -151,6 +166,16 @@ A quick map so you pick the right verb without thinking:
 
 The rule of thumb: **`run` for one-off commands, `build`/`test` for the commands your repos
 declare.** The declared ones are the ones you'll want identical locally and in CI.
+
+<div class="your-turn">
+<strong>🙌 Your turn</strong>
+<p>Put the fleet through its paces in <code>my-first-stack</code>:</p>
+<ul>
+<li>Run <code>haw run 'git log -1 --oneline'</code> and confirm you get one line per repo, grouped by name.</li>
+<li>Run <code>haw grep TODO</code> across the fleet. Then narrow it: <code>haw run --group core 'git log -1 --oneline'</code> — only the <code>core</code> repo should answer.</li>
+<li>Force it fully serial with <code>haw run -j 1 'git status -s'</code> and watch the repos process one at a time instead of in parallel.</li>
+</ul>
+</div>
 
 ## ✅ Recap
 

@@ -5,6 +5,21 @@ it **without forking**. In this chapter you'll discover plugins, install one, an
 your very own in the language of your choice. It's easier than you'd expect: a plugin is
 just a program that reads some JSON and prints some JSON.
 
+<img class="chapter-illus" src="../assets/img/design-tools.svg" alt="Building your own haw plugins">
+
+*Reach for the toolbox — you extend `haw` in any language, no fork required.*
+
+<div class="objectives">
+<strong>🎯 In this chapter, you'll learn to…</strong>
+<ul>
+<li>Understand the dispatch rule: any unknown <code>haw &lt;name&gt;</code> runs <code>haw-&lt;name&gt;</code> from your <code>PATH</code>.</li>
+<li>Discover and install plugins with <code>haw plugins list</code> and <code>haw plugins install</code>.</li>
+<li>Scaffold a runnable plugin in Rust, Python, Go, or shell with <code>haw plugins new</code>.</li>
+<li>Read the tiny contract: context in (<code>haw.plugin/1</code>), report out (<code>haw.plugin.report/1</code>).</li>
+<li>Subscribe a plugin to <strong>lifecycle phases</strong> so it fires automatically.</li>
+</ul>
+</div>
+
 ## 🧩 1. The idea: `haw <name>` runs `haw-<name>`
 
 `haw` follows the same pattern as `git`, `cargo`, and `kubectl`: **any subcommand `haw`
@@ -134,8 +149,13 @@ context); and never hang.
 ## ⚡ 5. Lifecycle hooks — plugins that fire automatically
 
 Beyond typing `haw <name>`, a plugin can subscribe to **lifecycle phases** in the manifest,
-so it runs automatically around fleet operations. This is exactly how the automotive
-example wires governance:
+so it runs automatically around fleet operations.
+
+<img class="side-illus" src="../assets/img/process.svg" alt="Plugins firing automatically around fleet operations">
+
+*Hook a plugin into a phase, and it fires on its own — no one has to remember to run it.*
+
+This is exactly how the automotive example wires governance:
 
 ```toml
 [plugins]
@@ -183,6 +203,16 @@ Built something useful? Share it in two steps:
   out** (JSON on stdout, meaningful exit code). Fail open; never hang.
 - Subscribe a plugin to **lifecycle phases** in `[plugins]` so it fires automatically.
 - Publish via a crate + a one-line PR to the community index.
+
+<div class="your-turn">
+<strong>🙌 Your turn</strong>
+<p>Write a real plugin — it takes about five minutes:</p>
+<ul>
+<li>Run <code>haw plugins new mycheck --lang shell</code> (or <code>--lang python</code> if you prefer). Open the generated <code>haw-mycheck</code> and read how it parses the context.</li>
+<li>Put it on <code>PATH</code> and run it inside <code>my-first-stack</code>: <code>PATH="$PWD/haw-mycheck:$PATH" haw mycheck</code>. It should report the repos it inspected.</li>
+<li>Add one line that counts the repos and <code>exit 1</code> if there are fewer than two — then confirm <code>haw</code> propagates that exit code with <code>echo $?</code>. That's a CI gate you just wrote.</li>
+</ul>
+</div>
 
 ## 👉 Next
 

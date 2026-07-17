@@ -10,11 +10,29 @@ cockpit — comfortably.
 Let's start with the *why*. Because once the problem clicks, every command in `haw`
 suddenly makes sense.
 
+<img class="chapter-illus" src="../assets/img/version-control.svg" alt="Version control across many repositories">
+
+*Many repos, one coordinated whole — that's the puzzle hawser solves.*
+
+<div class="objectives">
+<strong>🎯 In this chapter, you'll learn to…</strong>
+<ul>
+<li>Recognize the three taxes of a multi-repo product: version coordination, cross-repo PRs, and reproducibility.</li>
+<li>Explain hawser in one line — a <code>package.json</code> + lockfile, but for a fleet of Git repos.</li>
+<li>Hold the whole mental model in your head: <strong>manifest → lockfile → stacks</strong>.</li>
+<li>Tell when hawser is the right tool for your world.</li>
+</ul>
+</div>
+
 ## 🧩 The problem: one product, many repos
 
 Picture a real product. It's rarely a single repository anymore. It's a shared library,
 three or four services, an SDK, some infrastructure — each in its own Git repo, each with
 its own branches, its own CI, its own history.
+
+<img class="side-illus" src="../assets/img/folder-files.svg" alt="A product split across many repositories">
+
+*One product, scattered across a shelf of separate repos.*
 
 That split is *good* engineering. But it comes with a tax:
 
@@ -106,6 +124,17 @@ And here's where we're going — the keyboard cockpit you'll be living in by Cha
 ![The hawser TUI cockpit, driving a whole fleet from the keyboard](../assets/haw-tui.gif)
 
 *The `haw` cockpit: read the fleet, drill into any repo or PR, and act — without leaving the terminal.*
+
+<div class="your-turn">
+<strong>🙌 Your turn</strong>
+<p>Before we touch a single command, do the thought experiment. Picture the last product you worked on that lived in more than one repo. Jot down:</p>
+<ul>
+<li>How many repos was it, really?</li>
+<li>The last time one feature forced you to open PRs in several of them at once — how did you keep track?</li>
+<li>Could you reproduce, today, the <em>exact</em> set of commits that were live three months ago?</li>
+</ul>
+<p>Hold those answers. By Chapter 4 you'll have a one-command answer to each.</p>
+</div>
 
 ## ✅ Recap
 
