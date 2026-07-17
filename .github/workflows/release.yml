@@ -136,7 +136,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo generate-rpm -p crates/hawser
+          # RPM Version cannot contain '-' (it separates version-release); a
+          # pre-release like 0.1.3-beta.1 must become 0.1.3~beta.1 for rpm.
+          VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          RPMVER=${VER//-/~}
+          cargo generate-rpm -p crates/hawser -s "version = \"${RPMVER}\""
           mkdir -p pkg
           cp target/generate-rpm/*.rpm pkg/
 
