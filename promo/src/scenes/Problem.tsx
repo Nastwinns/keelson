@@ -31,8 +31,8 @@ export const Problem: React.FC = () => {
           opacity: fadeIn(frame, 4),
         }}
       >
-        five real embedded upstreams — each pinned to{" "}
-        <span style={{ color: theme.red }}>???</span>
+        five real embedded upstreams —{" "}
+        <span style={{ color: theme.red }}>none pinned yet</span>
       </div>
 
       {fleet.map((r, i) => {
@@ -73,16 +73,16 @@ export const Problem: React.FC = () => {
                 alignItems: "center",
               }}
             >
-              <span style={{ color: theme.dim }}>@</span>
+              <span style={{ color: theme.dim }}>🔓</span>
               <span
                 style={{
                   background: "rgba(248,81,73,0.12)",
                   padding: "2px 12px",
                   borderRadius: 6,
-                  letterSpacing: 3,
+                  letterSpacing: 1,
                 }}
               >
-                ???
+                unpinned
               </span>
               <span style={{ color: theme.dim, fontSize: 18 }}>{r.group}</span>
             </div>
