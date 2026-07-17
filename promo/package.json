@@ -1,0 +1,21 @@
+{
+  "name": "hawser-promo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remotion promo video for hawser — the compose wedge on a real embedded fleet",
+  "scripts": {
+    "dev": "remotion studio",
+    "render": "remotion render HawserPromo out/hawser-promo.mp4",
+    "still": "remotion still HawserPromo out/poster.png --frame=60"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.290",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "remotion": "4.0.290"
+  },
+  "devDependencies": {
+    "@types/react": "19.0.0",
+    "typescript": "5.7.3"
+  }
+}

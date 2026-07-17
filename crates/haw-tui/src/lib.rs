@@ -640,9 +640,19 @@ enum Outcome {
     Action(&'static str, io::Result<String>),
 }
 
+/// One back-stack entry: the view to return to plus a STABLE crumb label
+/// captured at push time. The label is frozen so a drill-in that mutates live
+/// state (`detail_title`, `files_repo`, …) can't rewrite an ancestor crumb —
+/// which previously caused duplicated/identity-lost trails.
+#[derive(Debug, Clone, PartialEq)]
+struct Crumb {
+    view: View,
+    label: String,
+}
+
 struct App {
     view: View,
-    back: Vec<View>,
+    back: Vec<Crumb>,
     snapshot: Snapshot,
     stack: Option<String>,
     changeset: Option<String>,
@@ -686,6 +696,11 @@ struct App {
     detail_text: Option<String>,
     /// Panel title + crumb label for the shared detail view.
     detail_title: String,
+    /// Stable crumb label of the view we're about to leave, captured by a
+    /// drill-in helper BEFORE it mutates live state (e.g. `detail_title`). When
+    /// set, `goto_view` uses it for the pushed back-stack entry instead of the
+    /// (now-stale) live `view_name`. Consumed on each push.
+    outgoing_crumb: Option<String>,
     /// Scroll offset for the shared detail view.
     detail_scroll: u16,
     /// Scroll offset to apply once the next `Outcome::Detail` text loads
@@ -967,9 +982,11 @@ impl App {
         }
     }
 
-    /// Path of the first existing artifact for the plugin under the cursor in
-    /// the governance view, for `o` (open the artifact).
-    fn cursor_path(&self) -> Option<String> {
+    /// Path + on-disk existence of the best artifact for the plugin under the
+    /// cursor in the governance view, for `o` (open the artifact). Prefers an
+    /// existing artifact, falling back to a declared-but-missing one so the
+    /// caller can report it as not-found rather than silently "opening" it.
+    fn cursor_path(&self) -> Option<(String, bool)> {
         if self.view != View::Governance {
             return None;
         }
@@ -980,7 +997,7 @@ impl App {
             .iter()
             .find(|a| a.plugin == plugin && a.exists)
             .or_else(|| gov.artifacts.iter().find(|a| a.plugin == plugin))
-            .map(|a| a.path.clone())
+            .map(|a| (a.path.clone(), a.exists))
     }
 
     fn cursor_repo(&self) -> Option<String> {
@@ -1122,11 +1139,26 @@ impl App {
             if is_top_level(view) {
                 self.back.clear();
                 if view != View::Fleet {
-                    self.back.push(View::Fleet);
+                    self.back.push(Crumb {
+                        view: View::Fleet,
+                        label: view_name(self, View::Fleet),
+                    });
                 }
-            } else if self.back.last() != Some(&self.view) {
-                self.back.push(self.view);
+            } else if self.back.last().map(|c| c.view) != Some(self.view) {
+                // Capture the OUTGOING view's crumb label now, before we switch.
+                // A drill-in helper may have stashed a frozen label (taken before
+                // it overwrote live state); otherwise derive it live.
+                let label = self
+                    .outgoing_crumb
+                    .take()
+                    .unwrap_or_else(|| view_name(self, self.view));
+                self.back.push(Crumb {
+                    view: self.view,
+                    label,
+                });
             }
+            // Any unconsumed stash is stale once we've switched.
+            self.outgoing_crumb = None;
             self.view = view;
             self.cursor.select(Some(0));
             self.filter.clear();
@@ -1154,6 +1186,7 @@ impl App {
 
     fn go_back(&mut self) {
         if let Some(previous) = self.back.pop() {
+            let previous = previous.view;
             self.view = previous;
             self.filter.clear();
             self.sort = None;
@@ -1378,6 +1411,10 @@ fn open_detail(
     busy: &'static str,
     job: Job,
 ) {
+    // Freeze the outgoing view's crumb BEFORE we overwrite `detail_title`, so a
+    // detail→detail drill-in (e.g. CiDetail→logs) keeps the parent's identity
+    // instead of duplicating the child's title.
+    app.outgoing_crumb = Some(view_name(app, app.view));
     app.detail_title = title;
     app.detail_text = None;
     app.detail_scroll = 0;
@@ -1474,6 +1511,9 @@ fn open_pr_file_content(app: &mut App, jobs: &Sender<Job>, path: &str) {
     // Snapshot the browser so `go_back` into PrFiles restores it; `goto_view`
     // clears the `pr_files_*` fields on the way into the detail view.
     app.pr_files_return = Some(((repo.clone(), number, title), app.pr_file_entries.clone()));
+    // Freeze the PrFiles crumb (with its #number) before goto_view clears the
+    // pr_files_* state that view_name reads.
+    app.outgoing_crumb = Some(view_name(app, View::PrFiles));
     app.goto_view(View::PrDetail);
     app.busy = Some("PR file");
     let _ = jobs.send(Job::PrFileContent(
@@ -1546,6 +1586,9 @@ fn open_file_content(app: &mut App, jobs: &Sender<Job>, name: &str) {
         app.files_entries.clone(),
     ));
     let remote = app.files_remote;
+    // Freeze the Files crumb (with its repo:/subpath) before goto_view clears
+    // the files_* state that view_name reads.
+    app.outgoing_crumb = Some(view_name(app, View::Files));
     app.goto_view(View::RepoDetail);
     app.busy = Some("file");
     let _ = jobs.send(Job::FileContent(repo, path, remote, title));
@@ -1649,6 +1692,19 @@ fn open_plugin_render(app: &mut App, jobs: &Sender<Job>, name: &str) {
         "plugin render",
         Job::PluginRender(name.to_string()),
     );
+}
+
+/// Whether `s` looks like a URL (has a `scheme://` prefix) rather than a local
+/// filesystem path. Used to decide whether a missing artifact is openable.
+fn is_url(s: &str) -> bool {
+    matches!(
+        s.split_once("://"),
+        Some((scheme, _))
+            if !scheme.is_empty()
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    )
 }
 
 /// Open `url` with the platform's default browser, detached (best effort).
@@ -1897,6 +1953,7 @@ fn event_loop(
         gov: None,
         detail_text: None,
         detail_title: String::new(),
+        outgoing_crumb: None,
         detail_scroll: 0,
         pending_scroll: None,
         files_return: None,
@@ -2414,10 +2471,19 @@ fn event_loop(
                 }
             }
             KeyCode::Char('o') if app.view == View::Governance => match app.cursor_path() {
-                Some(path) if !path.is_empty() => match open_in_browser(&path) {
-                    Ok(()) => app.message = format!("→ opened {path}"),
-                    Err(err) => app.message = format!("open failed: {err}"),
-                },
+                Some((path, exists)) if !path.is_empty() => {
+                    // A local artifact file that doesn't exist can't be opened —
+                    // the best-effort spawn would falsely report success. URLs
+                    // (scheme://…) are always handed off to the opener.
+                    if !exists && !is_url(&path) {
+                        app.message = format!("artifact not found: {path}");
+                    } else {
+                        match open_in_browser(&path) {
+                            Ok(()) => app.message = format!("→ opened {path}"),
+                            Err(err) => app.message = format!("open failed: {err}"),
+                        }
+                    }
+                }
                 _ => app.message = "open: no artifact for this plugin".to_string(),
             },
             KeyCode::Char('g') => {
@@ -3015,11 +3081,22 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
     }
 }
 
+/// Terminal height below which the header collapses to a compact 1-line banner
+/// so data rows and the detail panel never get squeezed out entirely.
+const COMPACT_HEADER_HEIGHT: u16 = 16;
+
 fn draw(frame: &mut Frame, app: &mut App) {
+    // On short terminals the full ~6-row header eats every row; collapse it to a
+    // single compact line so the body (data rows / detail) always has space.
+    let header_h = if frame.area().height < COMPACT_HEADER_HEIGHT {
+        1
+    } else {
+        6
+    };
     let zones = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6),
+            Constraint::Length(header_h),
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -3265,7 +3342,81 @@ fn hint_grid(hints: &[(&'static str, &'static str)], width: u16) -> Vec<Line<'st
     lines
 }
 
+/// The always-visible "all keys" pointer line. Rendered both as the last row of
+/// the full header's key column AND as the whole compact header, so a `?` for
+/// the full key list is reachable at any width/height.
+fn all_keys_pointer_line() -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            "<q>",
+            Style::default()
+                .fg(theme::red())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" quit ", Style::default().fg(theme::dim())),
+        Span::styled(
+            "<:>",
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" cmd ", Style::default().fg(theme::dim())),
+        Span::styled(
+            "<?>",
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" all keys (scrollable)", Style::default().fg(theme::dim())),
+    ])
+}
+
+/// A one-line compact header for short terminals: context + stack + the always-
+/// visible `<?> keys` pointer, so data rows are never squeezed out.
+fn draw_compact_header(frame: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(20), Constraint::Length(30)])
+        .split(area);
+
+    let mut ctx = vec![
+        Span::styled(" ⚓ ", Style::default().fg(theme::mauve())),
+        Span::styled(
+            app.snapshot.root_label.clone(),
+            Style::default()
+                .fg(theme::text())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  stack:", Style::default().fg(theme::dim())),
+        Span::styled(
+            app.stack.clone().unwrap_or_else(|| "—".to_string()),
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if !app.errors.is_empty() {
+        ctx.push(Span::styled(
+            format!("  ⚠ {} (E)", app.errors.len()),
+            Style::default()
+                .fg(theme::red())
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(ctx)), cols[0]);
+    frame.render_widget(
+        Paragraph::new(all_keys_pointer_line()).alignment(Alignment::Right),
+        cols[1],
+    );
+}
+
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
+    // Short terminal: single compact line (still carries the `<?>` pointer).
+    if area.height <= 1 {
+        draw_compact_header(frame, app, area);
+        return;
+    }
+
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -3328,30 +3479,15 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     }
     frame.render_widget(Paragraph::new(Text::from(info)), columns[0]);
 
+    // Always reserve the LAST header row for the `<?> all keys` pointer, then
+    // fill the rows above with as many hint-grid lines as fit. This guarantees
+    // the pointer is visible even when the grid alone would overflow the header
+    // (narrow widths produce many rows that would otherwise push it out).
     let mut key_lines = hint_grid(key_hints(app.view), columns[1].width);
-    key_lines.push(Line::from(vec![
-        Span::styled(
-            "<q>",
-            Style::default()
-                .fg(theme::red())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" quit ", Style::default().fg(theme::dim())),
-        Span::styled(
-            "<:>",
-            Style::default()
-                .fg(theme::accent())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" cmd ", Style::default().fg(theme::dim())),
-        Span::styled(
-            "<?>",
-            Style::default()
-                .fg(theme::accent())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" all keys (scrollable)", Style::default().fg(theme::dim())),
-    ]));
+    let reserved = 1usize;
+    let room = usize::from(columns[1].height).saturating_sub(reserved);
+    key_lines.truncate(room);
+    key_lines.push(all_keys_pointer_line());
     frame.render_widget(Paragraph::new(Text::from(key_lines)), columns[1]);
 
     let logo = vec![
@@ -3491,9 +3627,14 @@ fn groups_label(groups: &[String]) -> (String, ratatui::style::Color) {
 }
 
 fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
+    // On short terminals drop the 5-row per-repo detail panel so the table keeps
+    // room for data rows (the panel + table chrome would otherwise consume every
+    // row and show a header with zero repos).
+    let show_detail = area.height >= 9;
+    let detail_h = if show_detail { 5 } else { 0 };
     let zones = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(5)])
+        .constraints([Constraint::Min(3), Constraint::Length(detail_h)])
         .split(area);
 
     let rows: Vec<Row> = app
@@ -3692,10 +3833,12 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
         ]));
     }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).block(panel("detail".to_string())),
-        zones[1],
-    );
+    if show_detail {
+        frame.render_widget(
+            Paragraph::new(Text::from(lines)).block(panel("detail".to_string())),
+            zones[1],
+        );
+    }
 }
 
 fn draw_stacks(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -4680,9 +4823,11 @@ fn draw_crumbs(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
-    for view in &app.back {
+    for crumb in &app.back {
+        // Render the STABLE label captured when this view was pushed, so live
+        // state changes (detail_title, files_repo) can't rewrite an ancestor.
         spans.push(Span::styled(
-            format!(" {} ", view_name(app, *view)),
+            format!(" {} ", crumb.label),
             Style::default().fg(theme::dim()).bg(theme::surface0()),
         ));
         spans.push(Span::raw(" "));
@@ -4713,9 +4858,13 @@ fn draw_crumbs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn help_entry(key: &'static str, desc: &'static str) -> Line<'static> {
+    // Pad the key to a min field width AND always append at least one trailing
+    // space, so keys longer than the field (`:merge cleanup <repo>`, `:theme
+    // <name>`) still get a separator before their description rather than
+    // running straight into it.
     Line::from(vec![
         Span::styled(
-            format!("  {key:<10}"),
+            format!("  {key:<10}   "),
             Style::default()
                 .fg(theme::accent())
                 .add_modifier(Modifier::BOLD),
@@ -4922,6 +5071,7 @@ mod tests {
             gov: None,
             detail_text: None,
             detail_title: "detail".to_string(),
+            outgoing_crumb: None,
             detail_scroll: 0,
             pending_scroll: None,
             files_return: None,
@@ -5598,7 +5748,10 @@ mod tests {
         app.view = View::Governance;
         app.gov = Some(gov());
         app.cursor.select(Some(0));
-        assert_eq!(app.cursor_path().as_deref(), Some(".haw/sbom/app.cdx.json"));
+        assert_eq!(
+            app.cursor_path(),
+            Some((".haw/sbom/app.cdx.json".to_string(), true))
+        );
         app.cursor.select(Some(1));
         assert_eq!(app.cursor_path(), None);
     }
@@ -5835,7 +5988,10 @@ mod tests {
     fn back_from_a_pr_file_restores_the_files_browser() {
         let mut app = fleet_app();
         let (tx, rx) = channel();
-        app.back = vec![View::Prs];
+        app.back = vec![Crumb {
+            view: View::Prs,
+            label: "pr/mr".to_string(),
+        }];
         open_pr_files(&mut app, &tx, "kernel", 7, "add dma");
         let _ = rx.try_recv();
         app.pr_file_entries = Some(vec![PrFileEntry {
@@ -6248,7 +6404,10 @@ mod tests {
         open_files(&mut app, &tx, "kernel", false);
         app.files_subpath = "src".to_string();
         app.files_entries = Some(vec![fe("main.rs", false), fe("lib.rs", false)]);
-        app.back = vec![View::Fleet];
+        app.back = vec![Crumb {
+            view: View::Fleet,
+            label: "fleet".to_string(),
+        }];
         // Drill into a file — Files state is snapshotted, then cleared by goto_view.
         open_file_content(&mut app, &tx, "main.rs");
         assert_eq!(app.view, View::RepoDetail);
@@ -6259,6 +6418,88 @@ mod tests {
         assert_eq!(app.files_repo.as_deref(), Some("kernel"));
         assert_eq!(app.files_subpath, "src");
         assert_eq!(app.files_entries.as_ref().map(Vec::len), Some(2));
+    }
+
+    /// A detail→detail drill-in (CiDetail → logs) freezes the parent's crumb
+    /// label at push time, so the back-stack entry keeps the CiDetail identity
+    /// instead of duplicating the child's (logs) title.
+    #[test]
+    fn ci_detail_to_logs_freezes_a_stable_parent_crumb() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        // Drill fleet → CiDetail (its live title becomes "CI kernel #9001").
+        open_ci_detail(&mut app, &tx, "kernel", 9001, "#9001");
+        assert_eq!(app.view, View::CiDetail);
+        let ci_crumb = view_name(&app, View::CiDetail);
+        // Drill CiDetail → logs (still a detail view; detail_title now mutates).
+        open_ci_logs(&mut app, &tx, "kernel", 9001, "#9001");
+        // The pushed CiDetail crumb is frozen to what it read as, NOT the new
+        // logs title — no duplication.
+        let labels: Vec<&str> = app.back.iter().map(|c| c.label.as_str()).collect();
+        assert!(
+            labels.contains(&ci_crumb.as_str()),
+            "CiDetail crumb frozen to {ci_crumb:?}, got {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|l| l.contains("logs")),
+            "no logs title leaked into an ancestor crumb: {labels:?}"
+        );
+    }
+
+    /// Files → open a file freezes the Files crumb (with its repo) before
+    /// goto_view clears files_* state, so the repo identity is not lost.
+    #[test]
+    fn files_to_file_crumb_preserves_the_repo() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        open_files(&mut app, &tx, "kernel", false);
+        app.files_entries = Some(vec![fe("main.rs", false)]);
+        open_file_content(&mut app, &tx, "main.rs");
+        let files_crumb = app
+            .back
+            .iter()
+            .rev()
+            .find(|c| c.view == View::Files)
+            .expect("Files pushed onto the back-stack");
+        assert!(
+            files_crumb.label.contains("kernel"),
+            "repo preserved in the frozen Files crumb: {:?}",
+            files_crumb.label
+        );
+    }
+
+    #[test]
+    fn help_entry_always_separates_key_from_description() {
+        // Long keys (past the padding field) still get a separator space.
+        for key in [
+            ":merge cleanup <repo>",
+            ":theme <name>",
+            ":merge abort <repo>",
+            ":grep <pat>",
+        ] {
+            let line = help_entry(key, "DESC");
+            let rendered: String = line
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>();
+            // The key token and the description must not be adjacent.
+            assert!(
+                !rendered.contains(&format!("{key}DESC")),
+                "key ran into desc: {rendered:?}"
+            );
+            assert!(rendered.contains(&format!("{key}   DESC")) || rendered.contains(" DESC"));
+        }
+    }
+
+    #[test]
+    fn is_url_distinguishes_schemes_from_paths() {
+        assert!(is_url("https://example.com/a"));
+        assert!(is_url("http://x"));
+        assert!(is_url("file:///tmp/a"));
+        assert!(!is_url(".haw/sbom/app.cdx.json"));
+        assert!(!is_url("/abs/path"));
+        assert!(!is_url("relative/path"));
     }
 
     /// #2 pending_scroll is applied (clamped) when the detail text loads,
@@ -6321,7 +6562,10 @@ mod tests {
         app.goto_view(View::Errors);
         app.goto_view(View::Tree);
         // Back-stack holds only the root, never a chain of peers.
-        assert_eq!(app.back, vec![View::Fleet]);
+        assert_eq!(
+            app.back.iter().map(|c| c.view).collect::<Vec<_>>(),
+            vec![View::Fleet]
+        );
         // `b` returns straight to the fleet.
         app.go_back();
         assert_eq!(app.view, View::Fleet);
@@ -6334,7 +6578,10 @@ mod tests {
         app.goto_view(View::Prs); // peer → back = [Fleet]
         let (tx, _rx) = channel();
         open_files(&mut app, &tx, "kernel", false); // drill-in → pushes Prs
-        assert_eq!(app.back, vec![View::Fleet, View::Prs]);
+        assert_eq!(
+            app.back.iter().map(|c| c.view).collect::<Vec<_>>(),
+            vec![View::Fleet, View::Prs]
+        );
         app.go_back();
         assert_eq!(app.view, View::Prs);
     }

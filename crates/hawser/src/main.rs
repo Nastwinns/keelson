@@ -4321,10 +4321,31 @@ fn plugins_in_dirs(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
 /// the plugin emits a `haw.plugin.view/1` document (`{title, lines}`) its title
 /// and lines are rendered; otherwise the raw stdout is shown. Output is
 /// line-capped to keep the detail view bounded.
+/// A friendly detail-body panel shown when a catalog plugin isn't installed.
+/// Returned as `Ok` (not an error) so the TUI renders it without logging.
+fn not_installed_hint(name: &str) -> String {
+    let first_party = PLUGIN_CATALOG.iter().any(|e| e.name == name);
+    let mut hint = format!(
+        "Plugin \"{name}\" is not installed.\n\nInstall it with:\n  haw plugins install {name}\n"
+    );
+    if first_party {
+        hint.push_str("\n(It's a first-party plugin from the catalog.)\n");
+    }
+    hint
+}
+
 fn render_plugin_panel(ws: &Workspace, name: &str) -> std::io::Result<String> {
     use std::io::Write;
 
     let binary = format!("haw-{name}");
+
+    // A catalog plugin that simply isn't installed is an EXPECTED state, not an
+    // error: render a friendly install hint (as Ok) so the TUI shows it in the
+    // detail body without logging an error.
+    if !plugins_on_path().iter().any(|n| n == name) {
+        return Ok(not_installed_hint(name));
+    }
+
     let context = json!({
         "schema": "haw.plugin/1",
         "intent": "render",
@@ -4349,9 +4370,9 @@ fn render_plugin_panel(ws: &Workspace, name: &str) -> std::io::Result<String> {
     let mut child = match spawned {
         Ok(child) => child,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(std::io::Error::other(format!(
-                "no `{binary}` on PATH — nothing to render"
-            )));
+            // Raced with an uninstall between listing and render: still a
+            // not-installed state, so render the hint rather than an error.
+            return Ok(not_installed_hint(name));
         }
         Err(err) => return Err(err),
     };
@@ -6348,6 +6369,41 @@ mod plugin_panel_tests {
         // A catalog plugin whose binary is absent is `available`, not installed.
         let jira = rows.iter().find(|r| r.name == "jira").unwrap();
         assert!(!jira.installed);
+    }
+
+    #[test]
+    fn not_installed_hint_is_a_friendly_install_panel() {
+        // A first-party catalog plugin gets the install command AND the catalog note.
+        let hint = not_installed_hint("artifact");
+        assert!(hint.contains("Plugin \"artifact\" is not installed."));
+        assert!(hint.contains("haw plugins install artifact"));
+        assert!(hint.contains("first-party plugin from the catalog"));
+        // Not an error string — no "failed"/"nothing to render" language.
+        assert!(!hint.contains("failed"));
+        assert!(!hint.contains("nothing to render"));
+
+        // A non-catalog plugin still gets the hint, minus the catalog note.
+        let other = not_installed_hint("bespoke");
+        assert!(other.contains("haw plugins install bespoke"));
+        assert!(!other.contains("first-party"));
+    }
+
+    #[test]
+    fn render_plugin_panel_returns_ok_hint_when_not_installed() {
+        // A plugin whose `haw-<name>` binary is absent from PATH renders the
+        // install hint as Ok — it must NOT surface as an Err (which the TUI logs).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(MANIFEST_FILE);
+        std::fs::write(
+            &path,
+            "[repo.a]\nurl = \"https://example.com/a.git\"\nrev = \"main\"\n",
+        )
+        .unwrap();
+        let ws = Workspace::open_manifest(&path).unwrap();
+        let out = render_plugin_panel(&ws, "definitely-not-installed-xyz")
+            .expect("not-installed is Ok, not Err");
+        assert!(out.contains("is not installed"));
+        assert!(out.contains("haw plugins install definitely-not-installed-xyz"));
     }
 
     #[test]

@@ -1,0 +1,66 @@
+export const theme = {
+  bg: "#0d1117",
+  bgSoft: "#161b22",
+  panel: "#1c2128",
+  border: "#30363d",
+  text: "#e6edf3",
+  dim: "#8b949e",
+  accent: "#a371f7",
+  accentDeep: "#8A2BE2",
+  green: "#3fb950",
+  amber: "#d29922",
+  red: "#f85149",
+  blue: "#58a6ff",
+  mono: "'SF Mono', 'JetBrains Mono', 'Fira Code', 'Menlo', monospace",
+  sans:
+    "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+};
+
+// Real data captured from examples/embedded-real (every command was executed).
+export const fleet = [
+  {
+    name: "coremark",
+    repo: "eembc/coremark",
+    group: "benchmark",
+    sha: "d5fad6b",
+    result: "CoreMark 1.0 : 26021.34",
+    ok: "COREMARK_RAN",
+    color: "#58a6ff",
+  },
+  {
+    name: "cjson",
+    repo: "DaveGamble/cJSON",
+    group: "data",
+    sha: "12c4bf1",
+    result: "100% tests passed (19)",
+    ok: "ctest OK",
+    color: "#3fb950",
+  },
+  {
+    name: "monocypher",
+    repo: "LoupVaillant/Monocypher",
+    group: "crypto",
+    sha: "a1b9f4e",
+    result: "libmonocypher.a",
+    ok: "MONOCYPHER_LIB_OK",
+    color: "#a371f7",
+  },
+  {
+    name: "libcanard",
+    repo: "OpenCyphal/libcanard",
+    group: "protocol",
+    sha: "7e0d3c2",
+    result: "C11 -fsyntax-only",
+    ok: "LIBCANARD_SYNTAX_OK",
+    color: "#d29922",
+  },
+  {
+    name: "mbedtls",
+    repo: "Mbed-TLS/mbedtls",
+    group: "security",
+    sha: "4f2b8a0",
+    result: "libmbedcrypto.a",
+    ok: "libmbed*.a",
+    color: "#f85149",
+  },
+];
