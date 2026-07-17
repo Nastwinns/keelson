@@ -129,11 +129,13 @@ test ran in 1/1 repos
 Negative control verified: point the grep at a marker that never appears and the QEMU step
 exits 1 — so `haw test` genuinely fails if the RTOS doesn't boot, rather than always passing.
 
-> **Submodule caveat (real).** `haw sync --recurse-submodules` aborts on `FreeRTOS/FreeRTOS`:
-> it declares a large forest of heavy submodules (wolfSSL, several AWS IoT SDKs, …) and one
-> failing clone aborts the whole recursive update. Work around it by syncing the top level
-> (`haw sync --filter=blob:none`) and initializing only the submodules your target needs:
-> `git submodule update --init --filter=blob:none FreeRTOS/Source`.
+> **Submodules are fault-tolerant.** `haw sync --recurse-submodules` initializes each
+> submodule independently and **skips broken/unreachable ones with a warning** instead of
+> aborting — important for big upstream repos like `FreeRTOS/FreeRTOS` that declare a large
+> forest of heavy submodules (wolfSSL, several AWS IoT SDKs, …). The kernel your target
+> needs (`FreeRTOS/Source`) is initialized; a submodule that 404s just prints
+> `haw: skipped submodule '<path>': …` and the sync still succeeds. (`ext`/`fd`/`file`
+> transports stay hard-disabled in submodule fetches — the RCE guard is preserved.)
 
 Swap QEMU for **Renode** with one line — `test = "renode --console -e 'include @sim.resc; start; sleep 5; quit'"` then grep the UART log the same way.
 

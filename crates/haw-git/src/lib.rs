@@ -57,6 +57,26 @@ fn run(args: &[&str], cwd: Option<&Path>) -> Result<String, GitError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// A `git` command for submodule init/update. Submodule URLs come from a repo's
+/// `.gitmodules` (not user-initiated), so the plain `git_command` allowlist
+/// (`protocol.<x>.allow=user`) would refuse to fetch them. Allow the safe network
+/// transports for the nested clone while STILL hard-disabling the command-executing
+/// (`ext`/`fd`) and local (`file`) transports — those remain the RCE surface.
+fn git_command_submodule(cwd: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.arg("-c").arg("protocol.allow=never");
+    cmd.arg("-c").arg("protocol.http.allow=always");
+    cmd.arg("-c").arg("protocol.https.allow=always");
+    cmd.arg("-c").arg("protocol.ssh.allow=always");
+    cmd.arg("-c").arg("protocol.git.allow=always");
+    cmd.arg("-c").arg("protocol.file.allow=never");
+    cmd.arg("-c").arg("protocol.ext.allow=never");
+    cmd.arg("-c").arg("protocol.fd.allow=never");
+    cmd.current_dir(cwd);
+    cmd
+}
+
 fn is_full_sha(rev: &str) -> bool {
     rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -84,11 +104,12 @@ fn clone_argv(url: &str, dest: &Path, opts: &CloneOpts) -> Vec<std::ffi::OsStrin
         argv.push("--depth".into());
         argv.push(depth.to_string().into());
     }
-    // Submodules follow the superproject's pinned commit, so recursing at clone
-    // time stays reproducible.
-    if opts.submodules {
-        argv.push("--recurse-submodules".into());
-    }
+    // NOTE: submodules are intentionally NOT recursed at clone time. `git clone
+    // --recurse-submodules` is all-or-nothing: one broken/unreachable submodule
+    // aborts the whole clone. Instead, when `opts.submodules` is set, `sync_repo`
+    // runs the tolerant `update_submodules` AFTER the superproject is cloned, so a
+    // single bad submodule is skipped with a warning rather than failing the sync.
+    let _ = opts.submodules;
     // Terminate option parsing so a `url` beginning with `-` can never be
     // interpreted by git as an option (e.g. `--upload-pack=…`).
     argv.push("--".into());
@@ -282,10 +303,45 @@ impl GitBackend for ShellGit {
     }
 
     fn update_submodules(&self, repo: &Path) -> Result<(), GitError> {
-        run(
-            &["submodule", "update", "--init", "--recursive"],
-            Some(repo),
-        )?;
+        // Tolerant, per-submodule init. `git submodule update --init --recursive`
+        // is all-or-nothing — one broken/unreachable submodule (common in big
+        // upstream repos like FreeRTOS: wolfSSL, AWS IoT SDKs, …) aborts the whole
+        // update. We instead update each top-level submodule independently and
+        // SKIP the ones that fail, so the fleet sync still succeeds.
+        if !repo.join(".gitmodules").exists() {
+            return Ok(()); // nothing to do
+        }
+        // Refresh submodule URLs from .gitmodules into .git/config.
+        let _ = git_command_submodule(repo)
+            .args(["submodule", "sync", "--recursive"])
+            .output();
+        // List declared submodule paths from .gitmodules.
+        let listing = git_command_submodule(repo)
+            .args([
+                "config",
+                "--file",
+                ".gitmodules",
+                "--get-regexp",
+                r"^submodule\..*\.path$",
+            ])
+            .output()?;
+        let stdout = String::from_utf8_lossy(&listing.stdout);
+        let paths: Vec<String> = stdout
+            .lines()
+            .filter_map(|line| line.split_once(' ').map(|(_, p)| p.trim().to_string()))
+            .filter(|p| !p.is_empty())
+            .collect();
+        for path in paths {
+            let out = git_command_submodule(repo)
+                .args(["submodule", "update", "--init", "--recursive", "--", &path])
+                .output()?;
+            if !out.status.success() {
+                eprintln!(
+                    "haw: skipped submodule '{path}': {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+        }
         Ok(())
     }
 
@@ -407,14 +463,17 @@ mod tests {
     }
 
     #[test]
-    fn submodules_reaches_git_argv() {
+    fn submodules_not_recursed_at_clone_time() {
+        // `--recurse-submodules` is all-or-nothing (a broken submodule aborts the
+        // clone), so we deliberately keep it OUT of the clone argv and handle
+        // submodules with the tolerant post-clone `update_submodules` instead.
         let opts = CloneOpts {
             submodules: true,
             ..CloneOpts::none()
         };
         let argv = argv_strings("u", &opts);
         assert!(
-            argv.contains(&"--recurse-submodules".to_string()),
+            !argv.iter().any(|a| a == "--recurse-submodules"),
             "argv = {argv:?}"
         );
     }
