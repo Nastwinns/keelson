@@ -38,7 +38,7 @@ jobs:
             vhs "$tape"
           done
       - name: Commit rendered GIFs
-        uses: stefanzweifel/git-auto-commit-action@b863ae1933cb653a53c021fe36dbb774e1fb9403 # v5.2.0
+        uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7.2.0
         with:
           commit_message: "demos: re-render VHS GIFs"
           file_pattern: "demo/*.gif"
