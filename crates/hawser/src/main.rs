@@ -2458,11 +2458,21 @@ fn build_or_test(build: bool, groups: &[String], jobs: Option<usize>) -> Result<
             Ok(s) if s.success() => {}
             Ok(s) => {
                 failures += 1;
-                eprintln!("{} {} {}", c.err("✗"), c.name(name), c.dim(&format!("({s})")));
+                eprintln!(
+                    "{} {} {}",
+                    c.err("✗"),
+                    c.name(name),
+                    c.dim(&format!("({s})"))
+                );
             }
             Err(err) => {
                 failures += 1;
-                eprintln!("{} {} {}", c.err("✗"), c.name(name), c.dim(&format!("(failed to run: {err})")));
+                eprintln!(
+                    "{} {} {}",
+                    c.err("✗"),
+                    c.name(name),
+                    c.dim(&format!("(failed to run: {err})"))
+                );
             }
         }
     }

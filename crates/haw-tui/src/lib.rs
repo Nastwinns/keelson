@@ -471,6 +471,53 @@ pub trait Controller: Send {
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// The single source of truth mapping each sortable column (the index the
+/// row comparators in `fleet_rows`/`pr_rows`/`ci_rows` switch on) to the
+/// rendered header-cell index the caret must sit on. The slice length is the
+/// sortable-column count for the view; an empty slice means "not sortable".
+///
+/// Fleet comparator cols: name, branch, head, dirty, drift, ahead_behind.
+/// Fleet header cells:     "", REPO, GROUPS, BRANCH, HEAD, DIRTY, DRIFT, ↑/↓, MERGE.
+/// PR comparator cols:     repo, number, title, state.
+/// PR header cells:        REPO, FORGE, #, TITLE, STATE, APPR, CI.
+/// CI comparator cols:     repo, name, branch, status.
+/// CI header cells:        REPO, WORKFLOW, BRANCH, EVENT, STATUS.
+fn sort_header_map(view: View) -> &'static [usize] {
+    match view {
+        View::Fleet => &[1, 3, 4, 5, 6, 7],
+        View::Prs => &[0, 2, 3, 4],
+        View::Ci => &[0, 1, 2, 4],
+        _ => &[],
+    }
+}
+
+/// The header-cell index + direction the sort caret should render on for the
+/// current `sort` state, or `None` when nothing is sorted / the view is not
+/// sortable. Derived from [`sort_header_map`] so the caret can never drift from
+/// the comparator.
+fn sort_caret(view: View, sort: Option<(u16, bool)>) -> Option<(usize, bool)> {
+    let map = sort_header_map(view);
+    sort.and_then(|(col, desc)| map.get(col as usize).map(|&idx| (idx, desc)))
+}
+
+/// Whether a view is a top-level peer reachable by a bare letter switch
+/// (`t`/`c`/`m`/`i`/`v`/`P`/`E`/`S`). Switching between peers resets the
+/// back-stack to root (Fleet); it is not a drill-in.
+fn is_top_level(view: View) -> bool {
+    matches!(
+        view,
+        View::Fleet
+            | View::Stacks
+            | View::Changesets
+            | View::Prs
+            | View::Ci
+            | View::Governance
+            | View::Plugins
+            | View::Tree
+            | View::Errors
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum View {
     Stacks,
@@ -589,6 +636,8 @@ struct App {
     /// Free-running frame counter; paces the input cursor blink.
     tick: u64,
     help: bool,
+    /// Scroll offset for the `?` help overlay (j/k/PgUp/PgDn).
+    help_scroll: u16,
     /// Set when the user asked to leave the cockpit into a repo (goto/shell).
     exit: Option<Exit>,
     /// File browser: the repo whose tree is open, `None` outside `View::Files`.
@@ -616,6 +665,13 @@ struct App {
     detail_title: String,
     /// Scroll offset for the shared detail view.
     detail_scroll: u16,
+    /// Scroll offset to apply once the next `Outcome::Detail` text loads
+    /// (grep jump-to-line). Cleared after it is consumed. `None` = scroll to 0.
+    pending_scroll: Option<usize>,
+    /// A snapshot of the file browser (`repo`, `subpath`, `entries`) captured
+    /// when drilling from Files into the detail viewer, so `go_back` into Files
+    /// restores the exact listing instead of wiping it.
+    files_return: Option<(String, String, Option<Vec<FileEntry>>)>,
     /// The PR currently drilled into (`repo`, `number`, `title`), so the
     /// PR detail view can merge/approve it; `None` outside a PR drill-in.
     detail_pr: Option<(String, u64, String)>,
@@ -888,6 +944,10 @@ impl App {
         match self.view {
             View::Fleet => self.fleet_rows().get(index).map(|r| r.name.clone()),
             View::Changeset => self.change_repo_rows().get(index).map(|r| r.name.clone()),
+            View::Prs => self.pr_rows().get(index).map(|p| p.repo.clone()),
+            View::Ci => self.ci_rows().get(index).map(|r| r.repo.clone()),
+            View::Grep => self.grep_rows().get(index).map(|h| h.repo.clone()),
+            View::Files | View::RepoDetail => self.files_repo.clone(),
             _ => None,
         }
     }
@@ -904,6 +964,28 @@ impl App {
             }
             View::PrDetail => self.detail_pr.clone(),
             _ => None,
+        }
+    }
+
+    /// The rendered state (`open`/`draft`/`merged`/`closed`) of the PR the
+    /// cursor/drill-in points at, so write actions can be gated. `None` outside
+    /// a PR context or when the PR is not in the fetched list.
+    fn current_pr_state(&self) -> Option<String> {
+        let (repo, number, _) = self.current_pr()?;
+        self.prs
+            .as_deref()?
+            .iter()
+            .find(|p| p.repo == repo && p.number == number)
+            .map(|p| p.state.clone())
+    }
+
+    /// Whether the current PR accepts write actions (merge/approve/checkout):
+    /// only open or draft PRs. A missing state (list not fetched) is permissive
+    /// so the drill-in path still works.
+    fn current_pr_writable(&self) -> bool {
+        match self.current_pr_state() {
+            Some(state) => state.contains("open") || state.contains("draft"),
+            None => true,
         }
     }
 
@@ -989,7 +1071,18 @@ impl App {
 
     fn goto_view(&mut self, view: View) {
         if self.view != view {
-            self.back.push(self.view);
+            // Top-level peer switches (Fleet/Stacks/Changesets/Prs/Ci/…) reset
+            // the back-stack to root rather than piling on: a lateral move is not
+            // a drill-in, so `b` should return to the fleet, not replay a chain of
+            // peers. Real drill-ins (Changeset/detail/Files/Grep) still push.
+            if is_top_level(view) {
+                self.back.clear();
+                if view != View::Fleet {
+                    self.back.push(View::Fleet);
+                }
+            } else if self.back.last() != Some(&self.view) {
+                self.back.push(self.view);
+            }
             self.view = view;
             self.cursor.select(Some(0));
             self.filter.clear();
@@ -1017,18 +1110,22 @@ impl App {
             self.filter.clear();
             self.sort = None;
             self.selected_repos.clear();
+            // Returning into the file browser: restore the snapshot captured on
+            // the way into the detail viewer, so the listing is not wiped.
+            if previous == View::Files
+                && let Some((repo, subpath, entries)) = self.files_return.take()
+            {
+                self.files_repo = Some(repo);
+                self.files_subpath = subpath;
+                self.files_entries = entries;
+            }
             self.clamp_cursor();
         }
     }
 
     /// Sortable column count for the current view (0 = not sortable).
     fn sortable_cols(&self) -> u16 {
-        match self.view {
-            View::Fleet => 6,
-            View::Prs => 4,
-            View::Ci => 4,
-            _ => 0,
-        }
+        u16::try_from(sort_header_map(self.view).len()).unwrap_or(0)
     }
 
     /// Move the active sort column by `delta` (wrapping), starting from the
@@ -1221,6 +1318,7 @@ fn open_detail(
     app.detail_title = title;
     app.detail_text = None;
     app.detail_scroll = 0;
+    app.pending_scroll = None;
     app.goto_view(view);
     // Always enqueue the read; the serial worker runs it after any in-flight
     // job, so drilling in while busy still loads (never refused).
@@ -1336,9 +1434,18 @@ fn open_file_content(app: &mut App, jobs: &Sender<Job>, name: &str) {
     app.detail_title = title.clone();
     app.detail_text = None;
     app.detail_scroll = 0;
+    app.pending_scroll = None;
+    // Snapshot the browser so `go_back` into Files restores the same listing;
+    // `goto_view` clears `files_*` on the way into the detail view.
+    app.files_return = Some((
+        repo.clone(),
+        app.files_subpath.clone(),
+        app.files_entries.clone(),
+    ));
+    let remote = app.files_remote;
     app.goto_view(View::RepoDetail);
     app.busy = Some("file");
-    let _ = jobs.send(Job::FileContent(repo, path, app.files_remote, title));
+    let _ = jobs.send(Job::FileContent(repo, path, remote, title));
 }
 
 /// Run a cross-repo grep on the worker thread and open the results list.
@@ -1361,9 +1468,11 @@ fn open_grep_hit(app: &mut App, jobs: &Sender<Job>, hit: &GrepHit) {
     let title = format!("{}:/{}", hit.repo, hit.path);
     app.detail_title = title.clone();
     app.detail_text = None;
-    // The detail view clamps scroll to its content; a 1-based line maps to a
-    // 0-based scroll offset. It is re-clamped once the text loads.
-    app.detail_scroll = hit.line.saturating_sub(1) as u16;
+    app.detail_scroll = 0;
+    // A 1-based line maps to a 0-based scroll offset. Stashed as `pending_scroll`
+    // and applied (clamped) when the file text lands, since the `Outcome::Detail`
+    // arm resets `detail_scroll` to 0 on load.
+    app.pending_scroll = Some(hit.line.saturating_sub(1) as usize);
     app.goto_view(View::RepoDetail);
     app.busy = Some("file");
     let _ = jobs.send(Job::FileContent(
@@ -1672,6 +1781,7 @@ fn event_loop(
         spinner: 0,
         tick: 0,
         help: false,
+        help_scroll: 0,
         exit: None,
         files_repo: None,
         files_subpath: String::new(),
@@ -1685,6 +1795,8 @@ fn event_loop(
         detail_text: None,
         detail_title: String::new(),
         detail_scroll: 0,
+        pending_scroll: None,
+        files_return: None,
         detail_pr: None,
         detail_ci: None,
         page_size: 10,
@@ -1813,6 +1925,13 @@ fn event_loop(
                     match *result {
                         Ok(report) => {
                             app.detail_text = Some(report);
+                            // Apply any pending jump-to-line, clamped to the now-
+                            // known content height (grep hit → file line).
+                            if let Some(target) = app.pending_scroll.take() {
+                                let max = usize::from(detail_max_scroll(&app));
+                                app.detail_scroll =
+                                    u16::try_from(target.min(max)).unwrap_or(u16::MAX);
+                            }
                             app.message = "detail loaded".to_string();
                         }
                         Err(err) => {
@@ -1947,7 +2066,28 @@ fn event_loop(
         }
 
         if app.help {
-            app.help = false;
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.help_scroll = app
+                        .help_scroll
+                        .saturating_add(1)
+                        .min(help_max_scroll(frame_height(terminal)));
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    app.help_scroll = app.help_scroll.saturating_sub(1);
+                }
+                KeyCode::PageDown => {
+                    app.help_scroll = app
+                        .help_scroll
+                        .saturating_add(10)
+                        .min(help_max_scroll(frame_height(terminal)));
+                }
+                KeyCode::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
+                _ => {
+                    app.help = false;
+                    app.help_scroll = 0;
+                }
+            }
             continue;
         }
 
@@ -2068,7 +2208,10 @@ fn event_loop(
         let selected = app.cursor.selected().unwrap_or(0);
         match key.code {
             KeyCode::Char('q') => return Ok(app.exit),
-            KeyCode::Char('?') => app.help = true,
+            KeyCode::Char('?') => {
+                app.help = true;
+                app.help_scroll = 0;
+            }
             KeyCode::Char('/') => app.input = InputMode::Filter(app.filter.clone()),
             KeyCode::Char(':') => app.input = InputMode::Command(String::new()),
             KeyCode::Esc | KeyCode::Char('b') | KeyCode::Backspace if app.view == View::Files => {
@@ -2164,13 +2307,18 @@ fn event_loop(
                 app.message = "goto: put the cursor on a repo row".to_string();
             }
             KeyCode::Char('x')
-                if matches!(app.view, View::Fleet | View::RepoDetail | View::Files) =>
+                if matches!(
+                    app.view,
+                    View::Fleet
+                        | View::RepoDetail
+                        | View::Files
+                        | View::Changeset
+                        | View::Prs
+                        | View::Ci
+                        | View::Grep
+                ) =>
             {
-                let repo = match app.view {
-                    View::Files | View::RepoDetail => app.files_repo.clone(),
-                    _ => app.cursor_repo(),
-                };
-                match repo.as_deref().and_then(|r| app.repo_path(r)) {
+                match app.cursor_repo().as_deref().and_then(|r| app.repo_path(r)) {
                     Some(path) if path.exists() => {
                         app.exit = Some(Exit::Shell(path));
                         return Ok(app.exit);
@@ -2181,7 +2329,12 @@ fn event_loop(
                     None => app.message = "shell: put the cursor on a repo row".to_string(),
                 }
             }
-            KeyCode::Char('f') if matches!(app.view, View::Fleet | View::Changeset) => {
+            KeyCode::Char('f')
+                if matches!(
+                    app.view,
+                    View::Fleet | View::Changeset | View::Prs | View::Ci | View::Grep
+                ) =>
+            {
                 match app.cursor_repo() {
                     Some(repo) => {
                         let cloned = app
@@ -2361,6 +2514,12 @@ fn event_loop(
             }
             KeyCode::Char('M') if app.view == View::Prs || app.view == View::PrDetail => {
                 match app.current_pr() {
+                    Some(_) if !app.current_pr_writable() => {
+                        if let Some((_, number, _)) = app.current_pr() {
+                            let state = app.current_pr_state().unwrap_or_default();
+                            app.message = format!("PR #{number} is already {state}");
+                        }
+                    }
                     Some((repo, number, title)) => {
                         app.pending_confirm = Some(Confirm::MergePr {
                             repo,
@@ -2373,6 +2532,12 @@ fn event_loop(
             }
             KeyCode::Char('A') if app.view == View::Prs || app.view == View::PrDetail => {
                 match app.current_pr() {
+                    Some(_) if !app.current_pr_writable() => {
+                        if let Some((_, number, _)) = app.current_pr() {
+                            let state = app.current_pr_state().unwrap_or_default();
+                            app.message = format!("PR #{number} is already {state}");
+                        }
+                    }
                     Some((repo, number, title)) => {
                         app.pending_confirm = Some(Confirm::ApprovePr {
                             repo,
@@ -2385,6 +2550,12 @@ fn event_loop(
             }
             KeyCode::Char('C') if app.view == View::Prs || app.view == View::PrDetail => {
                 match app.current_pr() {
+                    Some(_) if !app.current_pr_writable() => {
+                        if let Some((_, number, _)) = app.current_pr() {
+                            let state = app.current_pr_state().unwrap_or_default();
+                            app.message = format!("PR #{number} is already {state}");
+                        }
+                    }
                     Some((repo, number, title)) => {
                         app.pending_confirm = Some(Confirm::CheckoutPr {
                             repo,
@@ -2418,9 +2589,85 @@ fn event_loop(
                 }
                 None => app.message = "logs: no CI run in view".to_string(),
             },
+            // A hinted key that fell through every guard is advertised somewhere
+            // but does nothing here — tell the user rather than no-op silently.
+            // Truly unbound keys stay quiet.
+            KeyCode::Char(c) if key_hinted_elsewhere(app.view, c) => {
+                app.message = "not available in this view — press ? for all keys".to_string();
+            }
             _ => {}
         }
     }
+}
+
+/// Whether `c` is a key the cockpit advertises in some view but not the current
+/// one — used to give feedback when a hinted-but-inapplicable key is pressed.
+/// Keeps global keys (handled everywhere) out so they never trip this path.
+fn key_hinted_elsewhere(current: View, c: char) -> bool {
+    // Keys wired globally in the event loop, handled in every view.
+    const GLOBAL: &[char] = &[
+        'q', '?', '/', ':', 'b', 'j', 'k', 'g', 'S', 'r', 't', 'c', 'm', 'i', 'v', 'P', 'E',
+    ];
+    if GLOBAL.contains(&c) {
+        return false;
+    }
+    let key = c.to_string();
+    let hinted_here = key_hints(current)
+        .iter()
+        .any(|(k, _)| hint_key_tokens(k).contains(&key.as_str()));
+    if hinted_here {
+        return false;
+    }
+    ALL_HINTED_VIEWS.iter().any(|&v| {
+        key_hints(v)
+            .iter()
+            .any(|(k, _)| hint_key_tokens(k).contains(&key.as_str()))
+    })
+}
+
+/// All views, for scanning hint labels. Mirrors the test's `ALL_VIEWS`.
+const ALL_HINTED_VIEWS: [View; 15] = [
+    View::Stacks,
+    View::Fleet,
+    View::Changesets,
+    View::Changeset,
+    View::Tree,
+    View::Prs,
+    View::Ci,
+    View::Governance,
+    View::Plugins,
+    View::Errors,
+    View::RepoDetail,
+    View::PrDetail,
+    View::CiDetail,
+    View::Files,
+    View::Grep,
+];
+
+/// Split a hint's key label into its individual key tokens. A label may pack
+/// several keys — `"enter open · R remote · b up"` advertises `enter`, `R`, `b`;
+/// `"j/k"` advertises `j` and `k`; `"<>"` advertises `<` and `>`. Each `·`-part's
+/// leading whitespace-delimited token is the key.
+fn hint_key_tokens(label: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    for part in label.split('·') {
+        let Some(first) = part.split_whitespace().next() else {
+            continue;
+        };
+        // Split combined single-char labels like `j/k` and `<>` into keys.
+        if first == "j/k" {
+            tokens.push("j");
+            tokens.push("k");
+        } else if first == "<>" {
+            tokens.push("<");
+            tokens.push(">");
+        } else if first == "PgUp/PgDn" {
+            tokens.push("PgUp/PgDn");
+        } else {
+            tokens.push(first);
+        }
+    }
+    tokens
 }
 
 fn view_name(app: &App, view: View) -> String {
@@ -2533,6 +2780,9 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("o", "open in browser"),
             ("m", "refetch"),
             ("i", "CI runs"),
+            ("g", "goto"),
+            ("x", "shell"),
+            ("f", "files"),
             ("<>", "sort"),
             (".", "dir"),
             ("PgUp/PgDn", "page"),
@@ -2546,6 +2796,9 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("o", "open in browser"),
             ("i", "refetch"),
             ("m", "PR/MRs"),
+            ("g", "goto"),
+            ("x", "shell"),
+            ("f", "files"),
             ("<>", "sort"),
             (".", "dir"),
             ("PgUp/PgDn", "page"),
@@ -2593,6 +2846,9 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
         ],
         View::Grep => &[
             ("enter", "open hit"),
+            ("g", "goto"),
+            ("x", "shell"),
+            ("f", "files"),
             ("PgUp/PgDn", "page"),
             ("b", "back"),
             ("/", "filter"),
@@ -2600,10 +2856,11 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("?", "help"),
         ],
         View::Files => &[
-            ("enter", "open · R remote · b up"),
+            ("enter", "open"),
+            ("R", "remote"),
+            ("b", "up / back"),
             ("x", "shell"),
             ("/", "filter"),
-            ("b", "back"),
             ("q", "quit"),
         ],
     }
@@ -2651,7 +2908,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         draw_confirm(frame, confirm);
     }
     if app.help {
-        draw_help(frame);
+        draw_help(frame, app.help_scroll);
     }
 }
 
@@ -2943,7 +3200,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                 .fg(theme::accent())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" help", Style::default().fg(theme::dim())),
+        Span::styled(" all keys (scrollable)", Style::default().fg(theme::dim())),
     ]));
     frame.render_widget(Paragraph::new(Text::from(key_lines)), columns[1]);
 
@@ -3176,8 +3433,9 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Min(12),
             Constraint::Min(14),
             Constraint::Length(9),
-            Constraint::Length(5),
-            Constraint::Length(6),
+            // DIRTY/DRIFT hold a "▲"/"▼" sort caret when active — width 7.
+            Constraint::Length(7),
+            Constraint::Length(7),
             Constraint::Length(9),
             Constraint::Length(7),
         ],
@@ -3194,9 +3452,7 @@ fn draw_fleet(frame: &mut Frame, app: &mut App, area: Rect) {
             "↑ / ↓",
             "MERGE",
         ],
-        // Fleet sort cols → header indices (skips the mark and GROUPS columns).
-        app.sort
-            .map(|(col, desc)| ([1usize, 3, 4, 5, 6, 7][col.min(5) as usize], desc)),
+        sort_caret(View::Fleet, app.sort),
     ))
     .block(panel(if app.problems_only {
         format!(
@@ -3593,9 +3849,7 @@ fn draw_prs(frame: &mut Frame, app: &mut App, area: Rect) {
     )
     .header(sorted_header_row(
         &["REPO", "FORGE", "#", "TITLE", "STATE", "APPR", "CI"],
-        // PR sort cols → header indices (skips the FORGE column).
-        app.sort
-            .map(|(col, desc)| ([0usize, 2, 3, 4][col.min(3) as usize], desc)),
+        sort_caret(View::Prs, app.sort),
     ))
     .block(panel(format!(
         "open PR/MRs({count}){}",
@@ -3671,9 +3925,7 @@ fn draw_ci(frame: &mut Frame, app: &mut App, area: Rect) {
     )
     .header(sorted_header_row(
         &["REPO", "WORKFLOW", "BRANCH", "EVENT", "STATUS"],
-        // CI sort cols → header indices (skips the EVENT column).
-        app.sort
-            .map(|(col, desc)| ([0usize, 1, 2, 4][col.min(3) as usize], desc)),
+        sort_caret(View::Ci, app.sort),
     ))
     .block(panel(format!(
         "CI runs({count}){}",
@@ -4218,6 +4470,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_crumbs(frame: &mut Frame, app: &App, area: Rect) {
+    // The version tag gets its own right-aligned cell so the breadcrumb trail can
+    // never overwrite it; the crumbs render into the remaining left cell.
+    let version = format!("⚓ haw v{} ", env!("CARGO_PKG_VERSION"));
+    let version_w = u16::try_from(version.chars().count()).unwrap_or(u16::MAX);
+    let cells = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(version_w)])
+        .split(area);
+
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     for view in &app.back {
         spans.push(Span::styled(
@@ -4243,14 +4504,11 @@ fn draw_crumbs(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), cells[0]);
     frame.render_widget(
-        Paragraph::new(Line::styled(
-            "⚓ haw v0.1.0 ",
-            Style::default().fg(theme::dim()),
-        ))
-        .alignment(Alignment::Right),
-        area,
+        Paragraph::new(Line::styled(version, Style::default().fg(theme::dim())))
+            .alignment(Alignment::Right),
+        cells[1],
     );
 }
 
@@ -4275,17 +4533,43 @@ fn help_section(title: &'static str) -> Line<'static> {
     )
 }
 
-fn draw_help(frame: &mut Frame) {
-    let area = frame.area();
-    let width = area.width.min(64);
-    let height = area.height.min(38);
-    let popup = Rect {
+/// The dimensions of the `?` help popup for a given terminal area: a wider,
+/// taller box so more keys fit before scrolling. One source of truth so the
+/// scroll clamp and the renderer agree.
+fn help_popup_rect(area: Rect) -> Rect {
+    let width = area.width.min(78);
+    let height = area.height.saturating_sub(2).max(6);
+    Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
         y: area.y + (area.height.saturating_sub(height)) / 2,
         width,
         height,
+    }
+}
+
+/// Max help scroll for a terminal of `term_height`: total help lines minus the
+/// popup's visible inner height (its height less the two border rows).
+fn help_max_scroll(term_height: u16) -> u16 {
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: term_height,
     };
-    let text = vec![
+    let visible = usize::from(help_popup_rect(area).height).saturating_sub(2);
+    let total = help_lines().len();
+    u16::try_from(total.saturating_sub(visible)).unwrap_or(u16::MAX)
+}
+
+/// The current terminal height, for clamping the help scroll while handling keys.
+fn frame_height(terminal: &ratatui::DefaultTerminal) -> u16 {
+    terminal.size().map(|s| s.height).unwrap_or(24)
+}
+
+/// All help lines, in order — every key and every `:` command. Shared by the
+/// renderer and the scroll-clamp so they never disagree.
+fn help_lines() -> Vec<Line<'static>> {
+    vec![
         help_section("navigation"),
         help_entry("j / k", "move · enter drill in · esc/b back"),
         help_entry("q", "quit · ctrl-c force quit"),
@@ -4351,22 +4635,36 @@ fn draw_help(frame: &mut Frame) {
         help_entry(":<repo>", "jump the fleet cursor to a matching repo"),
         help_entry(":theme <name>", "switch skin (catppuccin/dracula/nord/…)"),
         Line::raw(""),
-        Line::styled(" press any key to close", Style::default().fg(theme::dim())),
-    ];
+        help_section("help overlay"),
+        help_entry("j / k", "scroll · PgUp/PgDn page · any other key closes"),
+    ]
+}
+
+fn draw_help(frame: &mut Frame, scroll: u16) {
+    let popup = help_popup_rect(frame.area());
+    let lines = help_lines();
+    let visible = usize::from(popup.height).saturating_sub(2);
+    let max = u16::try_from(lines.len().saturating_sub(visible)).unwrap_or(u16::MAX);
+    let scroll = scroll.min(max);
+    let more = if scroll < max { " ▾ more " } else { " " };
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(Text::from(text)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme::accent()))
-                .title(Span::styled(
-                    " help ",
-                    Style::default()
-                        .fg(theme::mauve())
-                        .add_modifier(Modifier::BOLD),
-                )),
-        ),
+        Paragraph::new(Text::from(lines))
+            .scroll((scroll, 0))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme::accent()))
+                    .title(Span::styled(
+                        " help — j/k scroll ",
+                        Style::default()
+                            .fg(theme::mauve())
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .title_bottom(Span::styled(more, Style::default().fg(theme::dim()))),
+            ),
         popup,
     );
 }
@@ -4411,6 +4709,7 @@ mod tests {
             spinner: 0,
             tick: 0,
             help: false,
+            help_scroll: 0,
             exit: None,
             files_repo: None,
             files_subpath: String::new(),
@@ -4424,6 +4723,8 @@ mod tests {
             detail_text: None,
             detail_title: "detail".to_string(),
             detail_scroll: 0,
+            pending_scroll: None,
+            files_return: None,
             detail_pr: None,
             detail_ci: None,
             page_size: 10,
@@ -4552,10 +4853,15 @@ mod tests {
     fn every_hinted_key_is_handled() {
         for view in ALL_VIEWS {
             for (key, label) in key_hints(view) {
-                assert!(
-                    key_is_handled(view, key),
-                    "view {view:?} advertises <{key}> ({label}) but never handles it"
-                );
+                // A hint label may pack several keys (e.g. Files' compound
+                // "enter open · R remote · b up"); every advertised token must
+                // resolve to a real handler, not just the first.
+                for token in hint_key_tokens(key) {
+                    assert!(
+                        key_is_handled(view, token),
+                        "view {view:?} advertises <{token}> (in `{key}` — {label}) but never handles it"
+                    );
+                }
             }
         }
     }
@@ -4573,13 +4879,25 @@ mod tests {
             "n" => matches!(view, View::Changesets | View::Changeset),
             "L" => view == View::Changeset,
             "R" => matches!(view, View::Changeset | View::Files),
-            "f" => matches!(view, View::Fleet | View::Changeset),
-            "x" => matches!(view, View::Fleet | View::RepoDetail | View::Files),
+            "f" => matches!(
+                view,
+                View::Fleet | View::Changeset | View::Prs | View::Ci | View::Grep
+            ),
+            "x" => matches!(
+                view,
+                View::Fleet
+                    | View::RepoDetail
+                    | View::Files
+                    | View::Changeset
+                    | View::Prs
+                    | View::Ci
+                    | View::Grep
+            ),
             "M" | "A" | "C" => matches!(view, View::Prs | View::PrDetail),
             "d" => matches!(view, View::Prs | View::PrDetail),
             "l" => matches!(view, View::Fleet | View::Stacks | View::Ci | View::CiDetail),
             "o" => matches!(view, View::Prs | View::Ci | View::Governance),
-            "<>" | "." => matches!(view, View::Fleet | View::Prs | View::Ci),
+            "<" | ">" | "<>" | "." => matches!(view, View::Fleet | View::Prs | View::Ci),
             "PgUp/PgDn" => {
                 matches!(
                     view,
@@ -5582,7 +5900,10 @@ mod tests {
         open_grep_hit(&mut app, &tx, &hit);
         assert_eq!(app.view, View::RepoDetail);
         assert_eq!(app.detail_title, "kernel:/src/boot.rs");
-        assert_eq!(app.detail_scroll, 11);
+        // The 1-based line 12 → 0-based offset 11, carried on pending_scroll for
+        // the Outcome::Detail arm to apply (clamped) once the text loads.
+        assert_eq!(app.detail_scroll, 0);
+        assert_eq!(app.pending_scroll, Some(11));
         assert!(matches!(
             rx.try_recv(),
             Ok(Job::FileContent(repo, path, false, _)) if repo == "kernel" && path == "src/boot.rs"
@@ -5632,5 +5953,228 @@ mod tests {
         app.cursor.select(Some(1));
         assert_eq!(row_indicator(&app, 3), " · row 2/3");
         assert_eq!(row_indicator(&app, 0), "");
+    }
+
+    // ---- audit batch: fixes #1..#10 --------------------------------------
+
+    /// #1 File viewer round-trip: drilling from Files into a file, then `b`,
+    /// restores the same populated listing instead of wiping it.
+    #[test]
+    fn file_viewer_back_restores_the_browser() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        open_files(&mut app, &tx, "kernel", false);
+        app.files_subpath = "src".to_string();
+        app.files_entries = Some(vec![fe("main.rs", false), fe("lib.rs", false)]);
+        app.back = vec![View::Fleet];
+        // Drill into a file — Files state is snapshotted, then cleared by goto_view.
+        open_file_content(&mut app, &tx, "main.rs");
+        assert_eq!(app.view, View::RepoDetail);
+        assert!(app.files_return.is_some());
+        // Back into Files: the listing is restored, not empty.
+        app.go_back();
+        assert_eq!(app.view, View::Files);
+        assert_eq!(app.files_repo.as_deref(), Some("kernel"));
+        assert_eq!(app.files_subpath, "src");
+        assert_eq!(app.files_entries.as_ref().map(Vec::len), Some(2));
+    }
+
+    /// #2 pending_scroll is applied (clamped) when the detail text loads,
+    /// simulating the `Outcome::Detail` arm.
+    #[test]
+    fn pending_scroll_applied_on_detail_load() {
+        let mut app = fleet_app();
+        app.pending_scroll = Some(5);
+        // Simulate the Outcome::Detail Ok arm.
+        app.detail_scroll = 0;
+        app.detail_text = Some((0..20).map(|i| format!("line {i}\n")).collect());
+        if let Some(target) = app.pending_scroll.take() {
+            let max = usize::from(detail_max_scroll(&app));
+            app.detail_scroll = u16::try_from(target.min(max)).unwrap_or(u16::MAX);
+        }
+        assert_eq!(app.detail_scroll, 5);
+        assert!(app.pending_scroll.is_none());
+    }
+
+    #[test]
+    fn pending_scroll_clamps_to_content_height() {
+        let mut app = fleet_app();
+        app.pending_scroll = Some(999);
+        app.detail_text = Some("a\nb\nc\n".to_string());
+        if let Some(target) = app.pending_scroll.take() {
+            let max = usize::from(detail_max_scroll(&app));
+            app.detail_scroll = u16::try_from(target.min(max)).unwrap_or(u16::MAX);
+        }
+        // 3 lines → max scroll 2.
+        assert_eq!(app.detail_scroll, 2);
+    }
+
+    #[test]
+    fn open_grep_hit_stashes_pending_scroll_not_detail_scroll() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        let hit = GrepHit {
+            repo: "kernel".to_string(),
+            path: "LICENSE".to_string(),
+            line: 6,
+            text: "x".to_string(),
+        };
+        open_grep_hit(&mut app, &tx, &hit);
+        // detail_scroll stays 0 (the Outcome arm would zero it anyway); the line
+        // is carried on pending_scroll for the arm to apply post-load.
+        assert_eq!(app.detail_scroll, 0);
+        assert_eq!(app.pending_scroll, Some(5));
+    }
+
+    /// #3 Peer view switches reset the back-stack to root rather than growing it.
+    #[test]
+    fn peer_switches_do_not_grow_the_back_stack() {
+        let mut app = fleet_app();
+        assert!(app.back.is_empty());
+        // A run of lateral letter switches, k9s-style.
+        app.goto_view(View::Prs);
+        app.goto_view(View::Ci);
+        app.goto_view(View::Governance);
+        app.goto_view(View::Plugins);
+        app.goto_view(View::Errors);
+        app.goto_view(View::Tree);
+        // Back-stack holds only the root, never a chain of peers.
+        assert_eq!(app.back, vec![View::Fleet]);
+        // `b` returns straight to the fleet.
+        app.go_back();
+        assert_eq!(app.view, View::Fleet);
+        assert!(app.back.is_empty());
+    }
+
+    #[test]
+    fn drill_ins_still_push_the_back_stack() {
+        let mut app = fleet_app();
+        app.goto_view(View::Prs); // peer → back = [Fleet]
+        let (tx, _rx) = channel();
+        open_files(&mut app, &tx, "kernel", false); // drill-in → pushes Prs
+        assert_eq!(app.back, vec![View::Fleet, View::Prs]);
+        app.go_back();
+        assert_eq!(app.view, View::Prs);
+    }
+
+    /// #4 The sort caret sits on exactly the header cell the comparator sorts by,
+    /// for every sortable column of every sortable view.
+    #[test]
+    fn sort_caret_matches_comparator_columns() {
+        // Fleet: comparator cols name/branch/head/dirty/drift/ahead_behind map to
+        // header cells REPO/BRANCH/HEAD/DIRTY/DRIFT/↑↓.
+        assert_eq!(sort_header_map(View::Fleet), &[1, 3, 4, 5, 6, 7]);
+        assert_eq!(sort_header_map(View::Prs), &[0, 2, 3, 4]);
+        assert_eq!(sort_header_map(View::Ci), &[0, 1, 2, 4]);
+        // The caret index is exactly the mapped header cell.
+        for (view, cols) in [(View::Fleet, 6u16), (View::Prs, 4), (View::Ci, 4)] {
+            for col in 0..cols {
+                let (idx, desc) = sort_caret(view, Some((col, true))).unwrap();
+                assert_eq!(idx, sort_header_map(view)[col as usize]);
+                assert!(desc);
+            }
+            // Out of range / unset → no caret.
+            assert_eq!(sort_caret(view, None), None);
+        }
+    }
+
+    #[test]
+    fn sortable_cols_matches_the_header_map_len() {
+        for view in ALL_VIEWS {
+            let mut app = fleet_app();
+            app.view = view;
+            assert_eq!(
+                app.sortable_cols() as usize,
+                sort_header_map(view).len(),
+                "sortable_cols disagrees with sort_header_map for {view:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cycle_sort_caret_walks_all_sortable_columns() {
+        let mut app = fleet_app();
+        app.view = View::Fleet;
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            app.cycle_sort(true);
+            let (idx, _) = sort_caret(View::Fleet, app.sort).unwrap();
+            seen.push(idx);
+        }
+        assert_eq!(seen, vec![1, 3, 4, 5, 6, 7]);
+    }
+
+    /// #5 cursor_repo resolves the repo of a Prs/Ci/Grep row.
+    #[test]
+    fn cursor_repo_resolves_prs_ci_and_grep_rows() {
+        let mut app = fleet_app();
+        app.prs = Some(vec![pr("kernel", "fix"), pr("hal", "add")]);
+        app.ci = Some(vec![ci_run("app-mqtt", "build", "main")]);
+        app.grep_hits = Some(vec![GrepHit {
+            repo: "hal".to_string(),
+            path: "a.rs".to_string(),
+            line: 1,
+            text: "x".to_string(),
+        }]);
+        app.view = View::Prs;
+        app.cursor.select(Some(1));
+        assert_eq!(app.cursor_repo().as_deref(), Some("hal"));
+        app.view = View::Ci;
+        app.cursor.select(Some(0));
+        assert_eq!(app.cursor_repo().as_deref(), Some("app-mqtt"));
+        app.view = View::Grep;
+        app.cursor.select(Some(0));
+        assert_eq!(app.cursor_repo().as_deref(), Some("hal"));
+    }
+
+    /// #6 Write actions are gated by PR state.
+    #[test]
+    fn pr_state_gates_write_actions() {
+        let mut app = fleet_app();
+        app.view = View::Prs;
+        let mut open = pr("kernel", "fix");
+        open.state = "open".to_string();
+        let mut merged = pr("hal", "done");
+        merged.number = 2;
+        merged.state = "merged".to_string();
+        app.prs = Some(vec![open, merged]);
+        app.cursor.select(Some(0));
+        assert!(app.current_pr_writable());
+        assert_eq!(app.current_pr_state().as_deref(), Some("open"));
+        app.cursor.select(Some(1));
+        assert!(!app.current_pr_writable());
+        assert_eq!(app.current_pr_state().as_deref(), Some("merged"));
+    }
+
+    #[test]
+    fn draft_pr_is_writable() {
+        let mut app = fleet_app();
+        app.view = View::Prs;
+        let mut draft = pr("kernel", "wip");
+        draft.state = "draft".to_string();
+        app.prs = Some(vec![draft]);
+        app.cursor.select(Some(0));
+        assert!(app.current_pr_writable());
+    }
+
+    /// #10 The hint parser covers compound key labels.
+    #[test]
+    fn hint_key_tokens_splits_compound_labels() {
+        assert_eq!(hint_key_tokens("j/k"), vec!["j", "k"]);
+        assert_eq!(hint_key_tokens("<>"), vec!["<", ">"]);
+        assert_eq!(hint_key_tokens("PgUp/PgDn"), vec!["PgUp/PgDn"]);
+        assert_eq!(hint_key_tokens("enter"), vec!["enter"]);
+    }
+
+    #[test]
+    fn key_hinted_elsewhere_flags_inapplicable_but_not_global_or_unbound() {
+        // `M` is hinted in Prs but not in Fleet → inapplicable feedback.
+        assert!(key_hinted_elsewhere(View::Fleet, 'M'));
+        // `q` is global → never flagged.
+        assert!(!key_hinted_elsewhere(View::Fleet, 'q'));
+        // `z` is not hinted anywhere → stays quiet (truly unbound).
+        assert!(!key_hinted_elsewhere(View::Fleet, 'z'));
+        // `f` is now hinted in Prs → not flagged there.
+        assert!(!key_hinted_elsewhere(View::Prs, 'f'));
     }
 }
