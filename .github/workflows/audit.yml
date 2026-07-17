@@ -1,9 +1,13 @@
 name: audit
 
-# Supply-chain / advisory gate: runs cargo-audit (RUSTSEC) and cargo-deny
-# (advisories, bans, sources, licenses) on every push/PR and weekly so a
-# newly disclosed advisory against an existing dependency is caught even
-# without a code change.
+# Supply-chain / advisory gate: runs cargo-deny (advisories, bans, sources,
+# licenses) on every push/PR and weekly, so a newly disclosed advisory against
+# an existing dependency is caught even without a code change.
+#
+# cargo-deny is the single gate: it reads the same RUSTSEC advisory DB as
+# cargo-audit but with a parser that supports CVSS 4.0 advisories (cargo-audit
+# 0.21.x fails to parse the DB once any advisory uses CVSS 4.0). Ignored
+# advisories + their rationale live in deny.toml.
 
 on:
   push:
@@ -18,9 +22,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pin tool versions so the gate is reproducible and does not flake when a
-  # new tool release changes behaviour. Bump deliberately.
-  CARGO_AUDIT_VERSION: "0.21.2"
+  # Pin the tool version so the gate is reproducible and does not flake when a
+  # new release changes behaviour. Bump deliberately.
   CARGO_DENY_VERSION: "0.20.2"
 
 concurrency:
@@ -28,25 +31,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  cargo-audit:
-    name: cargo audit (RUSTSEC)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked --version "${CARGO_AUDIT_VERSION}"
-      - name: Run cargo audit
-        # Ignored advisories (see deny.toml for full rationale):
-        #  RUSTSEC-2023-0071 rsa Marvin — reachable only via octocrab GitHub-App JWT (unused, dead path)
-        #  RUSTSEC-2026-0002 lru unsoundness — transitive via ratatui, not attacker-controlled
-        #  RUSTSEC-2024-0436 paste unmaintained — build-time proc-macro via ratatui, no runtime surface
-        run: >
-          cargo audit --deny warnings
-          --ignore RUSTSEC-2023-0071
-          --ignore RUSTSEC-2026-0002
-          --ignore RUSTSEC-2024-0436
-
   cargo-deny:
     name: cargo deny (advisories, bans, sources, licenses)
     runs-on: ubuntu-latest

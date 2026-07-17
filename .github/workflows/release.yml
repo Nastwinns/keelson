@@ -393,3 +393,73 @@ jobs:
               -X POST "${URL}" -F "files=@${f}"
           done
           echo "Bitbucket: done"
+
+  # ====================================================================
+  # Promote to the public package managers — STABLE tags only.
+  # A pre-release tag (contains '-', e.g. v0.1.3-beta.1) is skipped, so
+  # `brew`/`scoop` users only ever see stable versions. Gated on the tap
+  # token so a fork without it degrades gracefully.
+  # ====================================================================
+  homebrew:
+    name: update Homebrew tap (stable only)
+    needs: [release]
+    if: ${{ !contains(github.event.inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: v
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - name: Push formula to Nastwinns/homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "skipping Homebrew tap: HOMEBREW_TAP_TOKEN not set"; exit 0
+          fi
+          gh release download "$TAG" -R Nastwinns/hawser -p hawser.rb -D dist --clobber
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/Nastwinns/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp dist/hawser.rb tap/Formula/hawser.rb
+          cd tap
+          git config user.name "haw-release-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          git add Formula/hawser.rb
+          git commit -m "hawser ${TAG#v}" || { echo "tap already up to date"; exit 0; }
+          git push
+          echo "Homebrew tap updated to ${TAG}"
+
+  scoop:
+    name: update Scoop bucket (stable only)
+    needs: [release]
+    if: ${{ !contains(github.event.inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: v
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - name: Push manifest to Nastwinns/scoop-bucket
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "skipping Scoop bucket: HOMEBREW_TAP_TOKEN not set"; exit 0
+          fi
+          gh release download "$TAG" -R Nastwinns/hawser -p hawser.json -D dist --clobber
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/Nastwinns/scoop-bucket.git" bucket
+          mkdir -p bucket/bucket
+          cp dist/hawser.json bucket/bucket/hawser.json
+          cd bucket
+          git config user.name "haw-release-bot"
+          git config user.email "noreply@users.noreply.github.com"
+          git add bucket/hawser.json
+          git commit -m "hawser ${TAG#v}" || { echo "bucket already up to date"; exit 0; }
+          git push
+          echo "Scoop bucket updated to ${TAG}"
