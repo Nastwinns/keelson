@@ -4243,7 +4243,12 @@ fn discover_plugin_panels<'a, I>(subscriptions: I) -> Vec<haw_tui::PluginPanel>
 where
     I: IntoIterator<Item = (&'a String, &'a Vec<String>)>,
 {
-    merge_plugin_panels(subscriptions, plugins_on_path())
+    // Show the official first-party catalog too (mirrors `haw plugins list`), so the
+    // Plugins view (`P`) is never empty just because nothing is installed/subscribed
+    // yet — deduped by name, subscriptions/PATH still win for the phases.
+    let mut names = plugins_on_path();
+    names.extend(PLUGIN_CATALOG.iter().map(|e| e.name.to_string()));
+    merge_plugin_panels(subscriptions, names)
 }
 
 /// Merge manifest subscriptions with a set of PATH-discovered plugin names into
@@ -4864,23 +4869,33 @@ impl haw_tui::Controller for CliController {
     }
 
     fn sync_repo(&mut self, repo: &str) -> std::io::Result<String> {
-        let ws = self.workspace()?;
-        let stack = ws.pick_stack(None).map_err(std::io::Error::other)?;
-        self.sync_filtered(&stack, Some(repo))
+        // Reuse the stack-agnostic union path so `s` on a repo works even when no
+        // stack has been selected (was: pick_stack(None) → "no stack selected").
+        self.sync_repos(std::slice::from_ref(&repo.to_string()))
     }
 
     fn sync_repos(&mut self, repos: &[String]) -> std::io::Result<String> {
         let ws = self.workspace()?;
-        let stack = ws.pick_stack(None).map_err(std::io::Error::other)?;
         let backend = ShellGit;
-        let plan = ws
-            .plan_sync(&stack, &[], &[], None, &CloneTuning::default(), &backend)
-            .map_err(std::io::Error::other)?;
-        let tasks: Vec<_> = plan
-            .tasks
-            .into_iter()
-            .filter(|t| repos.iter().any(|r| r == &t.name))
-            .collect();
+        // The TUI operates on the whole fleet, not a pre-selected stack. Use the
+        // current stack if one is set; otherwise plan across EVERY stack (union) so
+        // `s` works even before `haw switch` — then filter to the requested repos.
+        let stacks: Vec<String> = match ws.pick_stack(None) {
+            Ok(s) => vec![s],
+            Err(_) => ws.manifest.stacks.keys().cloned().collect(),
+        };
+        let mut tasks = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for stack in &stacks {
+            let plan = ws
+                .plan_sync(stack, &[], &[], None, &CloneTuning::default(), &backend)
+                .map_err(std::io::Error::other)?;
+            for task in plan.tasks {
+                if repos.iter().any(|r| r == &task.name) && seen.insert(task.name.clone()) {
+                    tasks.push(task);
+                }
+            }
+        }
         let results = fan_out(&tasks, default_jobs(None), |task| {
             (task.name.clone(), sync_repo(task, &backend))
         });
