@@ -59,17 +59,16 @@ fn is_c_file(name: &str) -> bool {
 /// Turn a file path into a cppcheck *operand* that can never be parsed as an
 /// option, even without a preceding `--`.
 ///
-/// - An absolute path is left as-is (already can't be a flag).
-/// - Anything else is given a leading `./` (so `--exitcode=0` becomes
-///   `./--exitcode=0`), which is also robust against a bare `-` prefix.
+/// Only a path that could be parsed as a flag (leading `-`) is neutralized by a
+/// leading `./` (so `--exitcode=0` becomes `./--exitcode=0`); absolute and
+/// ordinary relative paths pass through unchanged. Platform-agnostic — it does
+/// NOT rely on `is_absolute()` (a Unix-style `/abs` is not absolute on Windows)
+/// — and belt-and-suspenders behind the `--` options terminator.
 fn as_operand(path: &str) -> String {
-    if Path::new(path).is_absolute() {
-        path.to_string()
-    } else if let Some(rest) = path.strip_prefix("./") {
-        // Avoid stacking `././`, but still guarantee the `./` prefix.
-        format!("./{rest}")
-    } else {
+    if path.starts_with('-') {
         format!("./{path}")
+    } else {
+        path.to_string()
     }
 }
 
@@ -259,14 +258,17 @@ mod tests {
     }
 
     #[test]
-    fn relative_path_gets_single_dot_slash() {
-        assert_eq!(as_operand("src/a.c"), "./src/a.c");
-        // No stacked `././`.
+    fn ordinary_paths_pass_through_unchanged() {
+        // Only leading-dash names need neutralizing; normal paths are operands
+        // already (and sit behind the `--` terminator). Unchanged on all OSes.
+        assert_eq!(as_operand("src/a.c"), "src/a.c");
         assert_eq!(as_operand("./src/a.c"), "./src/a.c");
+        assert_eq!(as_operand("/abs/path/a.c"), "/abs/path/a.c");
     }
 
     #[test]
-    fn absolute_path_left_as_is() {
-        assert_eq!(as_operand("/abs/path/a.c"), "/abs/path/a.c");
+    fn dash_leading_names_are_neutralized() {
+        assert_eq!(as_operand("-x.c"), "./-x.c");
+        assert_eq!(as_operand("--exitcode=0"), "./--exitcode=0");
     }
 }
