@@ -71,9 +71,15 @@ impl GitHub {
 
     /// Raw-text GET against the GitHub REST API. `octocrab`'s helpers decode
     /// JSON, but diffs and job logs are plain text (the latter served via a 302
-    /// redirect), so this uses a small blocking `reqwest` call with a custom
-    /// `Accept` header, following redirects. `route` is API-relative (e.g.
+    /// redirect to a *different* host — `*.githubusercontent.com` /
+    /// `*.blob.core.windows.net`). The shared [`crate::http::forge_client`]
+    /// installs an SSRF-resistant redirect policy that permits that one
+    /// cross-host CDN hop while refusing redirects to arbitrary hosts, and the
+    /// body is read through a size cap. `route` is API-relative (e.g.
     /// `/repos/o/r/pulls/1`). Returns `Ok(None)` on 404 (no diff/expired logs).
+    ///
+    /// reqwest drops the `Authorization` bearer on the cross-host CDN redirect
+    /// automatically, so the token is not replayed onto the CDN host.
     fn get_text(
         &self,
         host: &str,
@@ -81,7 +87,7 @@ impl GitHub {
         accept: &str,
     ) -> Result<Option<String>, ForgeError> {
         let url = format!("{}{route}", api_base(host));
-        let mut request = reqwest::blocking::Client::new()
+        let mut request = crate::http::forge_client()
             .get(&url)
             .header(reqwest::header::ACCEPT, accept)
             .header(reqwest::header::USER_AGENT, "haw")
@@ -100,10 +106,7 @@ impl GitHub {
             let detail = response.text().unwrap_or_default();
             return Err(ForgeError::Api(format!("GET {url} -> {status}: {detail}")));
         }
-        response
-            .text()
-            .map(Some)
-            .map_err(|err| ForgeError::Api(format!("reading {url}: {err}")))
+        crate::http::read_capped_text(response, &url).map(Some)
     }
 }
 

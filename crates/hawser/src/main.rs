@@ -123,6 +123,9 @@ Examples:
     Init {
         /// Path or http(s) URL of an existing haw.toml.
         source: String,
+        /// Allow insecure (http://) or internal-IP URLs when fetching.
+        #[arg(long)]
+        insecure: bool,
     },
     /// Clone/update repos to the state in haw.lock (writes it if absent).
     #[command(after_help = "\
@@ -512,6 +515,9 @@ SUBSCRIBED shows the phases from the workspace manifest `[plugins]` (if any).
         /// Community index URL (implies --remote). Default: the first-party index.
         #[arg(long, value_name = "URL")]
         index: Option<String>,
+        /// Allow insecure (http://) or internal-IP index URLs when fetching.
+        #[arg(long)]
+        insecure: bool,
     },
     /// Scaffold a runnable `haw-<name>` plugin skeleton in a new directory.
     #[command(after_help = "\
@@ -553,9 +559,16 @@ to install from a different repository.")]
         /// Install from this git URL instead of the first-party repository.
         #[arg(long, value_name = "URL")]
         git: Option<String>,
-        /// Pass `--locked` to `cargo install` (honor the crate's Cargo.lock).
-        #[arg(long)]
+        /// Deprecated/no-op: installs are ALWAYS `--locked` for reproducibility.
+        #[arg(long, hide = true)]
         locked: bool,
+        /// Pin a custom `--git` source to this tag (default source is pinned
+        /// to this hawser version automatically).
+        #[arg(long, value_name = "TAG", conflicts_with = "rev")]
+        tag: Option<String>,
+        /// Pin a custom `--git` source to this exact commit.
+        #[arg(long, value_name = "SHA", conflicts_with = "tag")]
+        rev: Option<String>,
         /// Print the `cargo install` command and exit; run nothing.
         #[arg(long)]
         dry_run: bool,
@@ -881,7 +894,7 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     };
     match command {
-        Command::Init { source } => init(&source)?,
+        Command::Init { source, insecure } => init(&source, insecure)?,
         Command::Sync {
             locked,
             stack,
@@ -1029,14 +1042,29 @@ fn run() -> Result<ExitCode> {
                 format,
                 remote,
                 index,
-            } => plugins_list(&format, remote || index.is_some(), index.as_deref())?,
+                insecure,
+            } => plugins_list(
+                &format,
+                remote || index.is_some(),
+                index.as_deref(),
+                insecure,
+            )?,
             PluginsCommand::New { name, lang, dir } => plugins_new(&name, lang, dir.as_deref())?,
             PluginsCommand::Install {
                 name,
                 git,
-                locked,
+                locked: _,
+                tag,
+                rev,
                 dry_run,
-            } => return plugins_install(&name, git.as_deref(), locked, dry_run),
+            } => {
+                let pin = match (tag, rev) {
+                    (Some(t), _) => Some(GitPin::Tag(t)),
+                    (_, Some(r)) => Some(GitPin::Rev(r)),
+                    _ => None,
+                };
+                return plugins_install(&name, git.as_deref(), pin, dry_run);
+            }
             PluginsCommand::Path => plugins_path(),
         },
         Command::Plugin(args) => return plugin(&args),
@@ -1098,16 +1126,21 @@ fn record(ws: &Workspace, op: &str, repo: Option<&str>, before: Option<&str>, af
     }
 }
 
-fn init(source: &str) -> Result<()> {
+fn init(source: &str, insecure: bool) -> Result<()> {
     let dest = manifest_path()?;
     if dest.exists() {
         bail!("{} already exists here", dest.display());
     }
-    let text = if source.starts_with("http://") || source.starts_with("https://") {
-        reqwest::blocking::get(source)
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .and_then(reqwest::blocking::Response::text)
-            .with_context(|| format!("fetching {source}"))?
+    // Treat only explicit URL schemes as remote; a local PATH still works
+    // unchanged. Remote fetches are https-only and IP-hardened (see
+    // `check_fetch_url`) unless `--insecure` is passed.
+    let text = if source.starts_with("http://")
+        || source.starts_with("https://")
+        || source.contains("://")
+    {
+        check_fetch_url(source, insecure)?;
+        let client = hardened_client()?;
+        fetch_text_capped(&client, source)?
     } else {
         let path = Path::new(source);
         if !path.is_file() {
@@ -2817,7 +2850,12 @@ fn publish_cmd(
     }
 
     let config = resolve_publish_config(target, url)?;
-    let client = reqwest::blocking::Client::new();
+    // Bound redirects so a hostile/misconfigured registry can't bounce an
+    // authenticated upload (with its credentials) off to an arbitrary host.
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .context("building HTTP client")?;
     let c = Palette::new();
     let mut uploads: Vec<serde_json::Value> = Vec::new();
     let mut failures = 0usize;
@@ -3184,13 +3222,120 @@ fn parse_index(json: &str) -> Result<Vec<RemoteEntry>> {
     Ok(out)
 }
 
+/// Maximum body we will read from a remote index/manifest fetch (16 MiB). A
+/// hostile server must not be able to stream unbounded data at us.
+const FETCH_BODY_CAP: u64 = 16 * 1024 * 1024;
+
+/// Extract the host component from an `http(s)://` URL without pulling in a URL
+/// crate: strip the scheme, take everything before the first `/?#`, then drop
+/// any `user@` and `:port` suffix. Returns `None` for non-http(s) inputs.
+fn url_host(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Drop userinfo (`user:pass@host`).
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    // Strip a trailing `:port`, honoring `[ipv6]:port` bracket form.
+    let host = if let Some(end) = host_port.strip_prefix('[') {
+        // `[::1]:443` -> `::1`
+        end.split(']').next().unwrap_or(end).to_string()
+    } else {
+        host_port
+            .rsplit_once(':')
+            .map_or(host_port, |(h, _)| h)
+            .to_string()
+    };
+    if host.is_empty() { None } else { Some(host) }
+}
+
+/// True when `ip` is a loopback, link-local, or RFC1918/unique-local private
+/// address — i.e. an SSRF target we refuse to fetch from without `--insecure`.
+fn is_internal_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()        // 127.0.0.0/8
+                || v4.is_private()  // 10/8, 172.16/12, 192.168/16
+                || v4.is_link_local() // 169.254.0.0/16
+                || v4.is_unspecified() // 0.0.0.0
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()        // ::1
+                || v6.is_unspecified() // ::
+                // fc00::/7 unique-local
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                // fe80::/10 link-local
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Validate a URL before we fetch it: enforce https-only and block internal
+/// (loopback/link-local/private) literal-IP hosts. `--insecure` overrides both.
+///
+/// DNS-rebinding (a hostname that later resolves to an internal IP) is out of
+/// scope; blocking literal-IP internal targets is the pragmatic hardening.
+fn check_fetch_url(url: &str, insecure: bool) -> Result<()> {
+    if insecure {
+        return Ok(());
+    }
+    if !url.starts_with("https://") {
+        if url.starts_with("http://") {
+            bail!("refusing to fetch insecure http:// URL {url} (pass --insecure to allow)");
+        }
+        bail!(
+            "refusing to fetch non-https URL {url} (only https:// is allowed; pass --insecure to override)"
+        );
+    }
+    if let Some(host) = url_host(url)
+        && let Ok(ip) = host.parse::<std::net::IpAddr>()
+        && is_internal_ip(ip)
+    {
+        bail!(
+            "refusing to fetch internal/private address {host} in {url} (pass --insecure to override)"
+        );
+    }
+    Ok(())
+}
+
+/// A blocking HTTP client hardened for fetching untrusted index/manifest docs:
+/// a bounded redirect policy and a request timeout.
+fn hardened_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("building HTTP client")
+}
+
+/// Fetch `url` with the hardened client and read at most [`FETCH_BODY_CAP`]
+/// bytes of the body (rejecting an over-cap `Content-Length` up front).
+fn fetch_text_capped(client: &reqwest::blocking::Client, url: &str) -> Result<String> {
+    use std::io::Read;
+    let resp = client
+        .get(url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .with_context(|| format!("fetching {url}"))?;
+    if let Some(len) = resp.content_length()
+        && len > FETCH_BODY_CAP
+    {
+        bail!("{url}: response body {len} bytes exceeds cap of {FETCH_BODY_CAP} bytes");
+    }
+    let mut buf = Vec::new();
+    resp.take(FETCH_BODY_CAP)
+        .read_to_end(&mut buf)
+        .with_context(|| format!("reading body of {url}"))?;
+    String::from_utf8(buf).with_context(|| format!("{url}: response body is not UTF-8"))
+}
+
 /// Fetch and parse the community index at `url` (blocking). Errors here are
 /// meant to be downgraded to a warning by the caller — the index is optional.
-fn fetch_index(url: &str) -> Result<Vec<RemoteEntry>> {
-    let text = reqwest::blocking::get(url)
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::text)
-        .with_context(|| format!("fetching {url}"))?;
+fn fetch_index(url: &str, insecure: bool) -> Result<Vec<RemoteEntry>> {
+    check_fetch_url(url, insecure)?;
+    let client = hardened_client()?;
+    let text = fetch_text_capped(&client, url)?;
     parse_index(&text)
 }
 
@@ -3296,7 +3441,7 @@ fn merge_remote(mut rows: Vec<PluginRow>, remote: &[RemoteEntry]) -> Vec<PluginR
     rows
 }
 
-fn plugins_list(format: &str, remote: bool, index: Option<&str>) -> Result<()> {
+fn plugins_list(format: &str, remote: bool, index: Option<&str>, insecure: bool) -> Result<()> {
     if !matches!(format, "text" | "json") {
         bail!("unknown format `{format}` (use text or json)");
     }
@@ -3317,7 +3462,7 @@ fn plugins_list(format: &str, remote: bool, index: Option<&str>) -> Result<()> {
     // falls back to local-only — never a hard failure.
     if remote {
         let url = index.unwrap_or(DEFAULT_INDEX_URL);
-        match fetch_index(url) {
+        match fetch_index(url, insecure) {
             Ok(entries) => rows = merge_remote(rows, &entries),
             Err(err) => {
                 let c = Palette::new();
@@ -3394,26 +3539,64 @@ fn resolve_install_crate(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+/// How to pin a `cargo install --git` source to an immutable ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GitPin {
+    /// `--tag <v>`.
+    Tag(String),
+    /// `--rev <sha>`.
+    Rev(String),
+}
+
 /// Build the `cargo install` argument vector for `haw plugins install`.
-/// A catalog `name` resolves to its crate; `--git` overrides the source.
+///
+/// SECURITY / supply chain: installs are ALWAYS `--locked` (build the exact
+/// dependency versions the crate's `Cargo.lock` pins). The git source is ALWAYS
+/// pinned to an immutable ref rather than tracking a moving branch:
+/// - default first-party source -> pinned to this hawser release
+///   (`--tag v<CARGO_PKG_VERSION>`),
+/// - an explicit `--git` source -> pinned to the user-supplied `--tag`/`--rev`
+///   when given (otherwise left to cargo's default, which the caller is opting
+///   into by pointing at their own repo).
+///
 /// Factored out so the printed command is testable without running cargo.
-fn cargo_install_args(name: &str, git: Option<&str>, locked: bool) -> Vec<String> {
+fn cargo_install_args(name: &str, git: Option<&str>, pin: Option<&GitPin>) -> Vec<String> {
     let krate = resolve_install_crate(name);
     let source = git.unwrap_or(PLUGIN_GIT_SOURCE);
     let mut args: Vec<String> = vec![
         "install".to_string(),
+        "--locked".to_string(),
         "--git".to_string(),
         source.to_string(),
     ];
-    if locked {
-        args.push("--locked".to_string());
+    // Pin the ref: caller-supplied pin wins; otherwise the default first-party
+    // source is pinned to this release's tag.
+    match pin {
+        Some(GitPin::Tag(t)) => {
+            args.push("--tag".to_string());
+            args.push(t.clone());
+        }
+        Some(GitPin::Rev(r)) => {
+            args.push("--rev".to_string());
+            args.push(r.clone());
+        }
+        None if git.is_none() => {
+            args.push("--tag".to_string());
+            args.push(format!("v{}", env!("CARGO_PKG_VERSION")));
+        }
+        None => {}
     }
     args.push(krate);
     args
 }
 
-fn plugins_install(name: &str, git: Option<&str>, locked: bool, dry_run: bool) -> Result<ExitCode> {
-    let args = cargo_install_args(name, git, locked);
+fn plugins_install(
+    name: &str,
+    git: Option<&str>,
+    pin: Option<GitPin>,
+    dry_run: bool,
+) -> Result<ExitCode> {
+    let args = cargo_install_args(name, git, pin.as_ref());
 
     let c = Palette::new();
     // Print exactly what will run before running it.
@@ -6062,30 +6245,128 @@ mod plugin_panel_tests {
 
     #[test]
     fn install_dry_run_prints_expected_command_and_runs_nothing() {
-        // The exact command `haw plugins install aspice --dry-run` prints.
-        let args = cargo_install_args("aspice", None, false);
+        // The exact command `haw plugins install aspice --dry-run` prints: the
+        // default first-party source is ALWAYS --locked and pinned to this
+        // release's tag.
+        let args = cargo_install_args("aspice", None, None);
         assert_eq!(
             format!("cargo {}", args.join(" ")),
-            "cargo install --git https://github.com/Nastwinns/hawser haw-aspice"
+            format!(
+                "cargo install --locked --git https://github.com/Nastwinns/hawser --tag v{} haw-aspice",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        // Supply-chain invariants.
+        assert!(
+            args.iter().any(|a| a == "--locked"),
+            "installs must be --locked"
+        );
+        assert!(
+            args.iter().any(|a| a == "--tag"),
+            "default source must be pinned"
         );
         // --dry-run must not launch cargo; it returns SUCCESS after printing.
-        let code = plugins_install("aspice", None, false, true).unwrap();
+        let code = plugins_install("aspice", None, None, true).unwrap();
         assert_eq!(format!("{code:?}"), format!("{:?}", ExitCode::SUCCESS));
     }
 
     #[test]
-    fn install_locked_and_custom_git_flow_into_the_command() {
-        let args = cargo_install_args("haw-foo", Some("https://example.com/me/plugins"), true);
+    fn install_custom_git_is_locked_and_takes_pin_passthrough() {
+        // Custom --git: still --locked; NOT auto-pinned to hawser's tag; honors
+        // an explicit --tag/--rev passthrough.
+        let args = cargo_install_args("haw-foo", Some("https://example.com/me/plugins"), None);
         assert_eq!(
             args,
             vec![
                 "install",
+                "--locked",
                 "--git",
                 "https://example.com/me/plugins",
-                "--locked",
                 "haw-foo",
             ]
         );
+
+        let tagged = cargo_install_args(
+            "haw-foo",
+            Some("https://example.com/me/plugins"),
+            Some(&GitPin::Tag("v9.9.9".to_string())),
+        );
+        assert_eq!(
+            tagged,
+            vec![
+                "install",
+                "--locked",
+                "--git",
+                "https://example.com/me/plugins",
+                "--tag",
+                "v9.9.9",
+                "haw-foo",
+            ]
+        );
+
+        let rev = cargo_install_args(
+            "haw-foo",
+            Some("https://example.com/me/plugins"),
+            Some(&GitPin::Rev("deadbeef".to_string())),
+        );
+        assert!(rev.iter().any(|a| a == "--locked"));
+        assert_eq!(rev[rev.len() - 3..], ["--rev", "deadbeef", "haw-foo"]);
+    }
+
+    #[test]
+    fn url_host_extracts_authority() {
+        assert_eq!(
+            url_host("https://example.com/a/b").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            url_host("https://user:pw@example.com:8443/x").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            url_host("http://127.0.0.1:80").as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(url_host("https://[::1]:443/y").as_deref(), Some("::1"));
+        assert_eq!(url_host("ftp://example.com"), None);
+    }
+
+    #[test]
+    fn internal_ip_detection() {
+        use std::net::IpAddr;
+        for s in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "172.16.9.9",
+            "192.168.1.1",
+            "169.254.1.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            let ip: IpAddr = s.parse().unwrap();
+            assert!(is_internal_ip(ip), "{s} should be internal");
+        }
+        for s in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+            let ip: IpAddr = s.parse().unwrap();
+            assert!(!is_internal_ip(ip), "{s} should be public");
+        }
+    }
+
+    #[test]
+    fn check_fetch_url_rejects_http_and_internal_but_allows_https_public() {
+        // https-only.
+        assert!(check_fetch_url("http://example.com/i.json", false).is_err());
+        assert!(check_fetch_url("file:///etc/passwd", false).is_err());
+        // internal literal IPs blocked.
+        assert!(check_fetch_url("https://127.0.0.1/i.json", false).is_err());
+        assert!(check_fetch_url("https://10.1.2.3/i.json", false).is_err());
+        assert!(check_fetch_url("https://[::1]/i.json", false).is_err());
+        // public https allowed.
+        assert!(check_fetch_url("https://example.com/i.json", false).is_ok());
+        assert!(check_fetch_url("https://8.8.8.8/i.json", false).is_ok());
+        // --insecure overrides everything.
+        assert!(check_fetch_url("http://127.0.0.1/i.json", true).is_ok());
     }
 
     #[test]

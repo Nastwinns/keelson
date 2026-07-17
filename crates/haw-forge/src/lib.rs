@@ -7,6 +7,7 @@
 pub mod bitbucket;
 pub mod github;
 pub mod gitlab;
+pub mod http;
 pub mod orchestrate;
 
 /// Which forge a remote URL belongs to.
@@ -232,7 +233,7 @@ pub fn kind_from_key(key: &str) -> Option<ForgeKind> {
 }
 
 /// API tokens, usually read from the environment by the front-end.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Tokens {
     pub github: Option<String>,
     pub gitlab: Option<String>,
@@ -240,6 +241,21 @@ pub struct Tokens {
     /// When set alongside a Bitbucket token, auth switches from Bearer to HTTP
     /// Basic (`user:token`).
     pub bitbucket_user: Option<String>,
+}
+
+/// Redacting `Debug`: never prints the raw secret values, only whether each
+/// token is set, so a stray `{:?}`/`dbg!`/error-context dump can't leak them.
+/// `bitbucket_user` is not a secret and is shown verbatim.
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redact = |opt: &Option<String>| if opt.is_some() { "<redacted>" } else { "None" };
+        f.debug_struct("Tokens")
+            .field("github", &redact(&self.github))
+            .field("gitlab", &redact(&self.gitlab))
+            .field("bitbucket", &redact(&self.bitbucket))
+            .field("bitbucket_user", &self.bitbucket_user)
+            .finish()
+    }
 }
 
 impl Tokens {
@@ -380,8 +396,26 @@ pub fn detect(url: &str) -> ForgeKind {
 #[cfg(test)]
 mod tests {
     use super::{
-        ForgeKind, PROGRESS_BAR_WIDTH, RepoCoords, cap_lines, detect, progress_bar, repo_coords,
+        ForgeKind, PROGRESS_BAR_WIDTH, RepoCoords, Tokens, cap_lines, detect, progress_bar,
+        repo_coords,
     };
+
+    #[test]
+    fn tokens_debug_redacts_secrets() {
+        let tokens = Tokens {
+            github: Some("ghp_supersecret".to_string()),
+            gitlab: Some("glpat-topsecret".to_string()),
+            bitbucket: Some("bb-hunter2".to_string()),
+            bitbucket_user: Some("ada".to_string()),
+        };
+        let dumped = format!("{tokens:?}");
+        assert!(!dumped.contains("ghp_supersecret"), "{dumped}");
+        assert!(!dumped.contains("glpat-topsecret"), "{dumped}");
+        assert!(!dumped.contains("bb-hunter2"), "{dumped}");
+        assert!(dumped.contains("<redacted>"), "{dumped}");
+        // Non-secret fields are fine to show.
+        assert!(dumped.contains("ada"), "{dumped}");
+    }
 
     #[test]
     fn progress_bar_reports_ratio_percent_and_fill() {

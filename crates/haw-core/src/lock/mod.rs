@@ -26,6 +26,12 @@ pub enum LockError {
     Serialize(#[from] toml::ser::Error),
     #[error("unsupported lockfile version {0} (this haw supports {LOCK_VERSION})")]
     UnsupportedVersion(u32),
+    #[error("locked repo `{repo}`: {source}")]
+    Insecure {
+        repo: String,
+        #[source]
+        source: crate::security::SecurityError,
+    },
 }
 
 /// The parsed `haw.lock`.
@@ -69,6 +75,22 @@ impl Lockfile {
             toml::from_str(&text).map_err(|source| LockError::Parse(Box::new(source)))?;
         if lock.version != LOCK_VERSION {
             return Err(LockError::UnsupportedVersion(lock.version));
+        }
+        // The lockfile travels with the repo and is attacker-controllable; it
+        // bypasses manifest validation, so re-check every url and path here.
+        for repo in &lock.repos {
+            crate::security::validate_repo_url(&repo.url).map_err(|source| {
+                LockError::Insecure {
+                    repo: repo.name.clone(),
+                    source,
+                }
+            })?;
+            crate::security::validate_checkout_path(&repo.path).map_err(|source| {
+                LockError::Insecure {
+                    repo: repo.name.clone(),
+                    source,
+                }
+            })?;
         }
         Ok(lock)
     }

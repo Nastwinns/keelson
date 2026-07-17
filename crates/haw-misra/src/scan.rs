@@ -56,6 +56,22 @@ fn is_c_file(name: &str) -> bool {
     }
 }
 
+/// Turn a file path into a cppcheck *operand* that can never be parsed as an
+/// option, even without a preceding `--`.
+///
+/// Only a path that could be parsed as a flag (leading `-`) is neutralized by a
+/// leading `./` (so `--exitcode=0` becomes `./--exitcode=0`); absolute and
+/// ordinary relative paths pass through unchanged. Platform-agnostic — it does
+/// NOT rely on `is_absolute()` (a Unix-style `/abs` is not absolute on Windows)
+/// — and belt-and-suspenders behind the `--` options terminator.
+fn as_operand(path: &str) -> String {
+    if path.starts_with('-') {
+        format!("./{path}")
+    } else {
+        path.to_string()
+    }
+}
+
 /// List tracked C/C++ files in `repo`, preferring `git ls-files` and falling
 /// back to a shallow filesystem walk when git is unavailable.
 pub fn collect_c_files(repo: &Path) -> Vec<String> {
@@ -147,13 +163,20 @@ pub fn run_misra(name: &str, repo: &Path) -> RepoScan {
     }
 
     let files_scanned = files.len();
+    // SECURITY: file names come from `git ls-files` over an untrusted, cloned
+    // repo. A file literally named `--exitcode=0` or `--output-file=...` would
+    // otherwise be parsed by cppcheck as an OPTION, bypassing the gate or
+    // writing arbitrary files. Terminate options with `--` and force every path
+    // into a leading-`./` operand form so nothing can be read as a flag.
+    let operands: Vec<String> = files.iter().map(|f| as_operand(f)).collect();
     let output = Command::new("cppcheck")
         .arg("--addon=misra")
         .arg("--enable=style")
         .arg("--quiet")
         // Emit one machine-readable line per violation on stderr.
         .arg("--template={file}:{line}: {id}: {message}")
-        .args(&files)
+        .arg("--")
+        .args(&operands)
         .current_dir(repo)
         .output();
 
@@ -200,4 +223,52 @@ pub fn parse_violations(stderr: &str) -> Vec<String> {
         .filter(|line| line.contains(':'))
         .map(|line| line.to_string())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crafted_flag_filename_becomes_operand() {
+        // A file named like a cppcheck option must be neutralised.
+        assert_eq!(as_operand("--exitcode=0"), "./--exitcode=0");
+        assert_eq!(
+            as_operand("--output-file=/etc/passwd"),
+            "./--output-file=/etc/passwd"
+        );
+        assert_eq!(as_operand("-DFOO"), "./-DFOO");
+    }
+
+    #[test]
+    fn operand_is_never_flag_like() {
+        for p in [
+            "--exitcode=0",
+            "-x",
+            "src/main.c",
+            "./already/rel.c",
+            "weird--name.c",
+        ] {
+            let op = as_operand(p);
+            assert!(
+                !op.starts_with('-'),
+                "operand {op:?} for {p:?} must not start with '-'"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_paths_pass_through_unchanged() {
+        // Only leading-dash names need neutralizing; normal paths are operands
+        // already (and sit behind the `--` terminator). Unchanged on all OSes.
+        assert_eq!(as_operand("src/a.c"), "src/a.c");
+        assert_eq!(as_operand("./src/a.c"), "./src/a.c");
+        assert_eq!(as_operand("/abs/path/a.c"), "/abs/path/a.c");
+    }
+
+    #[test]
+    fn dash_leading_names_are_neutralized() {
+        assert_eq!(as_operand("-x.c"), "./-x.c");
+        assert_eq!(as_operand("--exitcode=0"), "./--exitcode=0");
+    }
 }

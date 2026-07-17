@@ -206,6 +206,48 @@ impl Manifest {
                 }
             }
         }
+        // Reject dangerous remote base URLs (they flow into every repo's
+        // resolved clone URL).
+        for (name, remote) in &self.remotes {
+            crate::security::validate_repo_url(&remote.url).map_err(|source| {
+                ManifestError::Insecure {
+                    repo: format!("remote `{name}`"),
+                    source,
+                }
+            })?;
+        }
+        // Reject dangerous per-repo URLs and non-contained checkout paths.
+        for (name, repo) in &self.repos {
+            if let Some(url) = &repo.url {
+                crate::security::validate_repo_url(url).map_err(|source| {
+                    ManifestError::Insecure {
+                        repo: name.clone(),
+                        source,
+                    }
+                })?;
+            }
+            if let Some(path) = &repo.path {
+                crate::security::validate_checkout_path(path).map_err(|source| {
+                    ManifestError::Insecure {
+                        repo: name.clone(),
+                        source,
+                    }
+                })?;
+            }
+        }
+        // Reject overlay checkout paths that escape the workspace.
+        for (oname, overlay) in &self.overlays {
+            for (rname, over) in &overlay.repos {
+                if let Some(path) = &over.path {
+                    crate::security::validate_checkout_path(path).map_err(|source| {
+                        ManifestError::Insecure {
+                            repo: format!("overlay `{oname}` repo `{rname}`"),
+                            source,
+                        }
+                    })?;
+                }
+            }
+        }
         for (name, repo) in &self.repos {
             match (&repo.url, &repo.remote, &repo.repo) {
                 (Some(_), None, None) => {}

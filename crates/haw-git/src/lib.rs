@@ -24,6 +24,22 @@ pub fn default_cache_root() -> Option<std::path::PathBuf> {
 fn git_command(cwd: Option<&Path>) -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // Belt-and-suspenders against RCE via a hostile `url` (git-remote-ext and
+    // friends). Even if a bad url slips past validation, git refuses to run
+    // remote-helper/local transports: only the user-space transports
+    // (http/https/ssh/git) are allowed, and the `ext`/`fd` protocols that
+    // execute commands are hard-disabled.
+    cmd.arg("-c").arg("protocol.allow=never");
+    // Local-path clones (`/path/to/repo`) are a supported source form; allow the
+    // file transport when the user invokes it directly, but never via recursion
+    // (submodules) where a hostile superproject could point it at anything.
+    cmd.arg("-c").arg("protocol.file.allow=user");
+    cmd.arg("-c").arg("protocol.http.allow=user");
+    cmd.arg("-c").arg("protocol.https.allow=user");
+    cmd.arg("-c").arg("protocol.ssh.allow=user");
+    cmd.arg("-c").arg("protocol.git.allow=user");
+    cmd.arg("-c").arg("protocol.ext.allow=never");
+    cmd.arg("-c").arg("protocol.fd.allow=never");
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -73,6 +89,9 @@ fn clone_argv(url: &str, dest: &Path, opts: &CloneOpts) -> Vec<std::ffi::OsStrin
     if opts.submodules {
         argv.push("--recurse-submodules".into());
     }
+    // Terminate option parsing so a `url` beginning with `-` can never be
+    // interpreted by git as an option (e.g. `--upload-pack=…`).
+    argv.push("--".into());
     argv.push(url.into());
     argv.push(dest.into());
     argv
@@ -143,7 +162,7 @@ impl GitBackend for ShellGit {
         }
         let head_ref = format!("refs/heads/{rev}");
         let tag_ref = format!("refs/tags/{rev}");
-        let out = run(&["ls-remote", "--heads", "--tags", url], None)?;
+        let out = run(&["ls-remote", "--heads", "--tags", "--", url], None)?;
 
         let mut head = None;
         let mut tag = None;
@@ -205,6 +224,7 @@ impl GitBackend for ShellGit {
         let output = git_command(None)
             .arg("clone")
             .arg("--mirror")
+            .arg("--")
             .arg(url)
             .arg(mirror)
             .output()?;
@@ -335,7 +355,30 @@ mod tests {
     #[test]
     fn plain_clone_has_no_mode_flags() {
         let argv = argv_strings("https://x/y.git", &CloneOpts::none());
-        assert_eq!(argv, vec!["clone", "https://x/y.git", "/tmp/dest"]);
+        assert_eq!(argv, vec!["clone", "--", "https://x/y.git", "/tmp/dest"]);
+    }
+
+    #[test]
+    fn double_dash_precedes_url() {
+        // The `--` option terminator must sit immediately before the url so a
+        // url beginning with `-` can never be parsed by git as an option.
+        let argv = argv_strings("https://x/y.git", &CloneOpts::none());
+        let dd = argv.iter().position(|a| a == "--").expect("--");
+        assert_eq!(argv[dd + 1], "https://x/y.git");
+    }
+
+    #[test]
+    fn double_dash_precedes_url_with_all_levers() {
+        let opts = CloneOpts {
+            reference: Some(PathBuf::from("/m.git")),
+            filter: Some("blob:none".to_string()),
+            depth: Some(1),
+            submodules: true,
+        };
+        let argv = argv_strings("https://x/y.git", &opts);
+        let dd = argv.iter().position(|a| a == "--").expect("--");
+        assert_eq!(argv[dd + 1], "https://x/y.git");
+        assert_eq!(argv[dd + 2], "/tmp/dest");
     }
 
     #[test]

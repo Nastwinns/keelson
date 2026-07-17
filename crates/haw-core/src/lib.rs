@@ -10,5 +10,6 @@ pub mod lock;
 pub mod manifest;
 pub mod plugin;
 pub mod resolver;
+pub mod security;
 pub mod snapshot;
 pub mod workspace;

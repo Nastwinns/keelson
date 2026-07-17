@@ -12,11 +12,23 @@ use serde_json::{Value, json};
 use crate::context::{Context, changeset_from_branch};
 
 /// Jira REST configuration read from the environment.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Config {
     pub base_url: String,
     pub user: String,
     pub token: String,
+}
+
+// SECURITY: never print credentials. `base_url` is not secret, but `user` and
+// `token` are — a derived `Debug` would leak them into logs/panics.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("base_url", &self.base_url)
+            .field("user", &"<redacted>")
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 impl Config {
@@ -268,6 +280,21 @@ mod tests {
     use super::*;
     use crate::context::Repo;
     use std::path::PathBuf;
+
+    #[test]
+    fn config_debug_never_leaks_credentials() {
+        let cfg = Config {
+            base_url: "https://jira.example.com".to_string(),
+            user: "alice@example.com".to_string(),
+            token: "super-secret-token".to_string(),
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("super-secret-token"), "token leaked: {dbg}");
+        assert!(!dbg.contains("alice@example.com"), "user leaked: {dbg}");
+        assert!(dbg.contains("redacted"));
+        // base_url is not a secret and stays visible for diagnostics.
+        assert!(dbg.contains("jira.example.com"));
+    }
 
     fn ctx() -> Context {
         Context {

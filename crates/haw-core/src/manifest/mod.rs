@@ -41,6 +41,12 @@ pub enum ManifestError {
         phase: String,
         valid: String,
     },
+    #[error("repo `{repo}`: {source}")]
+    Insecure {
+        repo: String,
+        #[source]
+        source: crate::security::SecurityError,
+    },
 }
 
 /// Anything that can produce a [`Manifest`] from a file on disk.

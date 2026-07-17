@@ -1,0 +1,77 @@
+# cargo-deny configuration for haw.
+#
+# Enforced in CI by .github/workflows/audit.yml:
+#   cargo deny check advisories bans sources licenses
+#
+# Schema: https://embarkstudios.github.io/cargo-deny/
+
+# ---------------------------------------------------------------------------
+# Advisories — RUSTSEC database (https://github.com/rustsec/advisory-db)
+# ---------------------------------------------------------------------------
+[advisories]
+# Fail on any security advisory or unmaintained/yanked warning by default.
+version = 2
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071 — "Marvin" timing sidechannel in `rsa`.
+    # `rsa` is pulled in only via octocrab's GitHub-App JWT authentication path
+    # (RS256 signing). haw authenticates with personal-access / OAuth tokens
+    # from the environment and never uses GitHub-App JWT auth, so this code
+    # path is dead in our build. No fixed release of `rsa` is available yet.
+    # Re-evaluate when `rsa` ships a patched version.
+    "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2024-0436 — `paste` is unmaintained (author archived the repo).
+    # This is an "unmaintained", not a vulnerability, advisory. `paste` is a
+    # compile-time proc-macro pulled in transitively via ratatui -> haw-tui;
+    # it is not a runtime dependency and there is no safe upgrade. Drops when
+    # ratatui migrates off `paste`.
+    "RUSTSEC-2024-0436",
+]
+
+# ---------------------------------------------------------------------------
+# Bans — dependency graph hygiene
+# ---------------------------------------------------------------------------
+[bans]
+# Multiple versions of the same crate bloat the build and widen the attack
+# surface; warn so it stays visible without blocking (transitive deps often
+# force duplicates we cannot control).
+multiple-versions = "warn"
+wildcards = "deny"
+
+# ---------------------------------------------------------------------------
+# Sources — where crates may come from
+# ---------------------------------------------------------------------------
+[sources]
+# Unknown registries / git remotes are a supply-chain risk: deny them.
+unknown-registry = "deny"
+unknown-git = "deny"
+# Only the public crates.io registry is permitted. haw currently has no git
+# dependencies; add any intended git source URLs here if that changes.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+# ---------------------------------------------------------------------------
+# Licenses — SPDX allow-list matching the dependency tree
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+# Fail the build when a crate's license does not satisfy this allow-list.
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "BSL-1.0",
+    "MPL-2.0",             # nucleo-matcher, option-ext (file-level copyleft only)
+    "CDLA-Permissive-2.0", # webpki-roots
+    "Unlicense",
+    "BSD-1-Clause",
+    "LGPL-2.1-or-later",   # r-efi (offered as an OR alternative alongside MIT/Apache-2.0)
+]

@@ -8,17 +8,36 @@ use serde_json::{Value, json};
 use crate::{Forge, ForgeError, PrHandle, PrSpec, PrState, PrStatus, repo_coords};
 
 /// GitLab client. MRs map onto the forge-neutral PR vocabulary.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GitLab {
     token: String,
     http: Client,
+}
+
+/// Redacting `Debug`: never prints the raw token, only whether it is set.
+impl std::fmt::Debug for GitLab {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitLab")
+            .field(
+                "token",
+                &if self.token.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl GitLab {
     pub fn new(token: String) -> Self {
         Self {
             token,
-            http: Client::new(),
+            // Hardened client: SSRF-resistant redirect policy. GitLab traces are
+            // served inline (no cross-host redirect), so the `PRIVATE-TOKEN`
+            // header is never replayed onto a foreign host by this policy.
+            http: crate::http::forge_client(),
         }
     }
 
@@ -50,9 +69,7 @@ impl GitLab {
                 "{method} {url} -> {status}: {detail}"
             )));
         }
-        response
-            .json()
-            .map_err(|err| ForgeError::Api(format!("invalid JSON from {url}: {err}")))
+        crate::http::json_capped(response, url)
     }
 
     /// Raw-text GET (job traces are plain text, not JSON). Returns `Ok(None)`
@@ -72,10 +89,7 @@ impl GitLab {
             let detail = response.text().unwrap_or_default();
             return Err(ForgeError::Api(format!("GET {url} -> {status}: {detail}")));
         }
-        response
-            .text()
-            .map(Some)
-            .map_err(|err| ForgeError::Api(format!("reading {url}: {err}")))
+        crate::http::read_capped_text(response, url).map(Some)
     }
 }
 
@@ -559,10 +573,18 @@ fn run_of(pipeline: &Value) -> crate::CiRun {
 
 #[cfg(test)]
 mod tests {
-    use super::encode_path;
+    use super::{GitLab, encode_path};
 
     #[test]
     fn nested_group_paths_are_encoded() {
         assert_eq!(encode_path("fw/nested/kernel"), "fw%2Fnested%2Fkernel");
+    }
+
+    #[test]
+    fn debug_redacts_token() {
+        let client = GitLab::new("glpat-supersecret".to_string());
+        let dumped = format!("{client:?}");
+        assert!(!dumped.contains("glpat-supersecret"), "{dumped}");
+        assert!(dumped.contains("<redacted>"), "{dumped}");
     }
 }

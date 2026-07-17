@@ -1,0 +1,43 @@
+name: audit
+
+# Supply-chain / advisory gate: runs cargo-deny (advisories, bans, sources,
+# licenses) on every push/PR and weekly, so a newly disclosed advisory against
+# an existing dependency is caught even without a code change.
+#
+# cargo-deny is the single gate: it reads the same RUSTSEC advisory DB as
+# cargo-audit but with a parser that supports CVSS 4.0 advisories (cargo-audit
+# 0.21.x fails to parse the DB once any advisory uses CVSS 4.0). Ignored
+# advisories + their rationale live in deny.toml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Mondays 07:00 UTC — catch advisories disclosed since the last push.
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pin the tool version so the gate is reproducible and does not flake when a
+  # new release changes behaviour. Bump deliberately.
+  CARGO_DENY_VERSION: "0.20.2"
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo deny (advisories, bans, sources, licenses)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version "${CARGO_DENY_VERSION}"
+      - name: Run cargo deny
+        run: cargo deny check advisories bans sources licenses

@@ -9,3 +9,4 @@
 - [Extending](EXTENDING.md)
 - [Plugins](PLUGINS.md)
 - [Compliance](COMPLIANCE.md)
+- [Security & trust model](SECURITY.md)

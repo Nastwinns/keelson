@@ -67,7 +67,7 @@ impl Method {
 /// How the request authenticates. The tuple values are env-var-sourced
 /// credentials, held so the binary can attach them to the real request; the
 /// [`Auth::scheme`] label is what `--dry-run` prints (never the secret).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Auth {
     /// HTTP Basic (`user:pass`).
     Basic { user: String, pass: String },
@@ -85,6 +85,14 @@ impl Auth {
             Auth::Bearer(_) => "Bearer",
             Auth::PrivateToken(_) => "PRIVATE-TOKEN",
         }
+    }
+}
+
+// SECURITY: hold live credentials, so a derived `Debug` would leak the password
+// or token into logs/panics. Print only the non-secret scheme label.
+impl fmt::Debug for Auth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Auth({}, <redacted>)", self.scheme())
     }
 }
 
@@ -169,6 +177,35 @@ mod tests {
             user: "u".into(),
             pass: "p".into(),
         }
+    }
+
+    #[test]
+    fn auth_debug_never_leaks_secrets() {
+        let secret = "s3cr3t-token";
+        for auth in [
+            Auth::Basic {
+                user: "alice".into(),
+                pass: secret.into(),
+            },
+            Auth::Bearer(secret.into()),
+            Auth::PrivateToken(secret.into()),
+        ] {
+            let dbg = format!("{auth:?}");
+            assert!(!dbg.contains(secret), "Auth Debug leaked secret: {dbg}");
+            assert!(dbg.contains(auth.scheme()));
+            assert!(dbg.contains("redacted"));
+        }
+        // The pass field must not leak via UploadPlan's derived Debug either.
+        let plan = UploadPlan {
+            method: Method::Put,
+            url: "https://x/y".into(),
+            auth: Auth::Basic {
+                user: "alice".into(),
+                pass: secret.into(),
+            },
+            file: "f".into(),
+        };
+        assert!(!format!("{plan:?}").contains(secret));
     }
 
     #[test]

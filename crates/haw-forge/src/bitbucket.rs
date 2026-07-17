@@ -13,17 +13,44 @@ const API_BASE: &str = "https://api.bitbucket.org/2.0";
 
 /// How Bitbucket authenticates a request: HTTP Basic (`user:token`) when
 /// `BITBUCKET_USER` is set, otherwise a Bearer token.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Auth {
     Basic { user: String, token: String },
     Bearer { token: String },
 }
 
+/// Redacting `Debug`: never prints the raw token. The non-secret Basic-auth
+/// `user` is shown verbatim.
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Auth::Basic { user, .. } => f
+                .debug_struct("Basic")
+                .field("user", user)
+                .field("token", &"<redacted>")
+                .finish(),
+            Auth::Bearer { .. } => f
+                .debug_struct("Bearer")
+                .field("token", &"<redacted>")
+                .finish(),
+        }
+    }
+}
+
 /// Bitbucket Cloud client. Pipelines map onto the forge-neutral CI vocabulary.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Bitbucket {
     auth: Auth,
     http: Client,
+}
+
+/// Redacting `Debug`: delegates to `Auth`'s redacting impl (no raw token).
+impl std::fmt::Debug for Bitbucket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bitbucket")
+            .field("auth", &self.auth)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Bitbucket {
@@ -35,7 +62,10 @@ impl Bitbucket {
         };
         Self {
             auth,
-            http: Client::new(),
+            // Hardened client: SSRF-resistant redirect policy. Bitbucket auth
+            // uses the standard `Authorization` header, which reqwest drops on
+            // any cross-host redirect.
+            http: crate::http::forge_client(),
         }
     }
 
@@ -73,9 +103,7 @@ impl Bitbucket {
         }
         // Some endpoints (approve/merge) may return an empty body on success;
         // treat that as an empty JSON object rather than an error.
-        let text = response
-            .text()
-            .map_err(|err| ForgeError::Api(format!("reading {url}: {err}")))?;
+        let text = crate::http::read_capped_text(response, url)?;
         if text.trim().is_empty() {
             return Ok(json!({}));
         }
@@ -98,10 +126,7 @@ impl Bitbucket {
             let detail = response.text().unwrap_or_default();
             return Err(ForgeError::Api(format!("GET {url} -> {status}: {detail}")));
         }
-        response
-            .text()
-            .map(Some)
-            .map_err(|err| ForgeError::Api(format!("reading {url}: {err}")))
+        crate::http::read_capped_text(response, url).map(Some)
     }
 
     /// Walk a paginated collection, following the `next` link until it runs out
@@ -696,6 +721,21 @@ fn run_of(pipeline: &Value) -> crate::CiRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_redacts_token_basic_and_bearer() {
+        let basic = Bitbucket::new("bb-supersecret".to_string(), Some("ada".to_string()));
+        let dumped = format!("{basic:?}");
+        assert!(!dumped.contains("bb-supersecret"), "{dumped}");
+        assert!(dumped.contains("<redacted>"), "{dumped}");
+        // The Basic-auth user is not secret and may be shown.
+        assert!(dumped.contains("ada"), "{dumped}");
+
+        let bearer = Bitbucket::new("bb-anothersecret".to_string(), None);
+        let dumped = format!("{bearer:?}");
+        assert!(!dumped.contains("bb-anothersecret"), "{dumped}");
+        assert!(dumped.contains("<redacted>"), "{dumped}");
+    }
 
     #[test]
     fn encodes_path_segments_but_keeps_separators() {

@@ -580,6 +580,24 @@ Published at **[nastwinns.github.io/hawser/docs](https://nastwinns.github.io/haw
 | [docs/PLUGINS.md](docs/PLUGINS.md) | Writing subcommand plugins — `haw <name>` runs `haw-<name>` from PATH |
 | [docs/COMPLIANCE.md](docs/COMPLIANCE.md) | Tool qualification, SBOM/CRA, crypto/signing, GDPR |
 | [docs/INSTALL.md](docs/INSTALL.md) | Full install matrix + signature verification |
+| [docs/SECURITY.md](docs/SECURITY.md) | Trust model — what haw executes, plugin trust, tokens |
+
+## Security
+
+Read the full **[trust model](docs/SECURITY.md)**. The essentials:
+
+- **The manifest is trusted code.** A `haw.toml`'s `build`/`test`/`run`/`exec`
+  commands are executed through your shell. Running `haw build`, `haw run`, or
+  `haw sync` on an **untrusted** checkout is equivalent to running its
+  `Makefile` — only do it on manifests you trust. Treat `haw.toml` like a
+  `Makefile` or a `package.json` `scripts` block.
+- **Plugins are trusted binaries.** `haw <name>` runs `haw-<name>` from your
+  `PATH`, and plugins inherit your full environment (including any tokens).
+  Install only plugins you trust and keep your `PATH` clean.
+- **Tokens** are read from environment variables only, never stored or logged;
+  git transport auth stays with your existing SSH keys / credential helper.
+- **Reporting a vulnerability:** see [SECURITY.md](SECURITY.md) for how to
+  report privately and which versions are supported.
 
 ## License
 

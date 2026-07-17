@@ -47,6 +47,12 @@ pub enum SyncError {
     MissingLockEntry(String),
     #[error("repo `{0}` is not cloned; run `haw sync` first")]
     NotCloned(String),
+    #[error("repo `{repo}`: {source}")]
+    Insecure {
+        repo: String,
+        #[source]
+        source: crate::security::SecurityError,
+    },
 }
 
 /// A workspace rooted at the directory containing its manifest.
@@ -342,10 +348,18 @@ impl Workspace {
             let locked = lock
                 .get(&rb.name)
                 .ok_or_else(|| SyncError::MissingLockEntry(rb.name.clone()))?;
+            // Defense in depth: resolve the checkout path and require it to stay
+            // under the workspace root before any clone/create_dir/checkout.
+            let abs_path = crate::security::safe_checkout_join(&self.root, &locked.path).map_err(
+                |source| SyncError::Insecure {
+                    repo: locked.name.clone(),
+                    source,
+                },
+            )?;
             tasks.push(RepoTask {
                 name: locked.name.clone(),
                 url: locked.url.clone(),
-                path: self.root.join(&locked.path),
+                path: abs_path,
                 rel_path: locked.path.clone(),
                 target: locked.rev.clone(),
                 source_rev: locked.source_rev.clone(),
