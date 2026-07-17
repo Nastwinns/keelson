@@ -13,7 +13,7 @@ out the _identical_ tree, every time. One binary. In Rust.**
 cargo install hawser        # or: brew, scoop, prebuilt binaries — see Install
 ```
 
-<img src="demo/hawser-promo.gif" alt="haw composes 5 real embedded upstreams into one reproducible, lockfile-pinned stack" width="820">
+<img src="demo/hawser-persona.gif" alt="haw persona journey: declare, pin to real SHAs, build & test 5 real embedded upstreams, install plugins, and drive the cockpit" width="820">
 
 <sub>Five real embedded upstreams — CoreMark · cJSON · Monocypher · libcanard · Mbed-TLS —
 declared, pinned to real SHAs, built &amp; tested (real output), then plugins and the
