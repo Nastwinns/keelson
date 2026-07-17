@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Nastwinns/hawser/schemas/haw.plugin.view.v1.json",
+  "title": "haw.plugin.view/1",
+  "description": "A structured panel a plugin prints to stdout when invoked in render intent (HAW_RENDER=1, context intent=render). haw renders the title followed by each string in lines in the cockpit's plugin detail panel. Anything that is not a haw.plugin.view/1 document is shown verbatim as raw text.",
+  "type": "object",
+  "required": ["schema", "title", "lines"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "haw.plugin.view/1",
+      "description": "View-schema version marker. Always \"haw.plugin.view/1\"."
+    },
+    "title": {
+      "type": "string",
+      "description": "Panel title, rendered above the lines."
+    },
+    "lines": {
+      "type": "array",
+      "description": "Panel body — one string per rendered line. Output is line-capped to keep the panel bounded.",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}

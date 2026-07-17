@@ -495,13 +495,46 @@ enum PluginsCommand {
 Examples:
   $ haw plugins list                   NAME/STATUS/SUBSCRIBED/DESCRIPTION table
   $ haw plugins list --format json      machine-readable (schema haw.plugins/1)
+  $ haw plugins list --remote           also merge the community index (source `remote`)
+  $ haw plugins list --remote --index https://example.com/plugins-index.json
 
 STATUS is `installed` when the `haw-<name>` binary is on PATH, else `available`.
-SUBSCRIBED shows the phases from the workspace manifest `[plugins]` (if any).")]
+SUBSCRIBED shows the phases from the workspace manifest `[plugins]` (if any).
+--remote fetches a `haw.plugins.index/1` doc and merges its plugins (source
+`remote`); on a network error it warns and falls back to local-only.")]
     List {
         /// `text` (default) or `json` (schema haw.plugins/1).
         #[arg(long, default_value = "text")]
         format: String,
+        /// Also fetch and merge the community plugin index.
+        #[arg(long)]
+        remote: bool,
+        /// Community index URL (implies --remote). Default: the first-party index.
+        #[arg(long, value_name = "URL")]
+        index: Option<String>,
+    },
+    /// Scaffold a runnable `haw-<name>` plugin skeleton in a new directory.
+    #[command(after_help = "\
+Examples:
+  $ haw plugins new sbom --lang shell            ./haw-sbom/haw-sbom (POSIX sh)
+  $ haw plugins new sbom --lang python           ./haw-sbom/haw-sbom + README.md
+  $ haw plugins new sbom --lang go               ./haw-sbom/{main.go,go.mod,README.md}
+  $ haw plugins new sbom --lang rust             a cargo crate (bin haw-sbom)
+  $ haw plugins new sbom --lang shell --dir /tmp/sbom   choose the target dir
+
+Each skeleton implements the plugin contract: reads the `haw.plugin/1` context
+from HAW_JSON (falling back to stdin), handles --help and --format json, and
+emits a `haw.plugin.report/1` document. Drop it on PATH -> `haw <name>`.
+Refuses to overwrite a non-empty target directory.")]
+    New {
+        /// Plugin name — the verb users type (`haw <name>`).
+        name: String,
+        /// Skeleton language.
+        #[arg(long, value_name = "rust|python|go|shell")]
+        lang: PluginLang,
+        /// Target directory (default: ./haw-<name>).
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
     /// Install a plugin binary via `cargo install`.
     #[command(after_help = "\
@@ -765,6 +798,14 @@ enum TakeSide {
     Theirs,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum PluginLang {
+    Rust,
+    Python,
+    Go,
+    Shell,
+}
+
 #[derive(Subcommand)]
 enum SnapshotCommand {
     /// Record every repo's branch + HEAD under a name.
@@ -984,7 +1025,12 @@ fn run() -> Result<ExitCode> {
         Command::Completions { shell } => completions(shell),
         Command::Dash { demo } => dash(demo)?,
         Command::Plugins { command } => match command {
-            PluginsCommand::List { format } => plugins_list(&format)?,
+            PluginsCommand::List {
+                format,
+                remote,
+                index,
+            } => plugins_list(&format, remote || index.is_some(), index.as_deref())?,
+            PluginsCommand::New { name, lang, dir } => plugins_new(&name, lang, dir.as_deref())?,
             PluginsCommand::Install {
                 name,
                 git,
@@ -3094,6 +3140,60 @@ const PLUGIN_CATALOG: &[CatalogPlugin] = &[
 /// `--git <url>` is given (these crates are workspace members, not on crates.io).
 const PLUGIN_GIT_SOURCE: &str = "https://github.com/Nastwinns/hawser";
 
+/// The default community index URL for `haw plugins list --remote`. It serves a
+/// `haw.plugins.index/1` document — the repo-root `plugins-index.json`.
+const DEFAULT_INDEX_URL: &str =
+    "https://raw.githubusercontent.com/Nastwinns/hawser/main/plugins-index.json";
+
+/// One plugin entry parsed from a `haw.plugins.index/1` community index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteEntry {
+    name: String,
+    krate: Option<String>,
+    git: Option<String>,
+    description: String,
+}
+
+/// Parse a `haw.plugins.index/1` document into remote entries. Pure (no
+/// network) so it is unit-testable against a canned index. Entries missing a
+/// `name`, or whole documents with the wrong `schema`, are skipped; a malformed
+/// document yields an error the caller can downgrade to a warning.
+fn parse_index(json: &str) -> Result<Vec<RemoteEntry>> {
+    let doc: serde_json::Value = serde_json::from_str(json).context("index is not valid JSON")?;
+    if doc.get("schema").and_then(|s| s.as_str()) != Some("haw.plugins.index/1") {
+        bail!("index is not a haw.plugins.index/1 document");
+    }
+    let mut out = Vec::new();
+    if let Some(plugins) = doc.get("plugins").and_then(|p| p.as_array()) {
+        for p in plugins {
+            let Some(name) = p.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            out.push(RemoteEntry {
+                name: name.to_string(),
+                krate: p.get("crate").and_then(|c| c.as_str()).map(str::to_string),
+                git: p.get("git").and_then(|g| g.as_str()).map(str::to_string),
+                description: p
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Fetch and parse the community index at `url` (blocking). Errors here are
+/// meant to be downgraded to a warning by the caller — the index is optional.
+fn fetch_index(url: &str) -> Result<Vec<RemoteEntry>> {
+    let text = reqwest::blocking::get(url)
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(reqwest::blocking::Response::text)
+        .with_context(|| format!("fetching {url}"))?;
+    parse_index(&text)
+}
+
 /// One merged plugin row for `haw plugins list`, deduped by name across the
 /// catalog, PATH-discovered binaries, and manifest subscriptions.
 struct PluginRow {
@@ -3164,7 +3264,39 @@ where
     by_name.into_values().collect()
 }
 
-fn plugins_list(format: &str) -> Result<()> {
+/// Merge community-index entries into an existing (catalog/PATH/subscribed) row
+/// set. A remote-only plugin appears as a new row with source `remote`, status
+/// `available`, and the index's description. When a plugin already exists
+/// (installed/catalog/subscribed) that row wins on status/source; the remote
+/// entry only backfills an empty description. Dedup is by name; the result is
+/// re-sorted. Pure so the merge is testable without network.
+fn merge_remote(mut rows: Vec<PluginRow>, remote: &[RemoteEntry]) -> Vec<PluginRow> {
+    use std::collections::HashSet;
+    let known: HashSet<String> = rows.iter().map(|r| r.name.clone()).collect();
+    for entry in remote {
+        if known.contains(&entry.name) {
+            // Existing rows keep their status/source; just backfill a description.
+            if let Some(row) = rows.iter_mut().find(|r| r.name == entry.name)
+                && row.description.is_empty()
+            {
+                row.description = entry.description.clone();
+            }
+            continue;
+        }
+        rows.push(PluginRow {
+            name: entry.name.clone(),
+            krate: entry.krate.clone(),
+            installed: false,
+            subscribed_phases: Vec::new(),
+            description: entry.description.clone(),
+            source: "remote",
+        });
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    rows
+}
+
+fn plugins_list(format: &str, remote: bool, index: Option<&str>) -> Result<()> {
     if !matches!(format, "text" | "json") {
         bail!("unknown format `{format}` (use text or json)");
     }
@@ -3179,7 +3311,23 @@ fn plugins_list(format: &str) -> Result<()> {
         })
         .unwrap_or_default();
     let installed = plugins_on_path();
-    let rows = plugin_rows(&installed, subs.iter().map(|(k, v)| (k, v)));
+    let mut rows = plugin_rows(&installed, subs.iter().map(|(k, v)| (k, v)));
+
+    // Optionally merge the community index. A network/parse failure warns and
+    // falls back to local-only — never a hard failure.
+    if remote {
+        let url = index.unwrap_or(DEFAULT_INDEX_URL);
+        match fetch_index(url) {
+            Ok(entries) => rows = merge_remote(rows, &entries),
+            Err(err) => {
+                let c = Palette::new();
+                eprintln!(
+                    "{} community index unavailable ({err:#}) — showing local plugins only",
+                    c.warn("warning:")
+                );
+            }
+        }
+    }
 
     if format == "json" {
         let plugins = rows
@@ -3305,6 +3453,515 @@ fn plugins_path() {
     for dir in dirs {
         println!("{}", c.dim(&dir.display().to_string()));
     }
+}
+
+/// One file the scaffolder writes: a relative path, its contents, and whether
+/// it must be marked executable (the plugin entry script/binary).
+struct ScaffoldFile {
+    path: &'static str,
+    contents: String,
+    executable: bool,
+}
+
+/// Build the set of files for a `haw plugins new <name> --lang <lang>` skeleton.
+/// Pure (no filesystem) so the produced files/contents are unit-testable.
+fn scaffold_files(name: &str, lang: PluginLang) -> Vec<ScaffoldFile> {
+    let bin = format!("haw-{name}");
+    match lang {
+        PluginLang::Shell => vec![
+            ScaffoldFile {
+                path: "haw-NAME",
+                contents: shell_skeleton(name),
+                executable: true,
+            },
+            ScaffoldFile {
+                path: "README.md",
+                contents: readme_skeleton(name, &format!("./{bin}"), "shell"),
+                executable: false,
+            },
+        ],
+        PluginLang::Python => vec![
+            ScaffoldFile {
+                path: "haw-NAME",
+                contents: python_skeleton(name),
+                executable: true,
+            },
+            ScaffoldFile {
+                path: "README.md",
+                contents: readme_skeleton(name, &format!("./{bin}"), "python"),
+                executable: false,
+            },
+        ],
+        PluginLang::Go => vec![
+            ScaffoldFile {
+                path: "main.go",
+                contents: go_skeleton(name),
+                executable: false,
+            },
+            ScaffoldFile {
+                path: "go.mod",
+                contents: format!("module {bin}\n\ngo 1.21\n"),
+                executable: false,
+            },
+            ScaffoldFile {
+                path: "README.md",
+                contents: readme_skeleton(name, &format!("go build -o {bin} && ./{bin}"), "go"),
+                executable: false,
+            },
+        ],
+        PluginLang::Rust => vec![
+            ScaffoldFile {
+                path: "Cargo.toml",
+                contents: rust_cargo_toml(name),
+                executable: false,
+            },
+            ScaffoldFile {
+                path: "src/main.rs",
+                contents: rust_skeleton(name),
+                executable: false,
+            },
+            ScaffoldFile {
+                path: "README.md",
+                contents: readme_skeleton(
+                    name,
+                    &format!("cargo build --release   # target/release/{bin}"),
+                    "rust",
+                ),
+                executable: false,
+            },
+        ],
+    }
+}
+
+fn shell_skeleton(name: &str) -> String {
+    format!(
+        r##"#!/usr/bin/env sh
+# haw-{name} — a haw plugin. Reads the haw.plugin/1 context from $HAW_JSON
+# (falling back to stdin) and emits a haw.plugin.report/1 document.
+set -eu
+
+case "${{1:-}}" in
+-h | --help)
+	echo "haw-{name} — a haw plugin. Options: --help, --format json"
+	echo "Run as: haw {name}"
+	exit 0
+	;;
+esac
+
+# haw hands us the workspace context in $HAW_JSON (and on stdin). Fall back to
+# stdin when the env var is absent; degrade to empty when neither is present.
+ctx="${{HAW_JSON:-}}"
+if [ -z "$ctx" ] && [ ! -t 0 ]; then
+	ctx=$(cat)
+fi
+
+# Best-effort extraction (no jq dependency): pull "root" out of the JSON.
+root=$(printf '%s' "$ctx" | sed -n 's/.*"root":"\([^"]*\)".*/\1/p')
+
+if [ "${{1:-}}" = "--format" ] && [ "${{2:-}}" = "json" ]; then
+	printf '{{"schema":"haw.plugin.report/1","ok":true,"plugin":"{name}","summary":"haw-{name} ran","root":"%s"}}\n' "$root"
+	exit 0
+fi
+
+if [ -n "$root" ]; then
+	printf 'haw-{name}: workspace at %s\n' "$root"
+else
+	printf 'haw-{name}: no workspace here — operating on the current directory\n'
+fi
+"##
+    )
+}
+
+fn python_skeleton(name: &str) -> String {
+    format!(
+        r#"#!/usr/bin/env python3
+# haw-{name} — a haw plugin. Reads the haw.plugin/1 context from HAW_JSON
+# (falling back to stdin) and emits a haw.plugin.report/1 document.
+import json
+import os
+import sys
+
+
+def load_context():
+    raw = os.environ.get("HAW_JSON", "")
+    if not raw and not sys.stdin.isatty():
+        raw = sys.stdin.read()
+    if not raw:
+        return {{}}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {{}}
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print("haw-{name} — a haw plugin. Options: --help, --format json")
+        print("Run as: haw {name}")
+        return 0
+
+    ctx = load_context()
+    root = ctx.get("root")
+    repos = ctx.get("repos", []) or []
+
+    if args[:2] == ["--format", "json"]:
+        report = {{
+            "schema": "haw.plugin.report/1",
+            "ok": True,
+            "plugin": "{name}",
+            "summary": "haw-{name} inspected {{}} repo(s)".format(len(repos)),
+            "root": root,
+        }}
+        json.dump(report, sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+
+    if root:
+        print("haw-{name}: workspace at {{}} ({{}} repos)".format(root, len(repos)))
+    else:
+        print("haw-{name}: no workspace here — operating on the current directory")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"#
+    )
+}
+
+fn go_skeleton(name: &str) -> String {
+    format!(
+        r#"// haw-{name} — a haw plugin. Reads the haw.plugin/1 context from HAW_JSON
+// (falling back to stdin) and emits a haw.plugin.report/1 document.
+//
+// Build:  go build -o haw-{name}
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+)
+
+type context struct {{
+	Schema string `json:"schema"`
+	Root   string `json:"root"`
+	Repos  []struct {{
+		Name string `json:"name"`
+	}} `json:"repos"`
+}}
+
+type report struct {{
+	Schema  string `json:"schema"`
+	OK      bool   `json:"ok"`
+	Plugin  string `json:"plugin"`
+	Summary string `json:"summary"`
+	Root    string `json:"root,omitempty"`
+}}
+
+func loadContext() context {{
+	var ctx context
+	raw := os.Getenv("HAW_JSON")
+	if raw == "" {{
+		if stat, err := os.Stdin.Stat(); err == nil && (stat.Mode()&os.ModeCharDevice) == 0 {{
+			if b, err := io.ReadAll(os.Stdin); err == nil {{
+				raw = string(b)
+			}}
+		}}
+	}}
+	if raw != "" {{
+		_ = json.Unmarshal([]byte(raw), &ctx)
+	}}
+	return ctx
+}}
+
+func main() {{
+	args := os.Args[1:]
+	for _, a := range args {{
+		if a == "-h" || a == "--help" {{
+			fmt.Println("haw-{name} — a haw plugin. Options: --help, --format json")
+			fmt.Println("Run as: haw {name}")
+			return
+		}}
+	}}
+
+	ctx := loadContext()
+
+	if len(args) >= 2 && args[0] == "--format" && args[1] == "json" {{
+		rep := report{{
+			Schema:  "haw.plugin.report/1",
+			OK:      true,
+			Plugin:  "{name}",
+			Summary: fmt.Sprintf("haw-{name} inspected %d repo(s)", len(ctx.Repos)),
+			Root:    ctx.Root,
+		}}
+		out, _ := json.Marshal(rep)
+		fmt.Println(string(out))
+		return
+	}}
+
+	if ctx.Root != "" {{
+		fmt.Printf("haw-{name}: workspace at %s (%d repos)\n", ctx.Root, len(ctx.Repos))
+	}} else {{
+		fmt.Println("haw-{name}: no workspace here — operating on the current directory")
+	}}
+}}
+"#
+    )
+}
+
+fn rust_cargo_toml(name: &str) -> String {
+    format!(
+        r#"[package]
+name = "haw-{name}"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "haw-{name}"
+path = "src/main.rs"
+
+[dependencies]
+serde = {{ version = "1", features = ["derive"] }}
+serde_json = "1"
+"#
+    )
+}
+
+fn rust_skeleton(name: &str) -> String {
+    format!(
+        r##"// haw-{name} — a haw plugin. Reads the haw.plugin/1 context from HAW_JSON
+// (falling back to stdin) and emits a haw.plugin.report/1 document.
+// Standalone: depends only on serde/serde_json, not on any haw crate.
+use std::env;
+use std::io::{{IsTerminal, Read}};
+use std::process::ExitCode;
+
+use serde::{{Deserialize, Serialize}};
+
+#[derive(Default, Deserialize)]
+struct Context {{
+    #[serde(default)]
+    root: Option<String>,
+    #[serde(default)]
+    repos: Vec<Repo>,
+}}
+
+#[derive(Deserialize)]
+struct Repo {{
+    #[allow(dead_code)]
+    name: String,
+}}
+
+#[derive(Serialize)]
+struct Report {{
+    schema: &'static str,
+    ok: bool,
+    plugin: &'static str,
+    summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root: Option<String>,
+}}
+
+/// Read the context from HAW_JSON, falling back to stdin, degrading to empty.
+fn load_context() -> Context {{
+    let mut raw = env::var("HAW_JSON").unwrap_or_default();
+    if raw.is_empty() && !std::io::stdin().is_terminal() {{
+        let _ = std::io::stdin().read_to_string(&mut raw);
+    }}
+    if raw.trim().is_empty() {{
+        return Context::default();
+    }}
+    serde_json::from_str(&raw).unwrap_or_default()
+}}
+
+fn main() -> ExitCode {{
+    let args: Vec<String> = env::args().skip(1).collect();
+
+    if args.iter().any(|a| a == "-h" || a == "--help") {{
+        println!("haw-{name} — a haw plugin. Options: --help, --format json");
+        println!("Run as: haw {name}");
+        return ExitCode::SUCCESS;
+    }}
+
+    let ctx = load_context();
+
+    if args == ["--format", "json"] {{
+        let report = Report {{
+            schema: "haw.plugin.report/1",
+            ok: true,
+            plugin: "{name}",
+            summary: format!("haw-{name} inspected {{}} repo(s)", ctx.repos.len()),
+            root: ctx.root.clone(),
+        }};
+        match serde_json::to_string(&report) {{
+            Ok(json) => println!("{{json}}"),
+            Err(err) => {{
+                eprintln!("haw-{name}: failed to serialize report: {{err}}");
+                return ExitCode::FAILURE;
+            }}
+        }}
+        return ExitCode::SUCCESS;
+    }}
+
+    match ctx.root {{
+        Some(root) => println!(
+            "haw-{name}: workspace at {{root}} ({{}} repos)",
+            ctx.repos.len()
+        ),
+        None => println!("haw-{name}: no workspace here — operating on the current directory"),
+    }}
+    ExitCode::SUCCESS
+}}
+"##
+    )
+}
+
+fn readme_skeleton(name: &str, build: &str, lang: &str) -> String {
+    let bin = format!("haw-{name}");
+    format!(
+        r#"# {bin}
+
+A [haw](https://github.com/Nastwinns/hawser) plugin ({lang}). Any executable named
+`haw-<name>` on your `PATH` becomes `haw <name>`.
+
+## Contract
+
+- Reads the `haw.plugin/1` context from the `HAW_JSON` environment variable
+  (falling back to stdin) — degrades gracefully when run outside a workspace.
+- Handles `--help` and `--format json`.
+- Emits a `haw.plugin.report/1` document under `--format json`.
+
+## Build & install
+
+```sh
+{build}
+```
+
+Drop the resulting `{bin}` executable onto your `PATH`, then:
+
+```sh
+which {bin}          # haw finds exactly what your shell finds
+haw {name}           # dispatched to {bin}
+haw {name} --format json
+```
+
+## Subscribe to a lifecycle phase (optional)
+
+Add it to your workspace manifest `[plugins]` table to run it on a phase:
+
+```toml
+[plugins]
+{name} = ["post-build"]   # e.g. pre-sync, post-sync, pre-request, post-land
+```
+"#
+    )
+}
+
+/// Scaffold a runnable plugin skeleton in a new directory. Refuses to overwrite
+/// a non-empty target; prints the files created and the next steps.
+fn plugins_new(name: &str, lang: PluginLang, dir: Option<&Path>) -> Result<()> {
+    if name.is_empty() {
+        bail!("plugin name must not be empty");
+    }
+    let bin = format!("haw-{name}");
+    let target = match dir {
+        Some(d) => d.to_path_buf(),
+        None => std::env::current_dir()?.join(&bin),
+    };
+
+    // Refuse to clobber an existing non-empty directory.
+    if target.exists() {
+        let non_empty = std::fs::read_dir(&target)
+            .map(|mut it| it.next().is_some())
+            .unwrap_or(false);
+        if non_empty {
+            bail!(
+                "target directory {} is not empty — choose an empty dir with --dir <path>",
+                target.display()
+            );
+        }
+    }
+    std::fs::create_dir_all(&target)?;
+
+    let files = scaffold_files(name, lang);
+    let c = Palette::new();
+    let mut written = Vec::new();
+    for file in &files {
+        // `haw-NAME` is a placeholder for the real binary name.
+        let rel = if file.path == "haw-NAME" {
+            bin.clone()
+        } else {
+            file.path.to_string()
+        };
+        let dest = target.join(&rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dest, &file.contents)?;
+        if file.executable {
+            make_executable(&dest)?;
+        }
+        written.push(rel);
+    }
+
+    println!(
+        "{}",
+        c.bold(&format!(
+            "scaffolded {bin} ({}) in {}",
+            lang_label(lang),
+            target.display()
+        ))
+    );
+    for rel in &written {
+        println!("  {} {}", c.ok("+"), c.dim(rel));
+    }
+    println!();
+    println!("next:");
+    match lang {
+        PluginLang::Shell | PluginLang::Python => {
+            println!("  PATH=\"{}:$PATH\" haw {name}", target.display());
+        }
+        PluginLang::Go => {
+            println!("  (cd {} && go build -o {bin})", target.display());
+            println!("  PATH=\"{}:$PATH\" haw {name}", target.display());
+        }
+        PluginLang::Rust => {
+            println!("  (cd {} && cargo build --release)", target.display());
+            println!(
+                "  PATH=\"{}/target/release:$PATH\" haw {name}",
+                target.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn lang_label(lang: PluginLang) -> &'static str {
+    match lang {
+        PluginLang::Rust => "rust",
+        PluginLang::Python => "python",
+        PluginLang::Go => "go",
+        PluginLang::Shell => "shell",
+    }
+}
+
+/// Mark a scaffolded entry script/binary executable. A no-op on non-Unix.
+fn make_executable(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 fn plugin(args: &[String]) -> Result<ExitCode> {
@@ -5459,6 +6116,152 @@ mod plugin_panel_tests {
             .filter_map(|p| p["name"].as_str())
             .collect();
         assert!(names.contains(&"compliance"));
+    }
+
+    #[test]
+    fn parse_index_reads_a_canned_doc() {
+        let json = r#"{
+            "schema": "haw.plugins.index/1",
+            "plugins": [
+                {"name":"foo","crate":"haw-foo","git":"https://example.com/x","description":"the foo plugin"},
+                {"name":"bar","crate":"haw-bar","git":"https://example.com/x","description":"the bar plugin"}
+            ]
+        }"#;
+        let entries = parse_index(json).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "foo");
+        assert_eq!(entries[0].krate.as_deref(), Some("haw-foo"));
+        assert_eq!(entries[0].description, "the foo plugin");
+        assert_eq!(entries[1].name, "bar");
+    }
+
+    #[test]
+    fn parse_index_rejects_wrong_schema() {
+        let json = r#"{"schema":"something.else/1","plugins":[]}"#;
+        assert!(parse_index(json).is_err());
+    }
+
+    #[test]
+    fn merge_remote_adds_remote_only_and_marks_source() {
+        // A local set with just the catalog `aspice`.
+        let installed: Vec<String> = Vec::new();
+        let no_subs: Vec<(String, Vec<String>)> = Vec::new();
+        let rows = plugin_rows(&installed, no_subs.iter().map(|(k, v)| (k, v)));
+        let remote = vec![
+            // Already-known catalog plugin: must NOT flip to source `remote`.
+            RemoteEntry {
+                name: "aspice".to_string(),
+                krate: Some("haw-aspice".to_string()),
+                git: Some("https://example.com/x".to_string()),
+                description: "".to_string(),
+            },
+            // A remote-only plugin: appears as source `remote`, status available.
+            RemoteEntry {
+                name: "zeta".to_string(),
+                krate: Some("haw-zeta".to_string()),
+                git: Some("https://example.com/x".to_string()),
+                description: "a community plugin".to_string(),
+            },
+        ];
+        let merged = merge_remote(rows, &remote);
+
+        let aspice = merged.iter().find(|r| r.name == "aspice").unwrap();
+        assert_eq!(
+            aspice.source, "catalog",
+            "known plugin keeps catalog source"
+        );
+
+        let zeta = merged.iter().find(|r| r.name == "zeta").unwrap();
+        assert_eq!(zeta.source, "remote");
+        assert!(!zeta.installed);
+        assert_eq!(zeta.description, "a community plugin");
+    }
+
+    #[test]
+    fn seed_index_parses_as_the_six_first_party_plugins() {
+        let json = include_str!("../../../plugins-index.json");
+        let entries = parse_index(json).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "aspice",
+                "jira",
+                "misra",
+                "compliance",
+                "artifact",
+                "git-gate"
+            ]
+        );
+        // Every entry carries the first-party git source.
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.git.as_deref() == Some("https://github.com/Nastwinns/hawser"))
+        );
+    }
+
+    #[test]
+    fn scaffold_shell_writes_executable_entry_with_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("haw-foo");
+        plugins_new("foo", PluginLang::Shell, Some(&target)).unwrap();
+        let entry = target.join("haw-foo");
+        assert!(entry.is_file(), "shell entry file exists");
+        let body = std::fs::read_to_string(&entry).unwrap();
+        assert!(body.contains("haw.plugin.report/1"));
+        assert!(body.contains("HAW_JSON"));
+        assert!(target.join("README.md").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&entry).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "entry script is executable");
+        }
+    }
+
+    #[test]
+    fn scaffold_python_writes_entry_and_readme() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("haw-foo");
+        plugins_new("foo", PluginLang::Python, Some(&target)).unwrap();
+        let body = std::fs::read_to_string(target.join("haw-foo")).unwrap();
+        assert!(body.contains("haw.plugin.report/1"));
+        assert!(body.contains("python3"));
+        assert!(target.join("README.md").is_file());
+    }
+
+    #[test]
+    fn scaffold_go_writes_main_and_gomod() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("haw-foo");
+        plugins_new("foo", PluginLang::Go, Some(&target)).unwrap();
+        let main = std::fs::read_to_string(target.join("main.go")).unwrap();
+        assert!(main.contains("haw.plugin.report/1"));
+        let gomod = std::fs::read_to_string(target.join("go.mod")).unwrap();
+        assert!(gomod.contains("module haw-foo"));
+    }
+
+    #[test]
+    fn scaffold_rust_writes_cargo_toml_and_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("haw-foo");
+        plugins_new("foo", PluginLang::Rust, Some(&target)).unwrap();
+        let cargo = std::fs::read_to_string(target.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains(r#"name = "haw-foo""#));
+        assert!(cargo.contains("[[bin]]"));
+        let main = std::fs::read_to_string(target.join("src/main.rs")).unwrap();
+        assert!(main.contains("haw.plugin.report/1"));
+    }
+
+    #[test]
+    fn scaffold_refuses_a_non_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("haw-foo");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("existing.txt"), b"keep me").unwrap();
+        let err = plugins_new("foo", PluginLang::Shell, Some(&target)).unwrap_err();
+        assert!(format!("{err:#}").contains("not empty"));
     }
 
     #[test]

@@ -1,0 +1,41 @@
+{
+  "schema": "haw.plugins.index/1",
+  "plugins": [
+    {
+      "name": "aspice",
+      "crate": "haw-aspice",
+      "git": "https://github.com/Nastwinns/hawser",
+      "description": "ASPICE/qualification traceability from the pinned fleet"
+    },
+    {
+      "name": "jira",
+      "crate": "haw-jira",
+      "git": "https://github.com/Nastwinns/hawser",
+      "description": "link a changeset to a Jira issue and transition it on land"
+    },
+    {
+      "name": "misra",
+      "crate": "haw-misra",
+      "git": "https://github.com/Nastwinns/hawser",
+      "description": "MISRA C static-analysis gate (cppcheck) for pre-request"
+    },
+    {
+      "name": "compliance",
+      "crate": "haw-compliance",
+      "git": "https://github.com/Nastwinns/hawser",
+      "description": "SBOM (CycloneDX + SPDX) generation"
+    },
+    {
+      "name": "artifact",
+      "crate": "haw-artifact",
+      "git": "https://github.com/Nastwinns/hawser",
+      "description": "SLSA/in-toto provenance + cosign/minisign signing"
+    },
+    {
+      "name": "git-gate",
+      "crate": "haw-git-gate",
+      "git": "https://github.com/Nastwinns/hawser",
+      "description": "secret / hygiene pre-commit & lifecycle gate"
+    }
+  ]
+}

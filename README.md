@@ -418,8 +418,20 @@ in the cockpit's **governance view** (`v`), whether the hook fired from the CLI 
 TUI. (Plugins can feed that view today; rendering their *own* TUI panels is on the
 roadmap.)
 
+**Any language.** The contract is a subprocess + JSON (`haw.plugin/1` in, `haw.plugin.report/1`
+out) — write plugins in Rust, Python, Go, or shell. Published [JSON Schemas](schemas/) and
+thin [bindings](bindings/) (Python, Go) make it trivial; scaffold one in seconds:
+
+```bash
+haw plugins new my-check --lang python   # runnable skeleton implementing the contract
+haw plugins list --remote                # discover community plugins from the index
+haw plugins install aspice               # install a first-party or community plugin
+```
+
 Write your own: **[docs/PLUGINS.md](docs/PLUGINS.md)** (the dispatch contract + the JSON
-schema) and **[docs/EXTENDING.md](docs/EXTENDING.md)**.
+schemas), the [reference bindings](bindings/), and the curated
+**[AWESOME-HAW-PLUGINS](AWESOME-HAW-PLUGINS.md)** list — add yours via a PR to
+[`plugins-index.json`](plugins-index.json).
 
 ## Command surface
 

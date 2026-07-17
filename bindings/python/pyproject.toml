@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "haw-plugin"
+version = "0.1.0"
+description = "Thin reference binding for writing haw plugins in Python (haw.plugin/1 contract)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "hawser contributors" }]
+keywords = ["haw", "plugin", "sdk", "monorepo"]
+# No runtime dependencies beyond the standard library.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Nastwinns/hawser"
+Schemas = "https://github.com/Nastwinns/hawser/tree/main/schemas"
+
+[tool.setuptools]
+packages = ["haw_plugin"]

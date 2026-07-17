@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Nastwinns/hawser/schemas/haw.plugin.v1.json",
+  "title": "haw.plugin/1",
+  "description": "The workspace context haw passes to a plugin, both in the HAW_JSON environment variable and on the plugin's stdin. Fully populated inside a workspace; degrades to the schema marker only when run outside one.",
+  "type": "object",
+  "required": ["schema"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "haw.plugin/1",
+      "description": "Contract version marker. Always \"haw.plugin/1\". Check this before trusting the rest."
+    },
+    "root": {
+      "type": "string",
+      "description": "Absolute workspace root — the directory tree containing haw.toml. Absent outside a workspace."
+    },
+    "stack": {
+      "type": ["string", "null"],
+      "description": "Current stack name, or null if none is selected."
+    },
+    "repos": {
+      "type": "array",
+      "description": "Resolved repos in the current fleet.",
+      "items": {
+        "type": "object",
+        "required": ["name", "path", "rev", "groups"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Repo name (the manifest key)."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path to the repo checkout."
+          },
+          "rev": {
+            "type": "string",
+            "description": "Resolved revision — tag, branch, or commit."
+          },
+          "groups": {
+            "type": "array",
+            "description": "Groups this repo belongs to.",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "phase": {
+      "type": "string",
+      "description": "The lifecycle phase this invocation is for (e.g. \"pre-build\", \"post-build\"), passed when a plugin is fired for a hook. Absent for direct `haw <name>` dispatch."
+    },
+    "intent": {
+      "type": "string",
+      "description": "Set to \"render\" when haw asks the plugin for a human-readable TUI panel (alongside HAW_RENDER=1). A plugin seeing this should print a haw.plugin.view/1 document or raw text."
+    }
+  },
+  "additionalProperties": true
+}

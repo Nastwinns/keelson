@@ -196,6 +196,97 @@ Print the directories haw scans for `haw-*` plugins (the `PATH` entries) — dro
 haw plugins path
 ```
 
+## Scaffold a plugin
+
+`haw plugins new <name> --lang <rust|python|go|shell> [--dir <path>]` writes a
+**runnable** plugin skeleton that already implements the contract: it reads the
+`haw.plugin/1` context from `HAW_JSON` (falling back to stdin), handles `--help`
+and `--format json`, emits a `haw.plugin.report/1` document, and degrades
+gracefully when run outside a workspace. The target defaults to `./haw-<name>`;
+`--dir` overrides it. haw refuses to overwrite a non-empty directory.
+
+```sh
+haw plugins new sbom --lang shell     # ./haw-sbom/haw-sbom (POSIX sh) + README.md
+haw plugins new sbom --lang python    # ./haw-sbom/haw-sbom (python3) + README.md
+haw plugins new sbom --lang go        # ./haw-sbom/{main.go, go.mod, README.md}
+haw plugins new sbom --lang rust      # cargo crate: Cargo.toml + src/main.rs + README.md
+haw plugins new sbom --lang shell --dir /tmp/sbom   # choose the target dir
+```
+
+Per language, the entry point and build step differ:
+
+| `--lang` | Entry file(s)                          | Make it runnable                          |
+|----------|----------------------------------------|-------------------------------------------|
+| `shell`  | `haw-<name>` (executable POSIX sh)      | already executable — drop on `PATH`       |
+| `python` | `haw-<name>` (executable, `python3`)    | already executable — drop on `PATH`       |
+| `go`     | `main.go` + `go.mod` (module `haw-<name>`) | `go build -o haw-<name>`               |
+| `rust`   | `Cargo.toml` (`[[bin]] haw-<name>`) + `src/main.rs` | `cargo build --release`      |
+
+Each skeleton ships a `README.md` with the "drop on `PATH` → `haw <name>`" recipe
+and a `[plugins]` subscribe snippet. The rust and go skeletons are standalone —
+the rust one depends only on `serde`/`serde_json`, not on any haw crate. After
+building, put the binary on `PATH` and run it:
+
+```sh
+haw plugins new demo --lang shell --dir /tmp/haw-demo
+PATH="/tmp/haw-demo:$PATH" haw demo
+HAW_JSON='{"schema":"haw.plugin/1"}' /tmp/haw-demo/haw-demo --format json
+```
+
+The `haw plugins new` output lists every file it created and prints the exact
+next steps (build + `PATH=…` invocation) for the chosen language.
+
+## Discover community plugins
+
+`haw plugins list --remote` merges a community index into the local table. Each
+merged-in plugin shows STATUS `available` and source `remote` with its
+description; anything already installed, in the catalog, or subscribed keeps its
+own status (dedup is by name).
+
+```sh
+haw plugins list --remote
+haw plugins list --remote --index https://example.com/plugins-index.json
+haw plugins list --remote --format json   # remote entries carry "source":"remote"
+```
+
+The default index URL is
+`https://raw.githubusercontent.com/Nastwinns/hawser/main/plugins-index.json`;
+pass `--index <url>` to point at your own. A network or parse failure is **not**
+fatal — haw prints a warning and falls back to the local-only list.
+
+### The `haw.plugins.index/1` format
+
+The index is a single JSON document:
+
+```json
+{
+  "schema": "haw.plugins.index/1",
+  "plugins": [
+    {
+      "name": "sbom",
+      "crate": "haw-sbom",
+      "git": "https://github.com/you/haw-sbom",
+      "description": "CycloneDX SBOM generation for the pinned fleet"
+    }
+  ]
+}
+```
+
+| Field         | Meaning                                                     |
+|---------------|-------------------------------------------------------------|
+| `schema`      | Always `"haw.plugins.index/1"`.                             |
+| `plugins[]`   | One entry per plugin.                                       |
+| `name`        | The verb users type (`haw <name>`).                        |
+| `crate`       | Crate name for `cargo install` (optional).                 |
+| `git`         | Source repository URL (optional).                          |
+| `description` | One-sentence summary shown in `haw plugins list`.          |
+
+### Add your plugin to the community index
+
+Open a PR against the repo-root [`plugins-index.json`](../plugins-index.json)
+that adds one entry — `name`, `crate`, `git`, and a one-sentence `description`.
+Once merged it appears for everyone running `haw plugins list --remote`.
+
 ## Machine interface — consuming haw's own output
 
 Plugins rarely need to re-derive fleet state: haw's read commands already speak JSON.
@@ -306,6 +397,29 @@ PATH="$PWD/target/release:$PATH" haw hello
 ```
 
 (For real plugins, parse `HAW_JSON` with `serde_json` instead of string slicing.)
+
+## Write in any language
+
+The plugin contract is **language-agnostic** — it is just JSON on `HAW_JSON` /
+stdin (`haw.plugin/1`) and JSON on stdout (`haw.plugin.report/1` for lifecycle
+phases, `haw.plugin.view/1` for TUI render intent). Any language that can read an
+env var and print JSON can be a haw plugin.
+
+The [`schemas/`](../schemas/) directory holds the **official JSON Schemas**
+(draft 2020-12) — the source of truth for every field name and shape. Validate
+your plugin's I/O against them.
+
+Thin reference bindings mirror those schemas so you don't hand-roll the JSON:
+
+- **Python** — [`bindings/python`](../bindings/python) (`haw_plugin`):
+  `Context.from_env()`, `Report.emit()`, `view(title, lines)`. No deps beyond stdlib.
+- **Go** — [`bindings/go`](../bindings/go) (`hawplugin`): `ReadContext()`,
+  `Report.Emit()`, `View(title, lines)`. Stdlib only.
+- **POSIX shell** and **Rust** — the [`examples/haw-hello`](../examples/haw-hello)
+  and the "Hello, plugin" section above show zero-dependency implementations.
+
+For a curated list of existing plugins to install or learn from, see
+[AWESOME-HAW-PLUGINS.md](../AWESOME-HAW-PLUGINS.md).
 
 ## Conventions
 

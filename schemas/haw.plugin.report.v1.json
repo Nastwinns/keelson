@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Nastwinns/hawser/schemas/haw.plugin.report.v1.json",
+  "title": "haw.plugin.report/1",
+  "description": "The report a plugin prints to stdout after running for a lifecycle phase. haw parses this to collect artifacts, findings, and the ok/summary verdict.",
+  "type": "object",
+  "required": ["schema", "plugin", "ok"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "haw.plugin.report/1",
+      "description": "Report-schema version marker. Always \"haw.plugin.report/1\"."
+    },
+    "plugin": {
+      "type": "string",
+      "description": "The plugin's own name (\"sbom\" for haw-sbom)."
+    },
+    "phase": {
+      "type": ["string", "null"],
+      "description": "The lifecycle phase this report is for, if any."
+    },
+    "ok": {
+      "type": "boolean",
+      "description": "Whether the plugin considers the operation acceptable. A pre-* plugin returning false may abort the operation; post-* reports are advisory."
+    },
+    "summary": {
+      "type": "string",
+      "description": "A one-line human summary. Defaults to empty when omitted."
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Artifacts the plugin produced (SBOMs, signatures, provenance, logs, reports). Defaults to empty.",
+      "items": {
+        "type": "object",
+        "required": ["path", "kind"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to the produced artifact."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Artifact kind, conventionally one of: sbom, signature, provenance, log, report.",
+            "examples": ["sbom", "signature", "provenance", "log", "report"]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "findings": {
+      "type": "array",
+      "description": "Findings the plugin wants surfaced to the user. Defaults to empty.",
+      "items": {
+        "type": "object",
+        "required": ["level", "message"],
+        "properties": {
+          "level": {
+            "type": "string",
+            "description": "Severity, one of: info, warn, error.",
+            "enum": ["info", "warn", "error"]
+          },
+          "message": {
+            "type": "string",
+            "description": "The finding text."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

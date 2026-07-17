@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Nastwinns/hawser/schemas/haw.plugins.index.v1.json",
+  "title": "haw.plugins.index/1",
+  "description": "A curated index of known plugins, used to seed discovery. Consumed by the community catalog (see AWESOME-HAW-PLUGINS.md / plugins-index.json).",
+  "type": "object",
+  "required": ["schema", "plugins"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "haw.plugins.index/1",
+      "description": "Index-schema version marker. Always \"haw.plugins.index/1\"."
+    },
+    "plugins": {
+      "type": "array",
+      "description": "The listed plugins.",
+      "items": {
+        "type": "object",
+        "required": ["name", "crate", "git", "description"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Short verb users type: \"aspice\" for `haw aspice` (binary haw-aspice)."
+          },
+          "crate": {
+            "type": "string",
+            "description": "Crate/binary name, e.g. \"haw-aspice\"."
+          },
+          "git": {
+            "type": "string",
+            "description": "Git source URL for `cargo install --git`."
+          },
+          "description": {
+            "type": "string",
+            "description": "One-line description."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}
