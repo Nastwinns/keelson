@@ -36,6 +36,9 @@ impl GitBackend for FakeGit {
     ) -> Result<(), GitError> {
         Ok(())
     }
+    fn update_submodules(&self, _repo: &Path) -> Result<(), GitError> {
+        Ok(())
+    }
     fn create_branch(&self, _repo: &Path, _name: &str) -> Result<(), GitError> {
         Ok(())
     }

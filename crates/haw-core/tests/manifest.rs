@@ -92,6 +92,49 @@ rev = "main"
 }
 
 #[test]
+fn submodules_defaults_and_per_repo_round_trip() {
+    let text = r#"
+[defaults]
+submodules = true
+
+[repo.a]
+url = "https://example.com/a.git"
+rev = "main"
+
+[repo.b]
+url = "https://example.com/b.git"
+rev = "main"
+submodules = true
+"#;
+    let manifest: Manifest = text.parse().unwrap();
+    assert!(manifest.defaults.submodules);
+    assert!(!manifest.repos["a"].submodules);
+    assert!(manifest.repos["b"].submodules);
+
+    // Round-trips: both the [defaults] flag and the per-repo flag survive.
+    let serialized = toml::to_string(&manifest).unwrap();
+    assert!(serialized.contains("submodules = true"), "{serialized}");
+    let reparsed: Manifest = serialized.parse().unwrap();
+    assert_eq!(manifest, reparsed);
+}
+
+#[test]
+fn submodules_default_false_is_omitted() {
+    let text = r#"
+[repo.a]
+url = "https://example.com/a.git"
+rev = "main"
+"#;
+    let manifest: Manifest = text.parse().unwrap();
+    assert!(!manifest.repos["a"].submodules);
+    let serialized = toml::to_string(&manifest).unwrap();
+    assert!(
+        !serialized.contains("submodules"),
+        "default-false submodules must not serialize: {serialized}"
+    );
+}
+
+#[test]
 fn defaults_absent_is_empty_and_omitted() {
     let manifest: Manifest = EXAMPLE.parse().unwrap();
     assert!(manifest.defaults.is_empty());

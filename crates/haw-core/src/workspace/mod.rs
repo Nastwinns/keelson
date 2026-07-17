@@ -79,6 +79,8 @@ pub struct RepoTask {
     pub filter: Option<String>,
     /// Shallow-clone `--depth`; may need deepening to reach an old locked SHA.
     pub depth: Option<u32>,
+    /// Recurse git submodules at clone/update time.
+    pub submodules: bool,
 }
 
 /// Clone-mode tuning applied to every task in a sync plan.
@@ -91,6 +93,10 @@ pub struct CloneTuning {
     pub filter: Option<String>,
     /// Shallow-clone `--depth`.
     pub depth: Option<u32>,
+    /// Override submodule recursion to true for the whole run (the
+    /// `--recurse-submodules` flag). `None` leaves each repo's own setting
+    /// (per-repo `submodules` OR `[defaults] submodules`).
+    pub submodules: Option<bool>,
 }
 
 /// The full set of repo tasks for one stack.
@@ -347,6 +353,7 @@ impl Workspace {
                 mirror: cache_root.map(|root| crate::git::mirror_dir(root, &locked.url)),
                 filter: tuning.filter.clone(),
                 depth: tuning.depth,
+                submodules: tuning.submodules.unwrap_or(rb.submodules),
             });
         }
         Ok(SyncPlan {
@@ -440,9 +447,13 @@ pub fn sync_repo(task: &RepoTask, backend: &dyn GitBackend) -> Result<SyncOutcom
             reference: task.mirror.clone(),
             filter: task.filter.clone(),
             depth: task.depth,
+            submodules: task.submodules,
         };
         backend.clone_repo(&task.url, &task.path, &opts)?;
         backend.checkout(&task.path, &task.target, &task.branch, task.depth)?;
+        if task.submodules {
+            backend.update_submodules(&task.path)?;
+        }
         return Ok(SyncOutcome::Cloned);
     }
     if backend.is_dirty(&task.path)? {
@@ -453,11 +464,19 @@ pub fn sync_repo(task: &RepoTask, backend: &dyn GitBackend) -> Result<SyncOutcom
     let on_target = backend.head_sha(&task.path)? == task.target
         && backend.current_branch(&task.path)?.as_deref() == Some(task.branch.as_str());
     if on_target {
+        // Even when the superproject is already on target, submodules may be
+        // uninitialized on a repo cloned before submodules were enabled.
+        if task.submodules {
+            backend.update_submodules(&task.path)?;
+        }
         return Ok(SyncOutcome::AlreadySynced);
     }
     backend.fetch(&task.path)?;
     // An existing checkout may itself be a shallow clone; pass the depth so
     // checkout can deepen to the locked SHA if the fetch didn't bring it in.
     backend.checkout(&task.path, &task.target, &task.branch, task.depth)?;
+    if task.submodules {
+        backend.update_submodules(&task.path)?;
+    }
     Ok(SyncOutcome::Updated)
 }

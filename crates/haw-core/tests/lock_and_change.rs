@@ -174,6 +174,9 @@ mod pin_tests {
         ) -> Result<(), GitError> {
             Ok(())
         }
+        fn update_submodules(&self, _repo: &Path) -> Result<(), GitError> {
+            Ok(())
+        }
         fn create_branch(&self, _repo: &Path, _name: &str) -> Result<(), GitError> {
             Ok(())
         }
@@ -239,6 +242,45 @@ mod pin_tests {
         assert!(ws.manifest.repos.contains_key("a"));
 
         assert!(Workspace::open_manifest(dir.path().join("missing.toml")).is_err());
+    }
+
+    use haw_core::workspace::CloneTuning;
+
+    fn plan_submodules(manifest: &str, override_flag: Option<bool>) -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("haw.toml"), manifest).unwrap();
+        let ws = Workspace::open(dir.path()).unwrap();
+        let fake = FakeGit {
+            heads: HashMap::new(),
+        };
+        let tuning = CloneTuning {
+            submodules: override_flag,
+            ..CloneTuning::default()
+        };
+        let plan = ws.plan_sync("s", &[], &[], None, &tuning, &fake).unwrap();
+        plan.tasks[0].submodules
+    }
+
+    const SUBMODULE_MANIFEST: &str = "[defaults]\nsubmodules = true\n\n[repo.a]\nurl = \"/r/a\"\nrev = \"main\"\n\n[stack.s]\nrepos = [\"a\"]\n";
+    const PLAIN_MANIFEST: &str =
+        "[repo.a]\nurl = \"/r/a\"\nrev = \"main\"\n\n[stack.s]\nrepos = [\"a\"]\n";
+
+    #[test]
+    fn plan_uses_manifest_defaults_submodules_when_no_flag() {
+        assert!(plan_submodules(SUBMODULE_MANIFEST, None));
+        assert!(!plan_submodules(PLAIN_MANIFEST, None));
+    }
+
+    #[test]
+    fn plan_cli_flag_overrides_manifest_submodules() {
+        // --recurse-submodules turns it on even when the manifest is silent.
+        assert!(plan_submodules(PLAIN_MANIFEST, Some(true)));
+    }
+
+    #[test]
+    fn plan_per_repo_submodules_opts_in() {
+        let manifest = "[repo.a]\nurl = \"/r/a\"\nrev = \"main\"\nsubmodules = true\n\n[stack.s]\nrepos = [\"a\"]\n";
+        assert!(plan_submodules(manifest, None));
     }
 }
 

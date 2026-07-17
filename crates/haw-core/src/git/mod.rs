@@ -60,6 +60,9 @@ pub struct CloneOpts {
     pub filter: Option<String>,
     /// Shallow-clone depth passed to `--depth <N>`.
     pub depth: Option<u32>,
+    /// Recurse submodules at clone time (`--recurse-submodules`). Submodules
+    /// follow the superproject's pinned commit, so this stays reproducible.
+    pub submodules: bool,
 }
 
 impl CloneOpts {
@@ -120,6 +123,10 @@ pub trait GitBackend: Sync {
         branch: &str,
         shallow_depth: Option<u32>,
     ) -> Result<(), GitError>;
+    /// Update and initialize submodules recursively on an existing clone
+    /// (`git submodule update --init --recursive`). Submodules follow the
+    /// superproject's checked-out (pinned) commit, so this is reproducible.
+    fn update_submodules(&self, repo: &Path) -> Result<(), GitError>;
     fn create_branch(&self, repo: &Path, name: &str) -> Result<(), GitError>;
     /// Push `branch` to origin (sets upstream on first push).
     fn push_branch(&self, repo: &Path, branch: &str) -> Result<(), GitError>;

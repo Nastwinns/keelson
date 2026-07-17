@@ -75,12 +75,16 @@ pub struct Defaults {
     /// Default shallow-clone depth (`git clone --depth <N>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<u32>,
+    /// Recurse git submodules for every repo (`git clone --recurse-submodules`
+    /// and `git submodule update --init --recursive` on existing clones).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub submodules: bool,
 }
 
 impl Defaults {
     /// True when no default is set (so serialization can omit the section).
     pub fn is_empty(&self) -> bool {
-        self.filter.is_none() && self.depth.is_none()
+        self.filter.is_none() && self.depth.is_none() && !self.submodules
     }
 }
 
@@ -110,6 +114,11 @@ pub struct Repo {
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    /// Recurse this repo's git submodules at sync time. Defaults to false;
+    /// `[defaults] submodules = true` sets the fleet-wide default, and
+    /// `haw sync --recurse-submodules` overrides both to true for one run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub submodules: bool,
     /// Repos this repo depends on; drives the topological order of
     /// `haw change land`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

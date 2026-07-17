@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use haw_core::git::GitBackend;
 use haw_core::manifest::{ManifestLoader, TomlLoader, edit, import};
 use haw_core::plugin::{self, Dispatch, ProcessRunner, RepoContext};
@@ -131,6 +131,7 @@ Examples:
   $ haw sync --shared                 clone via a local mirror cache (git alternates)
   $ haw sync --filter blob:none       partial clone: keep all commits, lazy blobs (scales to 1000s of repos)
   $ haw sync --depth 1                shallow clone: truncated history (smaller, may deepen for old pins)
+  $ haw sync --recurse-submodules     init/update each repo's git submodules (pinned to the superproject)
   $ haw sync --group firmware -j 4    only `firmware`-grouped repos, 4 parallel jobs")]
     Sync {
         /// CI contract: fail unless haw.lock exists (no rev resolution).
@@ -159,6 +160,13 @@ Examples:
         /// revs. Overrides `[defaults] depth` in haw.toml.
         #[arg(long, value_name = "N")]
         depth: Option<u32>,
+        /// Recurse git submodules for every repo this run: pass
+        /// `--recurse-submodules` at clone time and run `git submodule update
+        /// --init --recursive` on existing clones. Overrides the manifest's
+        /// per-repo `submodules` and `[defaults] submodules`. Submodules follow
+        /// the superproject's pinned commit, so this stays reproducible.
+        #[arg(long)]
+        recurse_submodules: bool,
         #[arg(long, short = 'j')]
         jobs: Option<usize>,
     },
@@ -166,10 +174,14 @@ Examples:
     #[command(after_help = "\
 Examples:
   $ haw lock                    resolve every repo's manifest rev -> haw.lock
-  $ haw lock --overlay dev       resolve using the `dev` overlay's rev overrides")]
+  $ haw lock --overlay dev       resolve using the `dev` overlay's rev overrides
+  $ haw lock --format json       machine-readable resolved revs (schema haw.lock/1)")]
     Lock {
         #[arg(long)]
         overlay: Vec<String>,
+        /// `text` (default) or `json` (schema haw.lock/1).
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Pin haw.lock to each repo's current HEAD (no network).
     #[command(
@@ -431,6 +443,18 @@ Run `haw merge <subcommand> --help` for that subcommand's own examples.")]
         #[command(subcommand)]
         command: MergeCommand,
     },
+    /// Print a shell completion script to stdout.
+    #[command(after_help = "\
+Examples:
+  $ haw completions zsh > ~/.zfunc/_haw     install zsh completions
+  $ haw completions bash > /etc/bash_completion.d/haw
+  $ haw completions fish > ~/.config/fish/completions/haw.fish
+
+Supported shells: bash, zsh, fish, powershell, elvish.")]
+    Completions {
+        /// Shell to generate completions for.
+        shell: clap_complete::Shell,
+    },
     /// Open the fleet dashboard (same as bare `haw`).
     #[command(
         alias = "tui",
@@ -558,8 +582,14 @@ Examples:
     /// Per-repo branch + PR/MR review + CI dashboard for a changeset.
     #[command(after_help = "\
 Examples:
-  $ haw change status FEAT-42       branches, dirty state, and PR/MR + CI status")]
-    Status { id: String },
+  $ haw change status FEAT-42                 branches, dirty state, and PR/MR + CI status
+  $ haw change status FEAT-42 --format json    machine-readable (schema haw.change-status/1)")]
+    Status {
+        id: String,
+        /// `text` (default) or `json` (schema haw.change-status/1).
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
     /// Push the changeset branches and open cross-linked PR/MRs.
     #[command(after_help = "\
 Examples:
@@ -691,6 +721,9 @@ Examples:
 }
 
 fn main() -> ExitCode {
+    // Behave like a well-mannered CLI under `| head`: die on SIGPIPE instead of
+    // panicking on a broken stdout (e.g. `haw completions bash | head`).
+    sigpipe::reset();
     match run() {
         Ok(code) => code,
         Err(err) => {
@@ -752,6 +785,7 @@ fn run() -> Result<ExitCode> {
             shared,
             filter,
             depth,
+            recurse_submodules,
             jobs,
         } => sync(
             stack.as_deref(),
@@ -761,9 +795,10 @@ fn run() -> Result<ExitCode> {
             locked,
             filter,
             depth,
+            recurse_submodules,
             jobs,
         )?,
-        Command::Lock { overlay } => lock(&overlay)?,
+        Command::Lock { overlay, format } => lock(&overlay, &format)?,
         Command::Pin => pin()?,
         Command::Unpin { overlay } => unpin(&overlay)?,
         Command::Repo { command } => match command {
@@ -830,7 +865,7 @@ fn run() -> Result<ExitCode> {
                 skip_branch,
                 &labels,
             )?,
-            ChangeCommand::Status { id } => change_status(&id)?,
+            ChangeCommand::Status { id, format } => change_status(&id, &format)?,
             ChangeCommand::Request { id, base } => change_request(&id, base.as_deref())?,
             ChangeCommand::Land { id } => change_land(&id)?,
             ChangeCommand::Goto { id, repo } => change_goto(&id, repo.as_deref())?,
@@ -882,6 +917,7 @@ fn run() -> Result<ExitCode> {
             }
             MergeCommand::Abort { repo } => merge_abort(repo.as_deref())?,
         },
+        Command::Completions { shell } => completions(shell),
         Command::Dash { demo } => dash(demo)?,
         Command::Plugin(args) => return plugin(&args),
     }
@@ -920,11 +956,19 @@ fn default_jobs(flag: Option<usize>) -> usize {
 
 /// Resolve clone tuning as CLI-flag-over-manifest-`[defaults]`. A present CLI
 /// flag wins; otherwise the manifest default (if any) applies. `filter` and
-/// `depth` resolve independently.
-fn resolve_tuning(ws: &Workspace, filter: Option<String>, depth: Option<u32>) -> CloneTuning {
+/// `depth` resolve independently. `recurse_submodules` (when true) overrides
+/// every repo to recurse submodules; `false` leaves each repo's own setting
+/// (per-repo `submodules` OR `[defaults] submodules`, applied in the resolver).
+fn resolve_tuning(
+    ws: &Workspace,
+    filter: Option<String>,
+    depth: Option<u32>,
+    recurse_submodules: bool,
+) -> CloneTuning {
     CloneTuning {
         filter: filter.or_else(|| ws.manifest.defaults.filter.clone()),
         depth: depth.or(ws.manifest.defaults.depth),
+        submodules: recurse_submodules.then_some(true),
     }
 }
 
@@ -971,6 +1015,7 @@ fn sync(
     locked: bool,
     filter: Option<String>,
     depth: Option<u32>,
+    recurse_submodules: bool,
     jobs: Option<usize>,
 ) -> Result<()> {
     let ws = open_workspace()?;
@@ -988,7 +1033,7 @@ fn sync(
         None
     };
     // CLI flag overrides the manifest `[defaults]`; fall back to the manifest.
-    let tuning = resolve_tuning(&ws, filter, depth);
+    let tuning = resolve_tuning(&ws, filter, depth, recurse_submodules);
     let plan = ws.plan_sync(
         &stack,
         overlays,
@@ -1051,7 +1096,25 @@ fn sync(
     Ok(())
 }
 
-fn lock(overlays: &[String]) -> Result<()> {
+fn lock_json(lockfile: &haw_core::lock::Lockfile) -> serde_json::Value {
+    json!({
+        "schema": "haw.lock/1",
+        "repos": lockfile.repos.iter().map(|r| json!({
+            "name": r.name,
+            "url": r.url,
+            "path": r.path.to_string_lossy(),
+            "rev": r.rev,
+            "source_rev": r.source_rev,
+            "branch": r.branch,
+            "groups": r.groups,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn lock(overlays: &[String], format: &str) -> Result<()> {
+    if !matches!(format, "text" | "json") {
+        bail!("unknown format `{format}` (use text or json)");
+    }
     let ws = open_workspace()?;
     let backend = ShellGit;
     hooks::fire(&ws, hooks::Hook::PreLock, &json!({"overlays": overlays}))?;
@@ -1059,6 +1122,12 @@ fn lock(overlays: &[String]) -> Result<()> {
     lockfile.save(&ws.lock_path())?;
     hooks::fire(&ws, hooks::Hook::PostLock, &json!({"overlays": overlays}))?;
     record(&ws, "lock.write", None, None, None);
+
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(&lock_json(&lockfile))?);
+        return Ok(());
+    }
+
     let c = Palette::new();
     println!(
         "{}",
@@ -1116,7 +1185,7 @@ fn pin() -> Result<()> {
 }
 
 fn unpin(overlays: &[String]) -> Result<()> {
-    lock(overlays)?;
+    lock(overlays, "text")?;
     println!("restored haw.lock to the manifest revs");
     Ok(())
 }
@@ -1328,7 +1397,17 @@ fn switch(
     record(&ws, "switch", None, None, Some(&stack));
     hooks::fire(&ws, hooks::Hook::PostSwitch, &json!({"stack": stack}))?;
     println!("switched to stack `{stack}`");
-    sync(Some(&stack), &[], &[], false, false, filter, depth, jobs)
+    sync(
+        Some(&stack),
+        &[],
+        &[],
+        false,
+        false,
+        filter,
+        depth,
+        false,
+        jobs,
+    )
 }
 
 fn tree(path: &Path, stack: Option<&str>, overlays: &[String], format: &str) -> Result<()> {
@@ -1398,6 +1477,14 @@ fn tree(path: &Path, stack: Option<&str>, overlays: &[String], format: &str) -> 
         }
     }
     Ok(())
+}
+
+/// Write the completion script for `shell` to stdout, built from the clap
+/// command tree so it always tracks the real flags and subcommands.
+fn completions(shell: clap_complete::Shell) {
+    let mut cmd = Cli::command();
+    let name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
 }
 
 fn run_across(command: &str, groups: &[String], jobs: Option<usize>) -> Result<()> {
@@ -1609,9 +1696,86 @@ fn forge_label(ws: &Workspace, name: &str) -> String {
         .unwrap_or_else(|| "—".to_string())
 }
 
-fn change_status(id: &str) -> Result<()> {
+/// Machine-readable `haw change status` (schema `haw.change-status/1`):
+/// per-repo branch/dirty/head plus PR/MR + CI status when PRs exist.
+fn change_status_json(
+    ws: &Workspace,
+    id: &str,
+    statuses: &[change::ChangeRepoStatus],
+) -> Result<()> {
+    let changeset = change::Changeset::load(ws, id)?;
+    let prs: std::collections::HashMap<String, serde_json::Value> =
+        if changeset.repos.iter().any(|r| r.pr_number.is_some()) {
+            let tokens = Tokens::from_env();
+            orchestrate::statuses(ws, &tokens, id)?
+                .into_iter()
+                .map(|(name, status)| {
+                    let value = match status {
+                        None => serde_json::Value::Null,
+                        Some(Ok(s)) => json!({
+                            "state": render_pr_state(s.state),
+                            "approved": s.approved,
+                            "ci": match s.ci_passing {
+                                Some(true) => "passing",
+                                Some(false) => "failing",
+                                None => "pending",
+                            },
+                            "url": s.url,
+                        }),
+                        Some(Err(err)) => json!({"error": err.to_string()}),
+                    };
+                    (name, value)
+                })
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
+    let value = change_status_value(id, statuses, &prs);
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+/// Build the `haw.change-status/1` document from per-repo statuses and an
+/// (optional) map of per-repo PR/CI info. Pure, so it is unit-testable
+/// without a workspace or network.
+fn change_status_value(
+    id: &str,
+    statuses: &[change::ChangeRepoStatus],
+    prs: &std::collections::HashMap<String, serde_json::Value>,
+) -> serde_json::Value {
+    let repos = statuses
+        .iter()
+        .map(|s| {
+            json!({
+                "name": s.name,
+                "branch": s.branch,
+                "missing": s.missing,
+                "on_branch": s.on_branch,
+                "dirty": s.dirty,
+                "head": s.head,
+                "pr": prs.get(&s.name).cloned().unwrap_or(serde_json::Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "schema": "haw.change-status/1",
+        "id": id,
+        "repos": repos,
+    })
+}
+
+fn change_status(id: &str, format: &str) -> Result<()> {
     let ws = open_workspace()?;
     let statuses = change::status(&ws, &ShellGit, id)?;
+
+    if format == "json" {
+        return change_status_json(&ws, id, &statuses);
+    }
+    if format != "text" {
+        bail!("unknown format `{format}` (use text or json)");
+    }
+
     let c = Palette::new();
     let width = statuses.iter().map(|s| s.name.len()).max().unwrap_or(4);
     println!("{}", c.bold(&format!("changeset `{id}`")));
@@ -4481,7 +4645,7 @@ rev = "main"
     #[test]
     fn manifest_defaults_apply_when_no_flag() {
         let ws = ws_with(WITH_DEFAULTS);
-        let t = resolve_tuning(&ws, None, None);
+        let t = resolve_tuning(&ws, None, None, false);
         assert_eq!(t.filter.as_deref(), Some("blob:none"));
         assert_eq!(t.depth, Some(3));
     }
@@ -4489,7 +4653,7 @@ rev = "main"
     #[test]
     fn cli_flags_override_manifest_defaults() {
         let ws = ws_with(WITH_DEFAULTS);
-        let t = resolve_tuning(&ws, Some("tree:0".to_string()), Some(1));
+        let t = resolve_tuning(&ws, Some("tree:0".to_string()), Some(1), false);
         assert_eq!(t.filter.as_deref(), Some("tree:0"));
         assert_eq!(t.depth, Some(1));
     }
@@ -4503,9 +4667,103 @@ url = "https://example.com/a.git"
 rev = "main"
 "#,
         );
-        let t = resolve_tuning(&ws, None, None);
+        let t = resolve_tuning(&ws, None, None, false);
         assert!(t.filter.is_none());
         assert!(t.depth.is_none());
+        assert_eq!(t.submodules, None);
+    }
+
+    #[test]
+    fn recurse_submodules_flag_overrides_to_true() {
+        let ws = ws_with(WITH_DEFAULTS);
+        let t = resolve_tuning(&ws, None, None, true);
+        assert_eq!(t.submodules, Some(true));
+    }
+
+    #[test]
+    fn no_flag_leaves_submodules_to_manifest() {
+        // Tuning stays None so plan_sync falls back to the per-repo / defaults
+        // value resolved in the resolver.
+        let ws = ws_with(WITH_DEFAULTS);
+        let t = resolve_tuning(&ws, None, None, false);
+        assert_eq!(t.submodules, None);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod completions_tests {
+    use super::*;
+    use clap_complete::Shell;
+
+    fn script_for(shell: Shell) -> String {
+        let mut cmd = Cli::command();
+        let name = cmd.get_name().to_string();
+        let mut buf: Vec<u8> = Vec::new();
+        clap_complete::generate(shell, &mut cmd, name, &mut buf);
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn bash_completions_mention_haw() {
+        let script = script_for(Shell::Bash);
+        assert!(!script.is_empty());
+        assert!(script.contains("haw"), "bash script: {script}");
+    }
+
+    #[test]
+    fn zsh_completions_mention_haw() {
+        let script = script_for(Shell::Zsh);
+        assert!(!script.is_empty());
+        assert!(script.contains("haw"), "zsh script: {script}");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod json_output_tests {
+    use super::*;
+    use haw_core::lock::{LOCK_VERSION, LockedRepo, Lockfile};
+
+    #[test]
+    fn lock_json_has_schema_and_revs() {
+        let lockfile = Lockfile {
+            version: LOCK_VERSION,
+            repos: vec![LockedRepo {
+                name: "kernel".to_string(),
+                url: "https://example.com/kernel.git".to_string(),
+                path: "kernel".into(),
+                rev: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                source_rev: "main".to_string(),
+                branch: "main".to_string(),
+                groups: vec!["firmware".to_string()],
+            }],
+        };
+        let value = lock_json(&lockfile);
+        assert_eq!(value["schema"], "haw.lock/1");
+        assert_eq!(
+            value["repos"][0]["rev"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(value["repos"][0]["source_rev"], "main");
+    }
+
+    #[test]
+    fn change_status_json_has_schema_and_repo() {
+        let statuses = vec![change::ChangeRepoStatus {
+            name: "kernel".to_string(),
+            branch: "change/FEAT-42".to_string(),
+            missing: false,
+            on_branch: true,
+            dirty: false,
+            head: Some("deadbeef".to_string()),
+        }];
+        let prs = std::collections::HashMap::new();
+        let value = change_status_value("FEAT-42", &statuses, &prs);
+        assert_eq!(value["schema"], "haw.change-status/1");
+        assert_eq!(value["id"], "FEAT-42");
+        assert_eq!(value["repos"][0]["name"], "kernel");
+        assert_eq!(value["repos"][0]["on_branch"], true);
     }
 }
 

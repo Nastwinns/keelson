@@ -68,6 +68,11 @@ fn clone_argv(url: &str, dest: &Path, opts: &CloneOpts) -> Vec<std::ffi::OsStrin
         argv.push("--depth".into());
         argv.push(depth.to_string().into());
     }
+    // Submodules follow the superproject's pinned commit, so recursing at clone
+    // time stays reproducible.
+    if opts.submodules {
+        argv.push("--recurse-submodules".into());
+    }
     argv.push(url.into());
     argv.push(dest.into());
     argv
@@ -256,6 +261,14 @@ impl GitBackend for ShellGit {
         Ok(())
     }
 
+    fn update_submodules(&self, repo: &Path) -> Result<(), GitError> {
+        run(
+            &["submodule", "update", "--init", "--recursive"],
+            Some(repo),
+        )?;
+        Ok(())
+    }
+
     fn create_branch(&self, repo: &Path, name: &str) -> Result<(), GitError> {
         run(&["checkout", "-b", name], Some(repo))?;
         Ok(())
@@ -351,12 +364,32 @@ mod tests {
     }
 
     #[test]
+    fn submodules_reaches_git_argv() {
+        let opts = CloneOpts {
+            submodules: true,
+            ..CloneOpts::none()
+        };
+        let argv = argv_strings("u", &opts);
+        assert!(
+            argv.contains(&"--recurse-submodules".to_string()),
+            "argv = {argv:?}"
+        );
+    }
+
+    #[test]
+    fn no_submodules_flag_absent_by_default() {
+        let argv = argv_strings("u", &CloneOpts::none());
+        assert!(!argv.iter().any(|a| a == "--recurse-submodules"));
+    }
+
+    #[test]
     fn reference_still_present_alongside_filter() {
         // Shared mode composes with partial clone.
         let opts = CloneOpts {
             reference: Some(PathBuf::from("/cache/mirror.git")),
             filter: Some("blob:none".to_string()),
             depth: None,
+            ..CloneOpts::none()
         };
         let argv = argv_strings("u", &opts);
         let i = argv
@@ -373,6 +406,7 @@ mod tests {
             reference: Some(PathBuf::from("/m.git")),
             filter: Some("tree:0".to_string()),
             depth: Some(2),
+            ..CloneOpts::none()
         };
         let argv = argv_strings("u", &opts);
         assert!(argv.contains(&"--reference".to_string()));

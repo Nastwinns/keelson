@@ -12,6 +12,9 @@ pub struct ResolvedRepo {
     pub rev: String,
     pub path: PathBuf,
     pub groups: Vec<String>,
+    /// Recurse this repo's git submodules at sync time (per-repo
+    /// `submodules` OR-ed with `[defaults] submodules`).
+    pub submodules: bool,
 }
 
 /// True when `groups` passes the `filter`: an empty filter matches everything,
@@ -89,6 +92,7 @@ fn resolve_one(
         rev,
         path,
         groups: repo.groups.clone(),
+        submodules: repo.submodules || manifest.defaults.submodules,
     })
 }
 
