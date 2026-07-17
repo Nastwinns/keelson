@@ -3011,6 +3011,157 @@ fn plugin(args: &[String]) -> Result<ExitCode> {
     ))
 }
 
+/// Discover the available plugin panels: the manifest `[plugins]` keys unioned
+/// with every `haw-*` executable found on `PATH`, deduped and sorted. Manifest
+/// entries carry their subscribed phases; PATH-only discoveries have none.
+fn discover_plugin_panels<'a, I>(subscriptions: I) -> Vec<haw_tui::PluginPanel>
+where
+    I: IntoIterator<Item = (&'a String, &'a Vec<String>)>,
+{
+    merge_plugin_panels(subscriptions, plugins_on_path())
+}
+
+/// Merge manifest subscriptions with a set of PATH-discovered plugin names into
+/// a sorted, deduped panel list. Factored out of [`discover_plugin_panels`] so
+/// the merge is testable without touching `PATH`.
+fn merge_plugin_panels<'a, I>(subscriptions: I, path_names: Vec<String>) -> Vec<haw_tui::PluginPanel>
+where
+    I: IntoIterator<Item = (&'a String, &'a Vec<String>)>,
+{
+    use std::collections::BTreeMap;
+
+    // BTreeMap keeps a stable, sorted, deduped-by-name result.
+    let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (name, phases) in subscriptions {
+        by_name.insert(name.clone(), phases.clone());
+    }
+    for name in path_names {
+        by_name.entry(name).or_default();
+    }
+    by_name
+        .into_iter()
+        .map(|(name, phases)| haw_tui::PluginPanel { name, phases })
+        .collect()
+}
+
+/// Bare names of every `haw-<name>` executable found across the directories on
+/// `PATH` (best-effort; unreadable dirs are skipped).
+fn plugins_on_path() -> Vec<String> {
+    match std::env::var_os("PATH") {
+        Some(path) => plugins_in_dirs(std::env::split_paths(&path)),
+        None => Vec::new(),
+    }
+}
+
+/// Bare `haw-<name>` executable names across `dirs` (unreadable dirs skipped).
+/// Windows executable extensions are stripped so `haw-sbom.exe` surfaces as
+/// `sbom`. Factored out of [`plugins_on_path`] so it is testable without
+/// mutating the process environment.
+fn plugins_in_dirs(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
+    let mut names = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let raw = file_name.to_string_lossy();
+            let stem = raw
+                .strip_suffix(".exe")
+                .or_else(|| raw.strip_suffix(".bat"))
+                .or_else(|| raw.strip_suffix(".cmd"))
+                .unwrap_or(&raw);
+            if let Some(name) = stem.strip_prefix("haw-")
+                && !name.is_empty()
+            {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
+}
+
+/// Run `haw-<name>` in a render intent and return the text panel for the TUI.
+///
+/// The render contract: the normal `haw.plugin/1` context plus `"intent":
+/// "render"` on stdin and `HAW_JSON`, and `HAW_RENDER=1` in the environment. If
+/// the plugin emits a `haw.plugin.view/1` document (`{title, lines}`) its title
+/// and lines are rendered; otherwise the raw stdout is shown. Output is
+/// line-capped to keep the detail view bounded.
+fn render_plugin_panel(ws: &Workspace, name: &str) -> std::io::Result<String> {
+    use std::io::Write;
+
+    let binary = format!("haw-{name}");
+    let context = json!({
+        "schema": "haw.plugin/1",
+        "intent": "render",
+        "root": ws.root.to_string_lossy(),
+        "stack": ws.current_stack(),
+        "repos": ws.manifest.repos.iter().map(|(repo_name, repo)| json!({
+            "name": repo_name,
+            "path": ws.root.join(repo.checkout_path(repo_name)).to_string_lossy(),
+            "rev": repo.rev,
+            "groups": repo.groups,
+        })).collect::<Vec<_>>(),
+    });
+    let body = context.to_string();
+
+    let spawned = std::process::Command::new(&binary)
+        .env("HAW_JSON", &body)
+        .env("HAW_RENDER", "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(std::io::Error::other(format!(
+                "no `{binary}` on PATH — nothing to render"
+            )));
+        }
+        Err(err) => return Err(err),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(body.as_bytes());
+    }
+    let output = child.wait_with_output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    Ok(haw_forge::cap_lines(&plugin_view_text(name, &stdout), 600))
+}
+
+/// Turn a plugin's render stdout into panel text. A `haw.plugin.view/1`
+/// document (`{schema, title, lines}`) renders as its title followed by its
+/// lines; anything else falls back to the raw stdout (or an empty-output note).
+fn plugin_view_text(name: &str, stdout: &str) -> String {
+    if let Ok(view) = serde_json::from_str::<serde_json::Value>(stdout.trim())
+        && view.get("schema").and_then(|s| s.as_str()) == Some("haw.plugin.view/1")
+    {
+        let title = view
+            .get("title")
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("plugin: {name}"));
+        let mut out = String::new();
+        out.push_str(&title);
+        out.push('\n');
+        if let Some(lines) = view.get("lines").and_then(|l| l.as_array()) {
+            for line in lines {
+                if let Some(text) = line.as_str() {
+                    out.push_str(text);
+                }
+                out.push('\n');
+            }
+        }
+        return out;
+    }
+    if stdout.trim().is_empty() {
+        format!("plugin `{name}` produced no output\n")
+    } else {
+        stdout.to_string()
+    }
+}
+
 fn import_manifest(from: &Path) -> Result<()> {
     let dest = PathBuf::from(MANIFEST_FILE);
     if dest.exists() {
@@ -3747,6 +3898,16 @@ impl haw_tui::Controller for CliController {
             artifacts,
             findings: Vec::new(),
         })
+    }
+
+    fn plugin_panels(&mut self) -> std::io::Result<Vec<haw_tui::PluginPanel>> {
+        let ws = self.workspace()?;
+        Ok(discover_plugin_panels(ws.manifest.plugins.iter()))
+    }
+
+    fn plugin_render(&mut self, name: &str) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        render_plugin_panel(&ws, name)
     }
 
     fn merge_abort(&mut self, repo: &str) -> std::io::Result<String> {
@@ -4615,6 +4776,32 @@ impl haw_tui::Controller for DemoController {
         })
     }
 
+    fn plugin_panels(&mut self) -> std::io::Result<Vec<haw_tui::PluginPanel>> {
+        let panel = |name: &str, phases: &[&str]| haw_tui::PluginPanel {
+            name: name.to_string(),
+            phases: phases.iter().map(|p| p.to_string()).collect(),
+        };
+        Ok(vec![
+            panel("compliance", &["post-build"]),
+            panel("artifact", &["post-land"]),
+        ])
+    }
+
+    fn plugin_render(&mut self, name: &str) -> std::io::Result<String> {
+        Ok(format!(
+            "{name} panel\n\
+\n\
+status:  green\n\
+repos:   4 scanned, 0 findings\n\
+last run: post-build\n\
+\n\
+  ✓ kernel     SBOM emitted (.haw/sbom/kernel.cdx.json)\n\
+  ✓ hal        SBOM emitted (.haw/sbom/hal.cdx.json)\n\
+  ✓ app-mqtt   SBOM emitted (.haw/sbom/app-mqtt.cdx.json)\n\
+  ✓ bootloader SBOM emitted (.haw/sbom/bootloader.cdx.json)\n"
+        ))
+    }
+
     fn repo_detail(&mut self, repo: &str) -> std::io::Result<String> {
         Ok(format!(
             "== {repo} ==\n\
@@ -4787,6 +4974,68 @@ int i2c_dma_xfer(struct i2c_bus *bus, struct i2c_msg *msg) {{\n\
 [00:00:19] FAILED: i2c_dma_roundtrip — expected 8 bytes, got 0\n\
 [00:00:19] error: 1 test failed (run #{run_id})\n"
         ))
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod plugin_panel_tests {
+    use super::*;
+
+    #[test]
+    fn plugins_in_dirs_finds_haw_prefixed_only() {
+        // A temp dir with haw-* executables plus a decoy without the prefix.
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["haw-sbom", "haw-scan", "not-a-plugin"] {
+            std::fs::write(dir.path().join(name), b"").unwrap();
+        }
+        let mut names = plugins_in_dirs([dir.path().to_path_buf()]);
+        names.sort();
+        assert_eq!(names, vec!["sbom".to_string(), "scan".to_string()]);
+    }
+
+    #[test]
+    fn merge_unions_manifest_and_path_and_dedups() {
+        let subs: Vec<(String, Vec<String>)> = vec![
+            ("sbom".to_string(), vec!["post-build".to_string()]),
+            ("sign".to_string(), vec!["post-land".to_string()]),
+        ];
+        // `sbom` is in BOTH the manifest and on PATH — it must dedup.
+        let path_names = vec!["sbom".to_string(), "scan".to_string()];
+
+        let panels = merge_plugin_panels(subs.iter().map(|(k, v)| (k, v)), path_names);
+        let names: Vec<&str> = panels.iter().map(|p| p.name.as_str()).collect();
+        // Union of {sbom, sign} and {sbom, scan}, sorted and deduped.
+        assert_eq!(names, vec!["sbom", "scan", "sign"]);
+        // The manifest entry keeps its phases; the PATH-only entry has none.
+        let sbom = panels.iter().find(|p| p.name == "sbom").unwrap();
+        assert_eq!(sbom.phases, vec!["post-build".to_string()]);
+        let scan = panels.iter().find(|p| p.name == "scan").unwrap();
+        assert!(scan.phases.is_empty());
+    }
+
+    #[test]
+    fn plugin_view_schema_renders_title_and_lines() {
+        let stdout = json!({
+            "schema": "haw.plugin.view/1",
+            "title": "SBOM status",
+            "lines": ["kernel ✓", "hal ✓"],
+        })
+        .to_string();
+        let text = plugin_view_text("sbom", &stdout);
+        assert_eq!(text, "SBOM status\nkernel ✓\nhal ✓\n");
+    }
+
+    #[test]
+    fn non_view_stdout_falls_back_to_raw() {
+        let text = plugin_view_text("sbom", "plain text panel\nsecond line\n");
+        assert_eq!(text, "plain text panel\nsecond line\n");
+    }
+
+    #[test]
+    fn empty_stdout_yields_a_note() {
+        let text = plugin_view_text("ghost", "   ");
+        assert!(text.contains("produced no output"));
     }
 }
 

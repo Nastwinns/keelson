@@ -332,6 +332,30 @@ pub struct Governance {
     pub findings: Vec<GovFinding>,
 }
 
+/// One available plugin panel for the `View::Plugins` list (`P`). Sourced from
+/// the manifest `[plugins]` keys unioned with `haw-*` executables on PATH.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginPanel {
+    /// The plugin's bare name (`sbom` for `haw-sbom`).
+    pub name: String,
+    /// Lifecycle phases the plugin subscribes to per the manifest (empty when
+    /// the plugin is only discovered on PATH, not registered).
+    pub phases: Vec<String>,
+}
+
+/// One failed operation, kept in the rolling session error log (`E`). Wall-clock
+/// time is unavailable here, so `when_seq` is a monotonic counter that also
+/// orders the log newest-first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorEntry {
+    /// Monotonic sequence number; higher is newer.
+    pub when_seq: u64,
+    /// What was being attempted (e.g. `PR/MR fetch`, `sync`).
+    pub context: String,
+    /// The failure message.
+    pub message: String,
+}
+
 /// One cross-repo grep hit for the `:grep` command / `View::Grep` list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrepHit {
@@ -416,6 +440,12 @@ pub trait Controller: Send {
     }
     /// The plugin/governance surface (read-only; fetched on entering `v`).
     fn governance(&mut self) -> io::Result<Governance>;
+    /// Available plugin panels: manifest `[plugins]` keys unioned with `haw-*`
+    /// executables on PATH, deduped (fetched on entering `View::Plugins`).
+    fn plugin_panels(&mut self) -> io::Result<Vec<PluginPanel>>;
+    /// Run one plugin in a render intent (`HAW_RENDER=1`, `"intent":"render"`)
+    /// and return the text panel to show in the shared detail view.
+    fn plugin_render(&mut self, name: &str) -> io::Result<String>;
     /// A live, plain-text git detail report for one repo (drill-in on `Enter`).
     fn repo_detail(&mut self, repo: &str) -> io::Result<String>;
     /// A plain-text drill-in report for one PR/MR (reviewers, checks, body).
@@ -451,6 +481,8 @@ enum View {
     Prs,
     Ci,
     Governance,
+    Plugins,
+    Errors,
     RepoDetail,
     PrDetail,
     CiDetail,
@@ -480,6 +512,10 @@ enum Job {
         force: bool,
     },
     Governance,
+    /// List the available plugin panels (manifest ∪ PATH).
+    PluginPanels,
+    /// Render one plugin's panel into the shared detail view.
+    PluginRender(String),
     RepoDetail(String),
     PrDetail(String, u64),
     CiDetail(String, u64),
@@ -523,6 +559,8 @@ enum Outcome {
     FleetPrs(Box<io::Result<Vec<FleetPr>>>),
     FleetCi(Box<io::Result<Vec<FleetCiRun>>>),
     Governance(Box<io::Result<Governance>>),
+    /// The available plugin panels list.
+    PluginPanels(Box<io::Result<Vec<PluginPanel>>>),
     /// A shared drill-in detail (repo git / PR / CI); carries its panel title.
     Detail(String, Box<io::Result<String>>),
     /// A file browser directory listing.
@@ -594,7 +632,16 @@ struct App {
     grep_hits: Option<Vec<GrepHit>>,
     /// The pattern of the last `:grep`, for the panel title.
     grep_pattern: String,
+    /// Available plugin panels for `View::Plugins`; `None` until first fetched.
+    panels: Option<Vec<PluginPanel>>,
+    /// Rolling session error log (newest last); capped at [`ERROR_LOG_CAP`].
+    errors: Vec<ErrorEntry>,
+    /// Monotonic counter stamping each [`ErrorEntry`] (wall-clock unavailable).
+    error_seq: u64,
 }
+
+/// Cap on the rolling session error log — the last N failures are kept.
+const ERROR_LOG_CAP: usize = 100;
 
 thread_local! {
     /// A reusable fuzzy matcher; kept per-thread so filtering never re-allocates
@@ -762,6 +809,8 @@ impl App {
             View::Prs => self.pr_rows().len(),
             View::Ci => self.ci_rows().len(),
             View::Governance => self.gov_rows().len(),
+            View::Plugins => self.panel_rows().len(),
+            View::Errors => self.error_rows().len(),
             View::Files => self.file_rows().len(),
             View::Grep => self.grep_rows().len(),
             View::RepoDetail | View::PrDetail | View::CiDetail => 0,
@@ -878,6 +927,50 @@ impl App {
         let last = self.rows_len().saturating_sub(1);
         self.cursor
             .select(Some(self.cursor.selected().unwrap_or(0).min(last)));
+    }
+
+    /// Append a failure to the rolling error log, stamping it with the next
+    /// sequence number and trimming the log to [`ERROR_LOG_CAP`]. Keeps the
+    /// transient `message` behavior separate — callers still set that too.
+    fn push_error(&mut self, context: &str, message: impl Into<String>) {
+        self.error_seq += 1;
+        self.errors.push(ErrorEntry {
+            when_seq: self.error_seq,
+            context: context.to_string(),
+            message: message.into(),
+        });
+        let overflow = self.errors.len().saturating_sub(ERROR_LOG_CAP);
+        if overflow > 0 {
+            self.errors.drain(0..overflow);
+        }
+    }
+
+    /// The error log newest-first, for the `View::Errors` list, honoring the
+    /// live filter (context or message).
+    fn error_rows(&self) -> Vec<&ErrorEntry> {
+        self.errors
+            .iter()
+            .rev()
+            .filter(|e| {
+                self.filter.is_empty()
+                    || hit(&e.context, &self.filter)
+                    || hit(&e.message, &self.filter)
+            })
+            .collect()
+    }
+
+    /// Available plugin panels, filtered by the live filter (name/phases).
+    fn panel_rows(&self) -> Vec<&PluginPanel> {
+        self.panels
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|p| {
+                self.filter.is_empty()
+                    || hit(&p.name, &self.filter)
+                    || p.phases.iter().any(|ph| hit(ph, &self.filter))
+            })
+            .collect()
     }
 
     /// Move the row cursor by roughly one visible page, clamped to the row
@@ -1020,6 +1113,11 @@ fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: 
                     Outcome::FleetCi(Box::new(controller.fleet_ci_refresh(force)))
                 }
                 Job::Governance => Outcome::Governance(Box::new(controller.governance())),
+                Job::PluginPanels => Outcome::PluginPanels(Box::new(controller.plugin_panels())),
+                Job::PluginRender(name) => Outcome::Detail(
+                    format!("plugin: {name}"),
+                    Box::new(controller.plugin_render(&name)),
+                ),
                 Job::RepoDetail(name) => Outcome::Detail(
                     format!("repo {name}"),
                     Box::new(controller.repo_detail(&name)),
@@ -1320,8 +1418,25 @@ fn open_fleet_view(app: &mut App, jobs: &Sender<Job>, view: View) {
             app.busy = Some("governance");
             let _ = jobs.send(Job::Governance);
         }
+        View::Plugins => {
+            app.busy = Some("plugins");
+            let _ = jobs.send(Job::PluginPanels);
+        }
         _ => {}
     }
+}
+
+/// Render one plugin's panel into the shared scrollable detail view, titled
+/// `plugin: <name>`.
+fn open_plugin_render(app: &mut App, jobs: &Sender<Job>, name: &str) {
+    open_detail(
+        app,
+        jobs,
+        View::RepoDetail,
+        format!("plugin: {name}"),
+        "plugin render",
+        Job::PluginRender(name.to_string()),
+    );
 }
 
 /// Open `url` with the platform's default browser, detached (best effort).
@@ -1432,7 +1547,9 @@ fn run_command_bar(app: &mut App, jobs: &Sender<Job>, line: &str) {
         ("tree", "") => app.goto_view(View::Tree),
         ("prs", "") => open_fleet_view(app, jobs, View::Prs),
         ("ci", "") => open_fleet_view(app, jobs, View::Ci),
-        ("governance" | "plugins", "") => open_fleet_view(app, jobs, View::Governance),
+        ("governance", "") => open_fleet_view(app, jobs, View::Governance),
+        ("plugins", "") => open_fleet_view(app, jobs, View::Plugins),
+        ("errors", "") => app.goto_view(View::Errors),
         ("theme", "") => {
             app.message = format!("themes: {}", theme::THEMES.join(", "));
         }
@@ -1574,6 +1691,9 @@ fn event_loop(
         problems_only: false,
         grep_hits: None,
         grep_pattern: String::new(),
+        panels: None,
+        errors: Vec::new(),
+        error_seq: 0,
     };
     app.cursor.select(Some(0));
     request_refresh(&mut app, jobs);
@@ -1598,7 +1718,10 @@ fn event_loop(
                                 app.message = "ready — press ? for help".to_string();
                             }
                         }
-                        Err(err) => app.message = format!("refresh failed: {err}"),
+                        Err(err) => {
+                            app.message = format!("refresh failed: {err}");
+                            app.push_error("refresh", err.to_string());
+                        }
                     }
                 }
                 Outcome::ChangesetPrs(result) => {
@@ -1615,7 +1738,10 @@ fn event_loop(
                             }
                             app.message = "PR/MR status refreshed".to_string();
                         }
-                        Err(err) => app.message = format!("PR status failed: {err}"),
+                        Err(err) => {
+                            app.message = format!("PR status failed: {err}");
+                            app.push_error("PR status", err.to_string());
+                        }
                     }
                 }
                 Outcome::FleetPrs(result) => {
@@ -1626,7 +1752,10 @@ fn event_loop(
                             app.prs = Some(prs);
                             app.clamp_cursor();
                         }
-                        Err(err) => app.message = format!("PR/MR fetch failed: {err}"),
+                        Err(err) => {
+                            app.message = format!("PR/MR fetch failed: {err}");
+                            app.push_error("PR/MR fetch", err.to_string());
+                        }
                     }
                 }
                 Outcome::FleetCi(result) => {
@@ -1638,7 +1767,10 @@ fn event_loop(
                             app.ci = Some(runs);
                             app.clamp_cursor();
                         }
-                        Err(err) => app.message = format!("CI fetch failed: {err}"),
+                        Err(err) => {
+                            app.message = format!("CI fetch failed: {err}");
+                            app.push_error("CI fetch", err.to_string());
+                        }
                     }
                 }
                 Outcome::Governance(result) => {
@@ -1654,7 +1786,24 @@ fn event_loop(
                             app.gov = Some(gov);
                             app.clamp_cursor();
                         }
-                        Err(err) => app.message = format!("governance fetch failed: {err}"),
+                        Err(err) => {
+                            app.message = format!("governance fetch failed: {err}");
+                            app.push_error("governance fetch", err.to_string());
+                        }
+                    }
+                }
+                Outcome::PluginPanels(result) => {
+                    app.busy = None;
+                    match *result {
+                        Ok(panels) => {
+                            app.message = format!("{} plugin panel(s) available", panels.len());
+                            app.panels = Some(panels);
+                            app.clamp_cursor();
+                        }
+                        Err(err) => {
+                            app.message = format!("plugin panels failed: {err}");
+                            app.push_error("plugin panels", err.to_string());
+                        }
                     }
                 }
                 Outcome::Detail(title, result) => {
@@ -1669,6 +1818,7 @@ fn event_loop(
                         Err(err) => {
                             app.detail_text = Some(format!("failed to load detail: {err}"));
                             app.message = format!("detail failed: {err}");
+                            app.push_error(&app.detail_title.clone(), err.to_string());
                         }
                     }
                 }
@@ -1685,6 +1835,7 @@ fn event_loop(
                         Err(err) => {
                             app.files_entries = Some(Vec::new());
                             app.message = format!("files failed: {err}");
+                            app.push_error("files", err.to_string());
                         }
                     }
                 }
@@ -1704,6 +1855,7 @@ fn event_loop(
                         Err(err) => {
                             app.grep_hits = Some(Vec::new());
                             app.message = format!("grep failed: {err}");
+                            app.push_error("grep", err.to_string());
                         }
                     }
                 }
@@ -1720,6 +1872,7 @@ fn event_loop(
                             Err(err) => {
                                 app.detail_text = Some(format!("failed to run: {err}"));
                                 app.message = format!("exec failed: {err}");
+                                app.push_error("exec", err.to_string());
                             }
                         }
                         continue;
@@ -1730,7 +1883,10 @@ fn event_loop(
                             app.output = Some(message);
                         }
                         Ok(message) => app.message = message,
-                        Err(err) => app.message = format!("{label} failed: {err}"),
+                        Err(err) => {
+                            app.message = format!("{label} failed: {err}");
+                            app.push_error(label, err.to_string());
+                        }
                     }
                     // A merge/approve changes the fleet PR list — re-fetch it so a
                     // merged PR disappears and approvals show, when we're on it.
@@ -1980,6 +2136,8 @@ fn event_loop(
             KeyCode::Char('m') => open_fleet_view(&mut app, jobs, View::Prs),
             KeyCode::Char('i') => open_fleet_view(&mut app, jobs, View::Ci),
             KeyCode::Char('v') => open_fleet_view(&mut app, jobs, View::Governance),
+            KeyCode::Char('P') => open_fleet_view(&mut app, jobs, View::Plugins),
+            KeyCode::Char('E') => app.goto_view(View::Errors),
             KeyCode::Char('o') if app.view == View::Prs || app.view == View::Ci => {
                 match app.cursor_url() {
                     Some(url) if !url.is_empty() => match open_in_browser(&url) {
@@ -2089,6 +2247,11 @@ fn event_loop(
                 View::Grep => {
                     if let Some(hit) = app.grep_rows().get(selected).map(|h| (*h).clone()) {
                         open_grep_hit(&mut app, jobs, &hit);
+                    }
+                }
+                View::Plugins => {
+                    if let Some(name) = app.panel_rows().get(selected).map(|p| p.name.clone()) {
+                        open_plugin_render(&mut app, jobs, &name);
                     }
                 }
                 _ => {}
@@ -2270,6 +2433,8 @@ fn view_name(app: &App, view: View) -> String {
         View::Prs => "pr/mr".to_string(),
         View::Ci => "ci".to_string(),
         View::Governance => "governance".to_string(),
+        View::Plugins => "plugins".to_string(),
+        View::Errors => "errors".to_string(),
         View::Files => {
             let repo = app.files_repo.as_deref().unwrap_or("—");
             let scope = if app.files_remote { "forge" } else { "local" };
@@ -2325,6 +2490,8 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("m", "PRs"),
             ("i", "CI"),
             ("v", "governance"),
+            ("P", "plugins"),
+            ("E", "errors"),
             ("r", "run"),
             ("g", "goto"),
             ("x", "shell"),
@@ -2393,6 +2560,14 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("/", "filter"),
             ("?", "help"),
         ],
+        View::Plugins => &[
+            ("enter", "render panel"),
+            ("P", "refetch"),
+            ("b", "back"),
+            ("/", "filter"),
+            ("?", "help"),
+        ],
+        View::Errors => &[("b", "back"), ("/", "filter"), ("?", "help"), ("q", "quit")],
         View::PrDetail => &[
             ("j/k", "scroll"),
             ("d", "diff"),
@@ -2460,6 +2635,8 @@ fn draw(frame: &mut Frame, app: &mut App) {
         View::Prs => draw_prs(frame, app, zones[1]),
         View::Ci => draw_ci(frame, app, zones[1]),
         View::Governance => draw_governance(frame, app, zones[1]),
+        View::Plugins => draw_plugins(frame, app, zones[1]),
+        View::Errors => draw_errors(frame, app, zones[1]),
         View::Files => draw_files(frame, app, zones[1]),
         View::Grep => draw_grep(frame, app, zones[1]),
         View::RepoDetail | View::PrDetail | View::CiDetail => draw_detail(frame, app, zones[1]),
@@ -2696,7 +2873,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         Span::styled("✗ absent — run haw lock", Style::default().fg(theme::red()))
     };
-    let info = vec![
+    let mut info = vec![
         kv(
             "context:",
             Span::styled(
@@ -2731,6 +2908,17 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ),
     ];
+    if !app.errors.is_empty() {
+        info.push(kv(
+            "errors:",
+            Span::styled(
+                format!("⚠ {} — press E", app.errors.len()),
+                Style::default()
+                    .fg(theme::red())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ));
+    }
     frame.render_widget(Paragraph::new(Text::from(info)), columns[0]);
 
     let mut key_lines = hint_grid(key_hints(app.view), columns[1].width);
@@ -3830,6 +4018,108 @@ fn draw_grep(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn draw_plugins(frame: &mut Frame, app: &mut App, area: Rect) {
+    let fetched = app.panels.is_some();
+    let rows: Vec<Row> = app
+        .panel_rows()
+        .iter()
+        .map(|panel| {
+            let phases = if panel.phases.is_empty() {
+                "—".to_string()
+            } else {
+                panel.phases.join(", ")
+            };
+            Row::new(vec![
+                Cell::from(Span::styled(
+                    panel.name.clone(),
+                    Style::default()
+                        .fg(theme::text())
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Cell::from(Span::styled(phases, Style::default().fg(theme::teal()))),
+            ])
+        })
+        .collect();
+
+    let count = rows.len();
+    let table = Table::new(rows, [Constraint::Min(16), Constraint::Min(20)])
+        .header(header_row(&["PLUGIN", "PHASES"]))
+        .block(panel(format!(
+            "plugins({count}){}",
+            row_indicator(app, count)
+        )))
+        .row_highlight_style(cursor_style())
+        .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
+
+    let mut state = TableState::default();
+    state.select(app.cursor.selected());
+    frame.render_stateful_widget(table, area, &mut state);
+
+    if count == 0 {
+        draw_empty_hint(
+            frame,
+            area,
+            if app.busy.is_some() {
+                "discovering plugins…"
+            } else if fetched {
+                "no plugins — register [plugins] in haw.toml or add haw-* to PATH"
+            } else {
+                "press P to discover plugin panels"
+            },
+        );
+    }
+}
+
+fn draw_errors(frame: &mut Frame, app: &mut App, area: Rect) {
+    let rows: Vec<Row> = app
+        .error_rows()
+        .iter()
+        .map(|entry| {
+            Row::new(vec![
+                Cell::from(Span::styled(
+                    format!("#{}", entry.when_seq),
+                    Style::default().fg(theme::dim()),
+                )),
+                Cell::from(Span::styled(
+                    entry.context.clone(),
+                    Style::default()
+                        .fg(theme::yellow())
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Cell::from(Span::styled(
+                    entry.message.clone(),
+                    Style::default().fg(theme::red()),
+                )),
+            ])
+        })
+        .collect();
+
+    let count = rows.len();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(6),
+            Constraint::Min(14),
+            Constraint::Min(20),
+        ],
+    )
+    .header(header_row(&["#", "CONTEXT", "MESSAGE"]))
+    .block(panel(format!(
+        "errors({count}){}",
+        row_indicator(app, count)
+    )))
+    .row_highlight_style(cursor_style())
+    .highlight_symbol(Span::styled("▍", Style::default().fg(theme::accent())));
+
+    let mut state = TableState::default();
+    state.select(app.cursor.selected());
+    frame.render_stateful_widget(table, area, &mut state);
+
+    if count == 0 {
+        draw_empty_hint(frame, area, "no errors this session");
+    }
+}
+
 fn draw_detail(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = app.detail_title.clone();
     match &app.detail_text {
@@ -4140,6 +4430,9 @@ mod tests {
             problems_only: false,
             grep_hits: None,
             grep_pattern: String::new(),
+            panels: None,
+            errors: Vec::new(),
+            error_seq: 0,
         }
     }
 
@@ -4235,7 +4528,7 @@ mod tests {
         }
     }
 
-    const ALL_VIEWS: [View; 13] = [
+    const ALL_VIEWS: [View; 15] = [
         View::Stacks,
         View::Fleet,
         View::Changesets,
@@ -4244,6 +4537,8 @@ mod tests {
         View::Prs,
         View::Ci,
         View::Governance,
+        View::Plugins,
+        View::Errors,
         View::RepoDetail,
         View::PrDetail,
         View::CiDetail,
@@ -4270,7 +4565,7 @@ mod tests {
         match key {
             "enter" | "space" | "?" | "/" | ":" | "b" | "q" | "j" | "k" => true,
             "j/k" => matches!(view, View::RepoDetail | View::PrDetail | View::CiDetail),
-            "t" | "c" | "m" | "i" | "v" | "r" | "g" => true,
+            "t" | "c" | "m" | "i" | "v" | "r" | "g" | "P" | "E" => true,
             "s" => matches!(view, View::Fleet | View::Stacks),
             "S" => true,
             "p" => matches!(view, View::Fleet | View::Stacks),
@@ -4378,6 +4673,101 @@ mod tests {
         app.pending_confirm = None;
         run_command_bar(&mut app, &tx, "change request FEAT-9");
         assert!(matches!(app.pending_confirm, Some(Confirm::Request(_, _))));
+    }
+
+    // ---- plugin panels + error log ----------------------------------------
+
+    fn panel(name: &str, phases: &[&str]) -> PluginPanel {
+        PluginPanel {
+            name: name.to_string(),
+            phases: phases.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn selecting_a_panel_requests_a_render_job() {
+        let mut app = fleet_app();
+        app.panels = Some(vec![panel("compliance", &["post-build"])]);
+        let (tx, rx) = channel();
+        open_plugin_render(&mut app, &tx, "compliance");
+        // The detail view opens and a PluginRender job is enqueued.
+        assert_eq!(app.view, View::RepoDetail);
+        assert_eq!(app.detail_title, "plugin: compliance");
+        let job = rx.try_recv();
+        assert!(
+            matches!(job, Ok(Job::PluginRender(ref n)) if n == "compliance"),
+            "expected a PluginRender job",
+        );
+    }
+
+    #[test]
+    fn panel_rows_filter_by_name_and_phase() {
+        let mut app = fleet_app();
+        app.panels = Some(vec![
+            panel("compliance", &["post-build"]),
+            panel("artifact", &["post-land"]),
+        ]);
+        assert_eq!(app.panel_rows().len(), 2);
+        app.filter = "comp".to_string();
+        assert_eq!(app.panel_rows().len(), 1);
+        app.filter = "post-land".to_string();
+        assert_eq!(app.panel_rows().len(), 1);
+        app.filter = "zzz".to_string();
+        assert_eq!(app.panel_rows().len(), 0);
+    }
+
+    #[test]
+    fn push_error_increments_count_and_stamps_seq() {
+        let mut app = fleet_app();
+        assert!(app.errors.is_empty());
+        app.push_error("sync", "boom");
+        app.push_error("PR/MR fetch", "network down");
+        assert_eq!(app.errors.len(), 2);
+        assert_eq!(app.errors[0].when_seq, 1);
+        assert_eq!(app.errors[1].when_seq, 2);
+        assert_eq!(app.error_seq, 2);
+    }
+
+    #[test]
+    fn error_rows_are_newest_first() {
+        let mut app = fleet_app();
+        app.push_error("sync", "first");
+        app.push_error("fetch", "second");
+        let rows = app.error_rows();
+        assert_eq!(rows[0].message, "second");
+        assert_eq!(rows[0].when_seq, 2);
+        assert_eq!(rows[1].message, "first");
+    }
+
+    #[test]
+    fn error_log_is_capped() {
+        let mut app = fleet_app();
+        for i in 0..(ERROR_LOG_CAP + 25) {
+            app.push_error("op", format!("err {i}"));
+        }
+        assert_eq!(app.errors.len(), ERROR_LOG_CAP);
+        // The oldest entries are dropped; the newest is kept.
+        assert_eq!(app.error_seq, (ERROR_LOG_CAP + 25) as u64);
+        assert_eq!(
+            app.errors.last().map(|e| e.when_seq),
+            Some((ERROR_LOG_CAP + 25) as u64)
+        );
+    }
+
+    #[test]
+    fn detail_error_outcome_pushes_an_error_entry() {
+        // Simulate the outcome-loop error branch: a failed Detail both sets the
+        // transient message and appends to the rolling error log.
+        let mut app = fleet_app();
+        app.detail_title = "plugin: compliance".to_string();
+        let err = io::Error::other("render blew up");
+        app.detail_text = Some(format!("failed to load detail: {err}"));
+        app.message = format!("detail failed: {err}");
+        app.push_error(&app.detail_title.clone(), err.to_string());
+        assert_eq!(app.errors.len(), 1);
+        assert_eq!(app.errors[0].context, "plugin: compliance");
+        assert_eq!(app.errors[0].message, "render blew up");
+        assert!(app.message.contains("detail failed"));
     }
 
     #[test]
@@ -4713,8 +5103,19 @@ mod tests {
         assert!(matches!(rx.try_recv(), Ok(Job::Governance)));
         app.busy = None;
         app.go_back();
+        // `:plugins` now opens the first-class plugin-panels view (distinct
+        // from `:governance`), enqueuing a panels discovery job.
         run_command_bar(&mut app, &tx, "plugins");
-        assert_eq!(app.view, View::Governance);
+        assert_eq!(app.view, View::Plugins);
+        assert!(matches!(rx.try_recv(), Ok(Job::PluginPanels)));
+    }
+
+    #[test]
+    fn errors_command_opens_the_errors_view() {
+        let mut app = fleet_app();
+        let (tx, _rx) = channel();
+        run_command_bar(&mut app, &tx, "errors");
+        assert_eq!(app.view, View::Errors);
     }
 
     #[test]

@@ -787,6 +787,101 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_terminal_state_prefers_result_name() {
+        // Real documented shape: a COMPLETED pipeline nests the verdict under
+        // `state.result.name`; `state.name` alone is just "COMPLETED".
+        let failed = json!({
+            "build_number": 300,
+            "state": {
+                "name": "COMPLETED",
+                "result": { "name": "FAILED" }
+            },
+            "target": { "ref_name": "main" }
+        });
+        assert_eq!(pipeline_status_str(&failed), "FAILED");
+        assert_eq!(run_of(&failed).status, crate::CiStatus::Failed);
+
+        let stopped = json!({
+            "build_number": 301,
+            "state": { "name": "COMPLETED", "result": { "name": "STOPPED" } },
+            "target": { "ref_name": "main" }
+        });
+        assert_eq!(run_of(&stopped).status, crate::CiStatus::Cancelled);
+    }
+
+    #[test]
+    fn pipeline_in_progress_stage_nesting_is_running() {
+        // In-flight pipelines carry `state.name = IN_PROGRESS` with a
+        // `state.stage.name` and no `result` — must map to Running, not "—".
+        let running = json!({
+            "build_number": 302,
+            "state": {
+                "name": "IN_PROGRESS",
+                "stage": { "name": "RUNNING" }
+            },
+            "target": { "ref_name": "dev" }
+        });
+        assert_eq!(pipeline_status_str(&running), "IN_PROGRESS");
+        assert_eq!(run_of(&running).status, crate::CiStatus::Running);
+
+        let pending = json!({
+            "build_number": 303,
+            "state": { "name": "PENDING" },
+            "target": { "ref_name": "dev" }
+        });
+        assert_eq!(run_of(&pending).status, crate::CiStatus::Queued);
+    }
+
+    #[test]
+    fn pipeline_step_state_nesting_matches_docs() {
+        // Step state mirrors pipeline state: terminal result under
+        // `state.result.name`, in-flight under `state.name`.
+        let done = json!({
+            "uuid": "{step-uuid}",
+            "name": "Build",
+            "state": { "name": "COMPLETED", "result": { "name": "SUCCESSFUL" } }
+        });
+        assert_eq!(step_result(&done), "SUCCESSFUL");
+        assert!(is_finished(step_result(&done)));
+
+        let inflight = json!({
+            "name": "Test",
+            "state": { "name": "IN_PROGRESS" }
+        });
+        assert_eq!(step_result(&inflight), "IN_PROGRESS");
+        assert!(!is_finished(step_result(&inflight)));
+    }
+
+    #[test]
+    fn pr_state_values_from_docs_map_correctly() {
+        // The four documented PR states: OPEN / MERGED / DECLINED / SUPERSEDED.
+        assert_eq!(state_of(&json!({ "state": "OPEN" })), PrState::Open);
+        assert_eq!(state_of(&json!({ "state": "MERGED" })), PrState::Merged);
+        assert_eq!(state_of(&json!({ "state": "DECLINED" })), PrState::Closed);
+        assert_eq!(state_of(&json!({ "state": "SUPERSEDED" })), PrState::Closed);
+    }
+
+    #[test]
+    fn commit_status_flat_state_from_docs() {
+        // Commit build statuses use a FLAT `state` (not nested): SUCCESSFUL /
+        // FAILED / INPROGRESS / STOPPED — distinct from pipeline state nesting.
+        let statuses = vec![
+            json!({ "key": "build", "state": "SUCCESSFUL" }),
+            json!({ "key": "lint", "state": "SUCCESSFUL" }),
+        ];
+        assert_eq!(commit_ci_passing(&statuses), Some(true));
+
+        let with_inprogress = vec![
+            json!({ "state": "SUCCESSFUL" }),
+            json!({ "state": "INPROGRESS" }),
+        ];
+        assert_eq!(commit_ci_passing(&with_inprogress), None);
+
+        let stopped = vec![json!({ "state": "STOPPED" })];
+        assert_eq!(commit_ci_passing(&stopped), Some(false));
+    }
+
+    #[test]
     fn approved_reads_participants() {
         let pr = json!({
             "participants": [

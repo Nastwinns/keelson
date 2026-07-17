@@ -67,6 +67,56 @@ to the schema marker only:
 A well-behaved plugin checks for `root`/`repos` and does something sensible when they
 are absent (print help, operate on cwd, or exit cleanly).
 
+### TUI panels — rendering your own cockpit surface
+
+The cockpit (`haw dash`) has a first-class **Plugins** view (press `P`, or `:plugins`)
+that lists every available plugin — the manifest `[plugins]` keys unioned with the
+`haw-*` executables discovered on `PATH`. Selecting one with `Enter` runs the plugin in
+a **render intent** and shows its output in the scrollable detail panel titled
+`plugin: <name>`.
+
+The render contract adds two signals on top of the normal `haw.plugin/1` context so a
+plugin can tell it is being asked for a human-readable panel (rather than being fired
+for a lifecycle phase):
+
+- the environment variable **`HAW_RENDER=1`** is set, and
+- the context JSON (on `HAW_JSON` and stdin) carries **`"intent": "render"`**.
+
+```json
+{
+  "schema": "haw.plugin/1",
+  "intent": "render",
+  "root": "/path/to/workspace",
+  "stack": "gateway",
+  "repos": [ /* ... as above ... */ ]
+}
+```
+
+When it sees these, the plugin should print a panel to **stdout** and exit. Two output
+shapes are accepted:
+
+1. **Structured** — a `haw.plugin.view/1` document. haw renders its `title` followed by
+   each string in `lines`:
+
+   ```json
+   {
+     "schema": "haw.plugin.view/1",
+     "title": "SBOM status",
+     "lines": [
+       "kernel   ✓ SBOM emitted",
+       "hal      ✓ SBOM emitted",
+       "app-mqtt ⚠ stale"
+     ]
+   }
+   ```
+
+2. **Raw text** — anything that is not a `haw.plugin.view/1` document is shown verbatim
+   as the panel body. This lets a plugin `printf` a plain report with no JSON at all.
+
+Output is line-capped to keep the panel bounded. A plugin that produces no output shows
+a short placeholder. A plugin that is not on `PATH` reports a clear error in the cockpit
+rather than crashing it.
+
 ## Machine interface — consuming haw's own output
 
 Plugins rarely need to re-derive fleet state: haw's read commands already speak JSON.

@@ -49,7 +49,8 @@ pub fn resolve_out_dir(out_dir: Option<&str>, ctx: &Context) -> PathBuf {
 /// A repo discovered from `haw status --format json` enrichment.
 #[derive(Debug, Clone, Default)]
 pub struct EnrichedRepo {
-    /// The observed pinned SHA (`sha` / `commit` / `rev.commit`), if any.
+    /// The resolved HEAD commit SHA (`haw.status/1` `head` field), if any. This
+    /// is the actual checked-out commit — distinct from the locked branch/tag.
     pub sha: Option<String>,
     /// The groups reported by `haw status`, if any.
     pub groups: Vec<String>,
@@ -58,7 +59,7 @@ pub struct EnrichedRepo {
 /// Enrichment gathered from `haw status --format json`, when available.
 #[derive(Debug, Default)]
 pub struct Enrichment {
-    /// Map of repo name -> observed pinned SHA (`rev.commit` / `sha`).
+    /// Map of repo name -> resolved HEAD commit SHA (`haw.status/1` `head`).
     pub shas: std::collections::HashMap<String, String>,
     /// Map of repo name -> enriched repo detail (sha + groups), in the order
     /// `haw status` reported them.
@@ -98,15 +99,17 @@ pub fn enrich_from_haw(root: Option<&Path>) -> Enrichment {
                 Some(name) => name.to_string(),
                 None => continue,
             };
+            // `haw status --format json` (schema `haw.status/1`) reports the
+            // resolved HEAD commit in `head`; that is the SHA we want to pin,
+            // NOT `branch`/`locked_rev` (the branch/tag the lock points at).
+            // Fall back to legacy `sha`/`commit` field names for forward
+            // compatibility with older `haw` builds.
             let sha = repo
-                .get("sha")
+                .get("head")
                 .and_then(|s| s.as_str())
+                .or_else(|| repo.get("sha").and_then(|s| s.as_str()))
                 .or_else(|| repo.get("commit").and_then(|c| c.as_str()))
-                .or_else(|| {
-                    repo.get("rev")
-                        .and_then(|r| r.get("commit"))
-                        .and_then(|c| c.as_str())
-                })
+                .filter(|s| !s.is_empty())
                 .map(str::to_string);
             let groups = repo
                 .get("groups")
@@ -130,11 +133,14 @@ pub fn enrich_from_haw(root: Option<&Path>) -> Enrichment {
     }
 }
 
-/// The pinned SHA for a repo: prefer haw's observed SHA, else the context rev.
+/// The pinned SHA for a repo: prefer haw's resolved HEAD commit (`head` from
+/// `haw status --format json`), else fall back to the context `rev` (the locked
+/// branch/tag) when no resolved SHA is available.
 fn pinned_sha(repo: &crate::context::Repo, enrich: &Enrichment) -> String {
     enrich
         .shas
         .get(&repo.name)
+        .filter(|sha| !sha.is_empty())
         .cloned()
         .unwrap_or_else(|| repo.rev.clone())
 }
@@ -335,6 +341,74 @@ mod tests {
         assert_eq!(doc["schema"], ASPICE_SCHEMA);
         assert_eq!(doc["repos"][0]["pinned_sha"], "v6.1.2");
         assert!(doc.get("generated_at").is_none());
+    }
+
+    #[test]
+    fn resolved_head_sha_beats_branch_in_both_artifacts() {
+        // Context locks `kernel` to the branch/tag `v6.1.2`; enrichment carries
+        // the resolved HEAD commit. Both artifacts must show the SHA, never the
+        // branch.
+        let mut enrich = Enrichment {
+            from_haw: true,
+            ..Enrichment::default()
+        };
+        let sha = "a1c9f4e2b7d80516fedc";
+        enrich.shas.insert("kernel".to_string(), sha.to_string());
+        enrich.repos.push((
+            "kernel".to_string(),
+            EnrichedRepo {
+                sha: Some(sha.to_string()),
+                groups: vec!["firmware".to_string()],
+            },
+        ));
+
+        let md = build_markdown(&ctx(), &enrich, None);
+        assert!(
+            md.contains(&format!("`{sha}`")),
+            "md missing resolved sha:\n{md}"
+        );
+        assert!(!md.contains("`v6.1.2`"), "md leaked the branch:\n{md}");
+
+        let doc = build_json(&ctx(), &enrich, None);
+        assert_eq!(doc["repos"][0]["pinned_sha"], sha);
+        // The context branch is still preserved under `rev`, not `pinned_sha`.
+        assert_eq!(doc["repos"][0]["rev"], "v6.1.2");
+    }
+
+    #[test]
+    fn enrich_parses_head_from_status_schema() {
+        // The real `haw status --format json` (schema `haw.status/1`) reports the
+        // resolved commit in `head`, alongside the locked branch (`locked_rev`)
+        // and current branch (`branch`) — the SHA must come from `head`.
+        let value: Value = serde_json::from_str(
+            r#"{
+                "schema": "haw.status/1",
+                "repos": [
+                    {
+                        "name": "kernel",
+                        "path": "/ws/kernel",
+                        "branch": "main",
+                        "head": "a1c9f4e2b7d80516fedc",
+                        "locked_rev": "v6.1.2",
+                        "groups": ["firmware"]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        // Exercise the same extraction path enrich_from_haw uses.
+        let repos = value["repos"].as_array().unwrap();
+        let repo = &repos[0];
+        let sha = repo
+            .get("head")
+            .and_then(|s| s.as_str())
+            .or_else(|| repo.get("sha").and_then(|s| s.as_str()))
+            .or_else(|| repo.get("commit").and_then(|c| c.as_str()))
+            .filter(|s| !s.is_empty());
+        assert_eq!(sha, Some("a1c9f4e2b7d80516fedc"));
+        // Must NOT be the branch or the locked rev.
+        assert_ne!(sha, Some("main"));
+        assert_ne!(sha, Some("v6.1.2"));
     }
 
     #[test]
