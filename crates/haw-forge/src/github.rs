@@ -528,6 +528,61 @@ impl Forge for GitHub {
             None => Ok(format!("(no file at {file} — not found)\n")),
         }
     }
+
+    fn pr_files(&self, repo_url: &str, number: u64) -> Result<Vec<crate::PrFile>, ForgeError> {
+        let (host, path) = self.split(repo_url)?;
+        // The files endpoint paginates 30/page; walk pages up to the fleet cap.
+        let mut out: Vec<crate::PrFile> = Vec::new();
+        for page in 1..=(crate::OPEN_PRS_LIMIT.div_ceil(100).max(1)) {
+            let list = self.get(
+                &host,
+                &format!("/repos/{path}/pulls/{number}/files?per_page=100&page={page}"),
+            )?;
+            let Some(entries) = list.as_array().filter(|list| !list.is_empty()) else {
+                break;
+            };
+            for entry in entries {
+                let Some(filename) = entry["filename"].as_str() else {
+                    continue;
+                };
+                let status = match entry["status"].as_str() {
+                    Some("added") => "added",
+                    Some("removed") => "removed",
+                    Some("renamed") => "renamed",
+                    _ => "modified",
+                };
+                out.push(crate::PrFile {
+                    path: filename.to_string(),
+                    status: status.to_string(),
+                });
+            }
+            if entries.len() < 100 {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    fn pr_file_content(
+        &self,
+        repo_url: &str,
+        number: u64,
+        path: &str,
+    ) -> Result<String, ForgeError> {
+        let (host, repo_path) = self.split(repo_url)?;
+        // Resolve the PR head sha, then fetch the raw file at that ref.
+        let pr = self.get(&host, &format!("/repos/{repo_path}/pulls/{number}"))?;
+        let head_sha = pr["head"]["sha"].as_str().unwrap_or_default();
+        if head_sha.is_empty() {
+            return Ok("(file not present at this ref)\n".to_string());
+        }
+        let file = path.trim_start_matches('/');
+        let route = format!("/repos/{repo_path}/contents/{file}?ref={head_sha}");
+        match self.get_text(&host, &route, "application/vnd.github.raw")? {
+            Some(text) => Ok(crate::cap_lines(&text, crate::FILE_LINE_CAP)),
+            None => Ok("(file not present at this ref)\n".to_string()),
+        }
+    }
 }
 
 /// Emoji + label for a PR state, used in the drill-in detail header.

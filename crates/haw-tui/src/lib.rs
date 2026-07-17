@@ -229,6 +229,18 @@ pub struct FileEntry {
     pub is_dir: bool,
 }
 
+/// One file changed by a PR/MR, for the `View::PrFiles` list. `status` is a
+/// short change label (`added`/`modified`/`removed`/`renamed`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrFileEntry {
+    pub path: String,
+    pub status: String,
+}
+
+/// Snapshot restored when returning from a PR file's content into the PR files
+/// browser: the PR context (`repo`, `number`, `title`) plus the cached listing.
+type PrFilesReturn = ((String, u64, String), Option<Vec<PrFileEntry>>);
+
 /// One repo of a changeset, with its rendered PR/CI cells.
 #[derive(Debug, Clone)]
 pub struct ChangeRepoRow {
@@ -454,6 +466,10 @@ pub trait Controller: Send {
     fn ci_detail(&mut self, repo: &str, run_id: u64) -> io::Result<String>;
     /// The unified diff for one PR/MR as plain text (scrollable detail view).
     fn pr_diff(&mut self, repo: &str, number: u64) -> io::Result<String>;
+    /// The files changed by one PR/MR (path + status), for the PR files browser.
+    fn pr_files(&mut self, repo: &str, number: u64) -> io::Result<Vec<PrFileEntry>>;
+    /// The full content of one changed file, AT THE PR's head ref (detail view).
+    fn pr_file_content(&mut self, repo: &str, number: u64, path: &str) -> io::Result<String>;
     /// The CI run/pipeline's job logs as plain text (scrollable detail view).
     fn ci_logs(&mut self, repo: &str, run_id: u64) -> io::Result<String>;
     /// Cross-repo grep: run `git grep -n <pattern>` in each cloned repo of the
@@ -534,6 +550,7 @@ enum View {
     PrDetail,
     CiDetail,
     Files,
+    PrFiles,
     Grep,
 }
 
@@ -568,6 +585,10 @@ enum Job {
     CiDetail(String, u64),
     PrDiff(String, u64),
     CiLogs(String, u64),
+    /// (repo, number) — list the files a PR/MR changed.
+    PrFiles(String, u64),
+    /// (repo, number, path, title) — fetch one changed file's content at the PR ref.
+    PrFileContent(String, u64, String, String),
     /// (repo, subpath, remote) — list a directory in the file browser.
     RepoTree(String, String, bool),
     /// (repo, path, remote, title) — fetch one file's content into the detail view.
@@ -612,6 +633,8 @@ enum Outcome {
     Detail(String, Box<io::Result<String>>),
     /// A file browser directory listing.
     Tree(Box<io::Result<Vec<FileEntry>>>),
+    /// A PR/MR's changed-files listing.
+    PrFiles(Box<io::Result<Vec<PrFileEntry>>>),
     /// Cross-repo grep results.
     Grep(Box<io::Result<Vec<GrepHit>>>),
     Action(&'static str, io::Result<String>),
@@ -690,6 +713,16 @@ struct App {
     grep_pattern: String,
     /// Available plugin panels for `View::Plugins`; `None` until first fetched.
     panels: Option<Vec<PluginPanel>>,
+    /// Changed files of the PR the `View::PrFiles` browser is showing; `None`
+    /// while loading.
+    pr_file_entries: Option<Vec<PrFileEntry>>,
+    /// The PR whose changed files are open in `View::PrFiles` (`repo`, `number`,
+    /// `title`); `None` outside that view.
+    pr_files_pr: Option<(String, u64, String)>,
+    /// Snapshot of the PR files browser (`pr` tuple + entries) captured when
+    /// drilling into a file's content, so `go_back` into `View::PrFiles` restores
+    /// the PR context and the exact listing.
+    pr_files_return: Option<PrFilesReturn>,
     /// Rolling session error log (newest last); capped at [`ERROR_LOG_CAP`].
     errors: Vec<ErrorEntry>,
     /// Monotonic counter stamping each [`ErrorEntry`] (wall-clock unavailable).
@@ -868,6 +901,7 @@ impl App {
             View::Plugins => self.panel_rows().len(),
             View::Errors => self.error_rows().len(),
             View::Files => self.file_rows().len(),
+            View::PrFiles => self.pr_file_rows().len(),
             View::Grep => self.grep_rows().len(),
             View::RepoDetail | View::PrDetail | View::CiDetail => 0,
         }
@@ -885,6 +919,16 @@ impl App {
             .collect();
         rows.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
         rows
+    }
+
+    /// A PR/MR's changed files, filtered by the live filter (path/status).
+    fn pr_file_rows(&self) -> Vec<&PrFileEntry> {
+        self.pr_file_entries
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter(|e| hit(&e.path, &self.filter) || hit(&e.status, &self.filter))
+            .collect()
     }
 
     /// Cross-repo grep hits, filtered by the live filter (repo/path/text).
@@ -1093,6 +1137,10 @@ impl App {
                 self.files_entries = None;
                 self.files_subpath.clear();
             }
+            if view != View::PrFiles {
+                self.pr_file_entries = None;
+                self.pr_files_pr = None;
+            }
         }
     }
 
@@ -1118,6 +1166,14 @@ impl App {
                 self.files_repo = Some(repo);
                 self.files_subpath = subpath;
                 self.files_entries = entries;
+            }
+            // Returning into the PR files browser: restore the PR context and the
+            // captured listing, so `b` from a file's content lands back on it.
+            if previous == View::PrFiles
+                && let Some((pr, entries)) = self.pr_files_return.take()
+            {
+                self.pr_files_pr = Some(pr);
+                self.pr_file_entries = entries;
             }
             self.clamp_cursor();
         }
@@ -1238,6 +1294,13 @@ fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: 
                 Job::RepoTree(repo, subpath, remote) => {
                     Outcome::Tree(Box::new(controller.repo_tree(&repo, &subpath, remote)))
                 }
+                Job::PrFiles(repo, number) => {
+                    Outcome::PrFiles(Box::new(controller.pr_files(&repo, number)))
+                }
+                Job::PrFileContent(repo, number, path, title) => Outcome::Detail(
+                    title,
+                    Box::new(controller.pr_file_content(&repo, number, &path)),
+                ),
                 Job::FileContent(repo, path, remote, title) => Outcome::Detail(
                     title,
                     Box::new(controller.file_content(&repo, &path, remote)),
@@ -1379,6 +1442,46 @@ fn open_pr_diff(app: &mut App, jobs: &Sender<Job>, repo: &str, number: u64) {
         "PR diff",
         Job::PrDiff(repo.to_string(), number),
     );
+}
+
+/// Open the PR/MR files browser: a list of the files this PR changed, each
+/// selectable to read its whole content at the PR's head ref. Mirrors the
+/// `View::Files` machinery but scoped to a PR.
+fn open_pr_files(app: &mut App, jobs: &Sender<Job>, repo: &str, number: u64, title: &str) {
+    app.goto_view(View::PrFiles);
+    app.pr_files_pr = Some((repo.to_string(), number, title.to_string()));
+    app.pr_file_entries = None;
+    app.cursor.select(Some(0));
+    // Always enqueue the read; the serial worker runs it after any in-flight job.
+    app.busy = Some("PR files");
+    let _ = jobs.send(Job::PrFiles(repo.to_string(), number));
+}
+
+/// Fetch one changed file's whole content at the PR's head ref into the shared
+/// scrollable detail view (`View::PrDetail`), titled `PR #<n> <path>`.
+fn open_pr_file_content(app: &mut App, jobs: &Sender<Job>, path: &str) {
+    let Some((repo, number, title)) = app.pr_files_pr.clone() else {
+        return;
+    };
+    let panel_title = format!("PR #{number} {path}");
+    app.detail_title = panel_title.clone();
+    app.detail_text = None;
+    app.detail_scroll = 0;
+    app.pending_scroll = None;
+    // Seed the PR drill-in context so PrDetail's merge/approve/f keys still act
+    // on this PR while its file content is shown.
+    app.detail_pr = Some((repo.clone(), number, title.clone()));
+    // Snapshot the browser so `go_back` into PrFiles restores it; `goto_view`
+    // clears the `pr_files_*` fields on the way into the detail view.
+    app.pr_files_return = Some(((repo.clone(), number, title), app.pr_file_entries.clone()));
+    app.goto_view(View::PrDetail);
+    app.busy = Some("PR file");
+    let _ = jobs.send(Job::PrFileContent(
+        repo,
+        number,
+        path.to_string(),
+        panel_title,
+    ));
 }
 
 /// Navigate into a CI run's logs — the shared scrollable detail view, titled
@@ -1804,6 +1907,9 @@ fn event_loop(
         grep_hits: None,
         grep_pattern: String::new(),
         panels: None,
+        pr_file_entries: None,
+        pr_files_pr: None,
+        pr_files_return: None,
         errors: Vec::new(),
         error_seq: 0,
     };
@@ -1955,6 +2061,23 @@ fn event_loop(
                             app.files_entries = Some(Vec::new());
                             app.message = format!("files failed: {err}");
                             app.push_error("files", err.to_string());
+                        }
+                    }
+                }
+                Outcome::PrFiles(result) => {
+                    app.busy = None;
+                    match *result {
+                        Ok(entries) => {
+                            let count = entries.len();
+                            app.pr_file_entries = Some(entries);
+                            app.cursor.select(Some(0));
+                            app.clamp_cursor();
+                            app.message = format!("{count} changed file(s)");
+                        }
+                        Err(err) => {
+                            app.pr_file_entries = Some(Vec::new());
+                            app.message = format!("PR files failed: {err}");
+                            app.push_error("PR files", err.to_string());
                         }
                     }
                 }
@@ -2332,7 +2455,7 @@ fn event_loop(
             KeyCode::Char('f')
                 if matches!(
                     app.view,
-                    View::Fleet | View::Changeset | View::Prs | View::Ci | View::Grep
+                    View::Fleet | View::Changeset | View::Ci | View::Grep
                 ) =>
             {
                 match app.cursor_repo() {
@@ -2395,6 +2518,11 @@ fn event_loop(
                         .map(|r| (r.repo.clone(), r.id, r.name.clone()))
                     {
                         open_ci_detail(&mut app, jobs, &repo, id, &name);
+                    }
+                }
+                View::PrFiles => {
+                    if let Some(path) = app.pr_file_rows().get(selected).map(|e| e.path.clone()) {
+                        open_pr_file_content(&mut app, jobs, &path);
                     }
                 }
                 View::Grep => {
@@ -2572,6 +2700,14 @@ fn event_loop(
                     None => app.message = "diff: put the cursor on a PR row".to_string(),
                 }
             }
+            KeyCode::Char('f') if app.view == View::Prs || app.view == View::PrDetail => {
+                match app.current_pr() {
+                    Some((repo, number, title)) => {
+                        open_pr_files(&mut app, jobs, &repo, number, &title)
+                    }
+                    None => app.message = "files: put the cursor on a PR row".to_string(),
+                }
+            }
             KeyCode::Char('l') if app.view == View::Ci => {
                 let run = app
                     .ci_rows()
@@ -2626,7 +2762,7 @@ fn key_hinted_elsewhere(current: View, c: char) -> bool {
 }
 
 /// All views, for scanning hint labels. Mirrors the test's `ALL_VIEWS`.
-const ALL_HINTED_VIEWS: [View; 15] = [
+const ALL_HINTED_VIEWS: [View; 16] = [
     View::Stacks,
     View::Fleet,
     View::Changesets,
@@ -2641,6 +2777,7 @@ const ALL_HINTED_VIEWS: [View; 15] = [
     View::PrDetail,
     View::CiDetail,
     View::Files,
+    View::PrFiles,
     View::Grep,
 ];
 
@@ -2692,6 +2829,10 @@ fn view_name(app: &App, view: View) -> String {
             }
         }
         View::RepoDetail | View::PrDetail | View::CiDetail => app.detail_title.clone(),
+        View::PrFiles => match &app.pr_files_pr {
+            Some((repo, number, _)) => format!("PR files {repo}#{number}"),
+            None => "PR files".to_string(),
+        },
         View::Grep => {
             if app.grep_pattern.is_empty() {
                 "grep".to_string()
@@ -2824,6 +2965,7 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
         View::PrDetail => &[
             ("j/k", "scroll"),
             ("d", "diff"),
+            ("f", "files"),
             ("M", "merge"),
             ("A", "approve"),
             ("C", "checkout"),
@@ -2863,6 +3005,13 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("/", "filter"),
             ("q", "quit"),
         ],
+        View::PrFiles => &[
+            ("enter", "read file"),
+            ("b", "back"),
+            ("/", "filter"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
     }
 }
 
@@ -2895,6 +3044,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         View::Plugins => draw_plugins(frame, app, zones[1]),
         View::Errors => draw_errors(frame, app, zones[1]),
         View::Files => draw_files(frame, app, zones[1]),
+        View::PrFiles => draw_pr_files(frame, app, zones[1]),
         View::Grep => draw_grep(frame, app, zones[1]),
         View::RepoDetail | View::PrDetail | View::CiDetail => draw_detail(frame, app, zones[1]),
     }
@@ -4208,6 +4358,56 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn draw_pr_files(frame: &mut Frame, app: &mut App, area: Rect) {
+    let fetched = app.pr_file_entries.is_some();
+    let rows = app.pr_file_rows();
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|entry| {
+            // A one-letter status glyph, GitHub-style: A/M/D/R.
+            let (glyph, color) = match entry.status.as_str() {
+                "added" => ("A", theme::green()),
+                "removed" => ("D", theme::red()),
+                "renamed" => ("R", theme::accent()),
+                _ => ("M", theme::yellow()),
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{glyph} "), Style::default().fg(color)),
+                Span::styled(entry.path.clone(), Style::default().fg(theme::text())),
+            ]))
+        })
+        .collect();
+    let count = items.len();
+    let crumb = match &app.pr_files_pr {
+        Some((repo, number, _)) => format!("{repo}#{number}"),
+        None => "—".to_string(),
+    };
+    let list = List::new(items)
+        .block(panel(format!(
+            "PR files {crumb}{}",
+            row_indicator(app, count)
+        )))
+        .highlight_style(cursor_style())
+        .highlight_symbol("▍");
+    let mut state = ListState::default();
+    state.select(app.cursor.selected());
+    frame.render_stateful_widget(list, area, &mut state);
+
+    if count == 0 {
+        draw_empty_hint(
+            frame,
+            area,
+            if fetched {
+                "no changed files"
+            } else if app.busy.is_some() {
+                "loading changed files…"
+            } else {
+                "no files"
+            },
+        );
+    }
+}
+
 fn draw_grep(frame: &mut Frame, app: &mut App, area: Rect) {
     let fetched = app.grep_hits.is_some();
     let rows: Vec<Row> = app
@@ -4732,6 +4932,9 @@ mod tests {
             grep_hits: None,
             grep_pattern: String::new(),
             panels: None,
+            pr_file_entries: None,
+            pr_files_pr: None,
+            pr_files_return: None,
             errors: Vec::new(),
             error_seq: 0,
         }
@@ -4829,7 +5032,7 @@ mod tests {
         }
     }
 
-    const ALL_VIEWS: [View; 15] = [
+    const ALL_VIEWS: [View; 16] = [
         View::Stacks,
         View::Fleet,
         View::Changesets,
@@ -4844,6 +5047,7 @@ mod tests {
         View::PrDetail,
         View::CiDetail,
         View::Files,
+        View::PrFiles,
         View::Grep,
     ];
 
@@ -4881,7 +5085,7 @@ mod tests {
             "R" => matches!(view, View::Changeset | View::Files),
             "f" => matches!(
                 view,
-                View::Fleet | View::Changeset | View::Prs | View::Ci | View::Grep
+                View::Fleet | View::Changeset | View::Prs | View::PrDetail | View::Ci | View::Grep
             ),
             "x" => matches!(
                 view,
@@ -5590,6 +5794,84 @@ mod tests {
             app.detail_ci,
             Some(("hal".to_string(), 42, "firmware-ci".to_string()))
         );
+    }
+
+    // ---- PR files browser -------------------------------------------------
+
+    #[test]
+    fn open_pr_files_opens_the_list_and_enqueues_the_fetch() {
+        let mut app = fleet_app();
+        let (tx, rx) = channel();
+        open_pr_files(&mut app, &tx, "kernel", 7, "add dma");
+        assert_eq!(app.view, View::PrFiles);
+        assert_eq!(
+            app.pr_files_pr,
+            Some(("kernel".to_string(), 7, "add dma".to_string()))
+        );
+        assert!(matches!(rx.try_recv(), Ok(Job::PrFiles(repo, 7)) if repo == "kernel"));
+    }
+
+    #[test]
+    fn open_pr_file_content_opens_the_detail_titled_pr_and_path() {
+        let mut app = fleet_app();
+        let (tx, rx) = channel();
+        open_pr_files(&mut app, &tx, "kernel", 7, "add dma");
+        let _ = rx.try_recv(); // drain the PrFiles fetch
+        app.pr_file_entries = Some(vec![PrFileEntry {
+            path: "src/lib.rs".to_string(),
+            status: "modified".to_string(),
+        }]);
+        open_pr_file_content(&mut app, &tx, "src/lib.rs");
+        assert_eq!(app.view, View::PrDetail);
+        assert_eq!(app.detail_title, "PR #7 src/lib.rs");
+        assert!(app.pr_files_return.is_some());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Job::PrFileContent(repo, 7, path, _)) if repo == "kernel" && path == "src/lib.rs"
+        ));
+    }
+
+    #[test]
+    fn back_from_a_pr_file_restores_the_files_browser() {
+        let mut app = fleet_app();
+        let (tx, rx) = channel();
+        app.back = vec![View::Prs];
+        open_pr_files(&mut app, &tx, "kernel", 7, "add dma");
+        let _ = rx.try_recv();
+        app.pr_file_entries = Some(vec![PrFileEntry {
+            path: "src/lib.rs".to_string(),
+            status: "modified".to_string(),
+        }]);
+        open_pr_file_content(&mut app, &tx, "src/lib.rs");
+        assert_eq!(app.view, View::PrDetail);
+        app.go_back();
+        assert_eq!(app.view, View::PrFiles);
+        // The PR context and the cached listing are both restored.
+        assert_eq!(
+            app.pr_files_pr,
+            Some(("kernel".to_string(), 7, "add dma".to_string()))
+        );
+        assert_eq!(app.pr_file_rows().len(), 1);
+    }
+
+    #[test]
+    fn pr_file_rows_filter_by_path_and_status() {
+        let mut app = fleet_app();
+        app.pr_file_entries = Some(vec![
+            PrFileEntry {
+                path: "src/lib.rs".to_string(),
+                status: "modified".to_string(),
+            },
+            PrFileEntry {
+                path: "README.md".to_string(),
+                status: "added".to_string(),
+            },
+        ]);
+        assert_eq!(app.pr_file_rows().len(), 2);
+        app.filter = "lib".to_string();
+        assert_eq!(app.pr_file_rows().len(), 1);
+        app.filter = "added".to_string();
+        assert_eq!(app.pr_file_rows().len(), 1);
     }
 
     #[test]

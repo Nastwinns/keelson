@@ -579,6 +579,54 @@ impl Forge for Bitbucket {
             None => Ok(format!("(no file at {file} — not found)\n")),
         }
     }
+
+    fn pr_files(&self, repo_url: &str, number: u64) -> Result<Vec<crate::PrFile>, ForgeError> {
+        let api = self.repo_api(repo_url)?;
+        let stats = self.paginate(
+            &format!("{api}/pullrequests/{number}/diffstat?pagelen=100"),
+            crate::OPEN_PRS_LIMIT.max(100),
+        )?;
+        let out = stats
+            .iter()
+            .filter_map(|entry| {
+                let new_path = entry["new"]["path"].as_str();
+                let old_path = entry["old"]["path"].as_str();
+                let path = new_path.or(old_path)?.to_string();
+                // Bitbucket diffstat status: added|removed|modified|renamed.
+                let status = match entry["status"].as_str() {
+                    Some("added") => "added",
+                    Some("removed") => "removed",
+                    Some("renamed") => "renamed",
+                    _ => "modified",
+                };
+                Some(crate::PrFile {
+                    path,
+                    status: status.to_string(),
+                })
+            })
+            .collect();
+        Ok(out)
+    }
+
+    fn pr_file_content(
+        &self,
+        repo_url: &str,
+        number: u64,
+        path: &str,
+    ) -> Result<String, ForgeError> {
+        let api = self.repo_api(repo_url)?;
+        let pr = self.call(Method::GET, &format!("{api}/pullrequests/{number}"), None)?;
+        let hash = pr["source"]["commit"]["hash"].as_str().unwrap_or_default();
+        if hash.is_empty() {
+            return Ok("(file not present at this ref)\n".to_string());
+        }
+        let file = path.trim_start_matches('/');
+        let url = format!("{api}/src/{}/{}", encode_segment(hash), encode_path(file));
+        match self.call_text(&url)? {
+            Some(text) => Ok(crate::cap_lines(&text, crate::FILE_LINE_CAP)),
+            None => Ok("(file not present at this ref)\n".to_string()),
+        }
+    }
 }
 
 impl Bitbucket {

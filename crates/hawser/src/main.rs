@@ -5193,6 +5193,29 @@ impl haw_tui::Controller for CliController {
         forge.pr_diff(&url, number).map_err(std::io::Error::other)
     }
 
+    fn pr_files(&mut self, repo: &str, number: u64) -> std::io::Result<Vec<haw_tui::PrFileEntry>> {
+        let ws = self.workspace()?;
+        let (forge, url) = forge_for_repo(&ws, repo)?;
+        let files = forge
+            .pr_files(&url, number)
+            .map_err(std::io::Error::other)?;
+        Ok(files
+            .into_iter()
+            .map(|f| haw_tui::PrFileEntry {
+                path: f.path,
+                status: f.status,
+            })
+            .collect())
+    }
+
+    fn pr_file_content(&mut self, repo: &str, number: u64, path: &str) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let (forge, url) = forge_for_repo(&ws, repo)?;
+        forge
+            .pr_file_content(&url, number, path)
+            .map_err(std::io::Error::other)
+    }
+
     fn ci_logs(&mut self, repo: &str, run_id: u64) -> std::io::Result<String> {
         let ws = self.workspace()?;
         let (forge, url) = forge_for_repo(&ws, repo)?;
@@ -6155,6 +6178,39 @@ diff --git a/drivers/i2c/i2c.h b/drivers/i2c/i2c.h\n\
 +    struct dma_chan *dma;\n\
  }};\n\
 +int i2c_dma_xfer(struct i2c_bus *bus, struct i2c_msg *msg);\n"
+        ))
+    }
+
+    fn pr_files(
+        &mut self,
+        _repo: &str,
+        _number: u64,
+    ) -> std::io::Result<Vec<haw_tui::PrFileEntry>> {
+        let file = |path: &str, status: &str| haw_tui::PrFileEntry {
+            path: path.to_string(),
+            status: status.to_string(),
+        };
+        Ok(vec![
+            file("drivers/i2c/dma.c", "added"),
+            file("drivers/i2c/i2c.h", "modified"),
+            file("drivers/i2c/legacy_pio.c", "removed"),
+        ])
+    }
+
+    fn pr_file_content(&mut self, repo: &str, number: u64, path: &str) -> std::io::Result<String> {
+        if path.ends_with("legacy_pio.c") {
+            return Ok("(file not present at this ref)\n".to_string());
+        }
+        Ok(format!(
+            "// {repo}:/{path} — at PR #{number} head\n\
+// canned demo content, read at the PR's version\n\
+\n\
+#include \"i2c.h\"\n\
+\n\
+int i2c_dma_xfer(struct i2c_bus *bus, struct i2c_msg *msg) {{\n\
+    if (!bus->dma) return i2c_pio_xfer(bus, msg);\n\
+    return dma_submit(bus->dma, msg->buf, msg->len);\n\
+}}\n"
         ))
     }
 

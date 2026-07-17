@@ -482,6 +482,66 @@ impl Forge for GitLab {
             None => Ok(format!("(no file at {file} — not found)\n")),
         }
     }
+
+    fn pr_files(&self, repo_url: &str, number: u64) -> Result<Vec<crate::PrFile>, ForgeError> {
+        let api = self.project_api(repo_url)?;
+        let mr = self.call(
+            Method::GET,
+            &format!("{api}/merge_requests/{number}/changes"),
+            None,
+        )?;
+        let changes = mr["changes"].as_array().cloned().unwrap_or_default();
+        let out = changes
+            .iter()
+            .filter_map(|change| {
+                let new_path = change["new_path"].as_str();
+                let old_path = change["old_path"].as_str();
+                let path = new_path.or(old_path)?.to_string();
+                let status = if change["new_file"].as_bool() == Some(true) {
+                    "added"
+                } else if change["deleted_file"].as_bool() == Some(true) {
+                    "removed"
+                } else if change["renamed_file"].as_bool() == Some(true) {
+                    "renamed"
+                } else {
+                    "modified"
+                };
+                Some(crate::PrFile {
+                    path,
+                    status: status.to_string(),
+                })
+            })
+            .collect();
+        Ok(out)
+    }
+
+    fn pr_file_content(
+        &self,
+        repo_url: &str,
+        number: u64,
+        path: &str,
+    ) -> Result<String, ForgeError> {
+        let api = self.project_api(repo_url)?;
+        let mr = self.call(Method::GET, &format!("{api}/merge_requests/{number}"), None)?;
+        // Prefer the head sha; fall back to the source branch name.
+        let git_ref = mr["sha"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| mr["source_branch"].as_str())
+            .unwrap_or_default();
+        if git_ref.is_empty() {
+            return Ok("(file not present at this ref)\n".to_string());
+        }
+        let file = path.trim_start_matches('/');
+        let url = format!(
+            "{api}/repository/files/{}/raw?ref={git_ref}",
+            encode_path(file)
+        );
+        match self.call_text(&url)? {
+            Some(text) => Ok(crate::cap_lines(&text, crate::FILE_LINE_CAP)),
+            None => Ok("(file not present at this ref)\n".to_string()),
+        }
+    }
 }
 
 /// Whether a GitLab job/pipeline `status` is a terminal (finished) state.

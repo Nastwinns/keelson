@@ -111,6 +111,14 @@ pub struct TreeEntry {
     pub is_dir: bool,
 }
 
+/// One file changed by a PR/MR, forge-neutral. `status` is one of
+/// `"added"`, `"modified"`, `"removed"`, or `"renamed"`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrFile {
+    pub path: String,
+    pub status: String,
+}
+
 /// Cap on the number of lines a `file_blob` returns before truncation.
 pub const FILE_LINE_CAP: usize = 600;
 
@@ -173,6 +181,19 @@ pub trait Forge {
         repo_url: &str,
         path: &str,
         git_ref: Option<&str>,
+    ) -> Result<String, ForgeError>;
+    /// The list of files changed by one PR/MR, capped at [`OPEN_PRS_LIMIT`]-scale
+    /// pagination (see the impls). Each carries its path and change status.
+    fn pr_files(&self, repo_url: &str, number: u64) -> Result<Vec<PrFile>, ForgeError>;
+    /// The full text of a file changed by a PR/MR, resolved AT THE PR's head
+    /// ref, capped to a readable length (see [`FILE_LINE_CAP`]). A file that is
+    /// absent at that ref (e.g. a removed file, or a 404) returns a short note
+    /// string, not an error.
+    fn pr_file_content(
+        &self,
+        repo_url: &str,
+        number: u64,
+        path: &str,
     ) -> Result<String, ForgeError>;
 }
 

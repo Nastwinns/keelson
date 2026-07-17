@@ -187,6 +187,24 @@ impl Forge for FakeForge {
     ) -> Result<String, ForgeError> {
         Ok(String::new())
     }
+    fn pr_files(
+        &self,
+        _repo_url: &str,
+        _number: u64,
+    ) -> Result<Vec<haw_forge::PrFile>, ForgeError> {
+        Ok(vec![haw_forge::PrFile {
+            path: "src/lib.rs".to_string(),
+            status: "modified".to_string(),
+        }])
+    }
+    fn pr_file_content(
+        &self,
+        _repo_url: &str,
+        _number: u64,
+        _path: &str,
+    ) -> Result<String, ForgeError> {
+        Ok(String::new())
+    }
 }
 
 struct FakeFactory {
