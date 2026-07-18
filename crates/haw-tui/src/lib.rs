@@ -423,6 +423,19 @@ pub trait Controller: Send {
     fn run_cmd(&mut self, cmd: &str) -> io::Result<String>;
     /// Run `cmd` across a marked set of repos only (fleet bulk action).
     fn run_cmd_in(&mut self, cmd: &str, repos: &[String]) -> io::Result<String>;
+    /// Run every repo's manifest `build` command; returns a text report shown
+    /// in the shared output overlay (`:build`).
+    fn build(&mut self) -> io::Result<String> {
+        Err(io::Error::other("build is unavailable in this cockpit"))
+    }
+    /// Run every repo's manifest `test` command; returns a text report (`:test`).
+    fn test(&mut self) -> io::Result<String> {
+        Err(io::Error::other("test is unavailable in this cockpit"))
+    }
+    /// Assert the on-disk tree matches haw.lock; returns a text report (`:verify`).
+    fn verify(&mut self) -> io::Result<String> {
+        Err(io::Error::other("verify is unavailable in this cockpit"))
+    }
     fn change_start(&mut self, id: &str) -> io::Result<String>;
     fn change_request(&mut self, id: &str, only: Option<Vec<String>>) -> io::Result<String>;
     fn change_land(&mut self, id: &str) -> io::Result<String>;
@@ -607,6 +620,12 @@ enum ActionKind {
     Lock,
     Run(String),
     RunRepos(String, Vec<String>),
+    /// Run every repo's manifest `build` command (`:build`).
+    Build,
+    /// Run every repo's manifest `test` command (`:test`).
+    Test,
+    /// Assert the tree matches haw.lock (`:verify`).
+    Verify,
     ChangeStart(String),
     ChangeRequest(String, Option<Vec<String>>),
     ChangeLand(String),
@@ -742,6 +761,9 @@ struct App {
     errors: Vec<ErrorEntry>,
     /// Monotonic counter stamping each [`ErrorEntry`] (wall-clock unavailable).
     error_seq: u64,
+    /// Watch mode (`w` / `:watch`): when on, the idle refresh also periodically
+    /// re-fetches the open PR/CI fleet view (TTL-cached). Off by default.
+    watch: bool,
 }
 
 /// Cap on the rolling session error log — the last N failures are kept.
@@ -1351,6 +1373,9 @@ fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: 
                         ActionKind::Lock => controller.lock(),
                         ActionKind::Run(cmd) => controller.run_cmd(&cmd),
                         ActionKind::RunRepos(cmd, repos) => controller.run_cmd_in(&cmd, &repos),
+                        ActionKind::Build => controller.build(),
+                        ActionKind::Test => controller.test(),
+                        ActionKind::Verify => controller.verify(),
                         ActionKind::ChangeStart(id) => controller.change_start(&id),
                         ActionKind::ChangeRequest(id, only) => controller.change_request(&id, only),
                         ActionKind::ChangeLand(id) => controller.change_land(&id),
@@ -1708,7 +1733,9 @@ fn is_url(s: &str) -> bool {
 }
 
 /// Open `url` with the platform's default browser, detached (best effort).
-fn open_in_browser(url: &str) -> io::Result<()> {
+/// Hand a URL to the platform browser/opener (`open`/`xdg-open`/`cmd start`),
+/// detached from this process's stdio. Also used by the `haw open` CLI.
+pub fn open_in_browser(url: &str) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     let mut command = std::process::Command::new("open");
     #[cfg(target_os = "windows")]
@@ -1752,6 +1779,16 @@ enum Confirm {
     MergeCleanup(String),
 }
 
+/// Flip watch mode (`w` / `:watch`) and report the new state.
+fn toggle_watch(app: &mut App) {
+    app.watch = !app.watch;
+    app.message = if app.watch {
+        "watch on — the fleet & open PR/CI view auto-refresh".to_string()
+    } else {
+        "watch off".to_string()
+    };
+}
+
 fn run_command_bar(app: &mut App, jobs: &Sender<Job>, line: &str) {
     let (verb, rest) = line
         .trim()
@@ -1786,6 +1823,19 @@ fn run_command_bar(app: &mut App, jobs: &Sender<Job>, line: &str) {
                 dispatch(app, jobs, "run", ActionKind::Run(cmd.to_string()));
             }
         }
+        ("build", "") => {
+            app.message = "→ haw build".to_string();
+            dispatch(app, jobs, "build", ActionKind::Build);
+        }
+        ("test", "") => {
+            app.message = "→ haw test".to_string();
+            dispatch(app, jobs, "test", ActionKind::Test);
+        }
+        ("verify", "") => {
+            app.message = "→ haw verify".to_string();
+            dispatch(app, jobs, "verify", ActionKind::Verify);
+        }
+        ("watch", "") => toggle_watch(app),
         ("change", "") => app.goto_view(View::Changesets),
         ("change", "start") => app.input = InputMode::NewChangeset(String::new()),
         ("change", _) if sub == "start" && !arg.is_empty() => {
@@ -1969,10 +2019,12 @@ fn event_loop(
         pr_files_return: None,
         errors: Vec::new(),
         error_seq: 0,
+        watch: false,
     };
     app.cursor.select(Some(0));
     request_refresh(&mut app, jobs);
     let mut last_refresh = Instant::now();
+    let mut last_watch = Instant::now();
 
     loop {
         while let Ok(outcome) = outcomes.try_recv() {
@@ -2177,8 +2229,9 @@ fn event_loop(
                         continue;
                     }
                     match result {
-                        Ok(message) if label == "run" => {
-                            app.message = "ran — press any key to dismiss the output".to_string();
+                        Ok(message) if matches!(label, "run" | "build" | "test" | "verify") => {
+                            app.message =
+                                format!("{label} finished — press any key to dismiss the output");
                             app.output = Some(message);
                         }
                         Ok(message) => app.message = message,
@@ -2207,15 +2260,33 @@ fn event_loop(
         // Auto-refresh the fleet/status snapshot when idle and safe, k9s-style.
         // Never disturbs input, overlays, or in-flight work; network views
         // (Prs/Ci/Governance) stay strictly on-demand.
-        if app.busy.is_none()
+        let idle_ok = app.busy.is_none()
             && app.input == InputMode::None
             && !app.help
             && app.output.is_none()
-            && app.pending_confirm.is_none()
-            && last_refresh.elapsed() >= Duration::from_secs(5)
-        {
+            && app.pending_confirm.is_none();
+        if idle_ok && last_refresh.elapsed() >= Duration::from_secs(5) {
             request_refresh(&mut app, jobs);
             last_refresh = Instant::now();
+        }
+
+        // Watch mode (`w`): additionally re-fetch the open PR/CI fleet view on
+        // the idle interval. `force: false` respects the controller's TTL cache,
+        // and the outcome handlers preserve cursor/filter/scroll, so this never
+        // clobbers what the user is looking at.
+        if app.watch && idle_ok && last_watch.elapsed() >= Duration::from_secs(5) {
+            match app.view {
+                View::Prs => {
+                    app.busy = Some("PR/MRs");
+                    let _ = jobs.send(Job::FleetPrs { force: false });
+                }
+                View::Ci => {
+                    app.busy = Some("CI runs");
+                    let _ = jobs.send(Job::FleetCi { force: false });
+                }
+                _ => {}
+            }
+            last_watch = Instant::now();
         }
 
         app.tick = app.tick.wrapping_add(1);
@@ -2679,6 +2750,7 @@ fn event_loop(
             KeyCode::Char('r') => {
                 app.input = InputMode::Command("run ".to_string());
             }
+            KeyCode::Char('w') => toggle_watch(&mut app),
             KeyCode::Char('n') if app.view == View::Changesets || app.view == View::Changeset => {
                 app.input = InputMode::NewChangeset(String::new());
             }
@@ -2947,6 +3019,7 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
             ("P", "plugins"),
             ("E", "errors"),
             ("r", "run"),
+            ("w", "watch"),
             ("g", "goto"),
             ("x", "shell"),
             ("f", "files"),
@@ -3473,6 +3546,17 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                 format!("⚠ {} — press E", app.errors.len()),
                 Style::default()
                     .fg(theme::red())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ));
+    }
+    if app.watch {
+        info.push(kv(
+            "mode:",
+            Span::styled(
+                "⟳ watch",
+                Style::default()
+                    .fg(theme::green())
                     .add_modifier(Modifier::BOLD),
             ),
         ));
@@ -4936,6 +5020,10 @@ fn help_lines() -> Vec<Line<'static>> {
         help_entry("!", "run a shell command in the cursor repo (detail view)"),
         help_entry("S", "switch stack · l lock"),
         help_entry("t", "tree · c changesets · r run · g goto"),
+        help_entry(
+            "w",
+            "toggle watch — auto-refresh the fleet & open PR/CI view",
+        ),
         help_entry("x", "drop into a shell in the repo (exits the cockpit)"),
         help_entry("f", "browse the repo's files (local disk or forge)"),
         help_entry("< >", "move sort column · . toggles asc/desc"),
@@ -4977,6 +5065,8 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw(""),
         help_section("command bar"),
         help_entry(":sync", "· :switch NAME · :run CMD · :tree"),
+        help_entry(":build", "· :test · :verify — fleet build/test/verify"),
+        help_entry(":watch", "· w — toggle fleet & PR/CI auto-refresh"),
         help_entry(":prs", "· :ci · :governance · :plugins · :help"),
         help_entry(":pin", "· :lock — pin HEADs / commit the lock"),
         help_entry(":change", "[ID | start ID | land ID | request ID]"),
@@ -5087,7 +5177,20 @@ mod tests {
             pr_files_return: None,
             errors: Vec::new(),
             error_seq: 0,
+            watch: false,
         }
+    }
+
+    #[test]
+    fn watch_toggles_on_and_off() {
+        let mut app = fleet_app();
+        assert!(!app.watch, "watch is off by default");
+        toggle_watch(&mut app);
+        assert!(app.watch, "w turns watch on");
+        assert!(app.message.contains("watch on"));
+        toggle_watch(&mut app);
+        assert!(!app.watch, "w turns watch off");
+        assert!(app.message.contains("watch off"));
     }
 
     fn fleet_app() -> App {
@@ -5225,7 +5328,7 @@ mod tests {
         match key {
             "enter" | "space" | "?" | "/" | ":" | "b" | "q" | "j" | "k" => true,
             "j/k" => matches!(view, View::RepoDetail | View::PrDetail | View::CiDetail),
-            "t" | "c" | "m" | "i" | "v" | "r" | "g" | "P" | "E" => true,
+            "t" | "c" | "m" | "i" | "v" | "r" | "g" | "P" | "E" | "w" => true,
             "s" => matches!(view, View::Fleet | View::Stacks),
             "S" => true,
             "p" => matches!(view, View::Fleet | View::Stacks),

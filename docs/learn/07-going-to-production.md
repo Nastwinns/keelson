@@ -1,8 +1,9 @@
 # 7. Going to production
 
-You can compose a fleet, work across it, ship changesets, and extend `haw` with plugins.
-This final chapter is about doing all of that *for real* — safely, in CI, with an audit
-trail. It's the difference between a neat local tool and something you trust to gate
+You can compose a fleet, work across it, ship changesets, build and test it. This final
+chapter is about doing all of that *for real* — safely, in CI, with an audit trail — and
+about the one extensibility escape hatch that ties the governance features together:
+plugins. It's the difference between a neat local tool and something you trust to gate
 releases.
 
 <img class="chapter-illus" src="../assets/img/launching.svg" alt="Taking haw to production">
@@ -15,6 +16,7 @@ releases.
 <li>Internalize the <strong>trust model</strong> — the manifest is trusted code, tokens live only in the environment.</li>
 <li>Wire the four-move CI pipeline: <strong><code>sync → verify → build → test</code></strong>.</li>
 <li>Enforce reproducibility with <code>haw sync --locked</code> and <code>haw verify</code>.</li>
+<li>Extend <code>haw</code> with <strong>plugins</strong> — any unknown <code>haw &lt;name&gt;</code> runs <code>haw-&lt;name&gt;</code>, no fork required.</li>
 <li>Distribute artifacts with <code>haw publish</code>, and produce SBOM, provenance, and signatures.</li>
 <li>Bundle an audit trail with <code>haw evidence</code> and map it to compliance standards.</li>
 </ul>
@@ -50,10 +52,52 @@ Two corollaries you already half-know:
 
 Read the full [trust model](../SECURITY.md) before you wire `haw` into anything shared.
 
-## 🔧 2. The CI pipeline — always the same four moves
+## 🧩 2. Extend it with plugins — no fork required
 
-Here's the payoff of everything you learned in Chapters 2–3. A `haw` pipeline is the same
-shape everywhere:
+Before we wire the pipeline, meet the escape hatch that powers the governance features
+below. `haw` follows the same pattern as `git`, `cargo`, and `kubectl`: **any subcommand
+`haw` doesn't recognize is dispatched to a `haw-<name>` executable on your `PATH`.**
+
+<img class="side-illus" src="../assets/img/design-tools.svg" alt="Extending haw with plugins">
+
+*A plugin is just a program that reads some JSON and prints some JSON — write one in any language.*
+
+```bash
+haw jira sync      # not built in → runs `haw-jira sync`
+```
+
+The plugin runs as a **separate process** (a broken plugin can never crash `haw`), `haw`
+hands it the current fleet as JSON via `HAW_JSON` + stdin (`haw.plugin/1`), and the
+plugin's exit code becomes `haw`'s — so a plugin is a first-class CI gate. Discover, install,
+and scaffold them:
+
+```bash
+haw plugins list                     # first-party + installed plugins
+haw plugins list --remote            # the community index
+haw plugins install aspice           # shells out to cargo install
+haw plugins new mycheck --lang python   # runnable skeleton (rust|python|go|shell)
+```
+
+The scaffold is a complete, runnable plugin: it reads the context, handles `--help` and
+`--format json`, emits a `haw.plugin.report/1` document, and fails open outside a
+workspace. Put it on `PATH` and it's instantly a `haw` subcommand — no rebuild of `haw`.
+
+<div class="callout tip">
+
+**Tip:** `haw`'s own governance features — SBOM, signing, secret-gate — ship *as plugins*
+on exactly this model, so nothing here is second-class. The full contract, JSON Schemas,
+and language bindings are in [Plugins](../PLUGINS.md).
+
+</div>
+
+The real power is **lifecycle hooks**: subscribe a plugin to a phase in `[plugins]` and it
+fires automatically around fleet operations — which is exactly how the supply-chain
+features below are wired.
+
+## 🔧 3. The CI pipeline — always the same four moves
+
+Here's the payoff of everything you learned in Chapters 3 and 6. A `haw` pipeline is the
+same shape everywhere:
 
 ```text
 sync  →  verify  →  build  →  test
@@ -90,7 +134,7 @@ the pinned SHAs, because every commit is still reachable.
 
 </div>
 
-## ♻️ 3. Reproducibility, enforced
+## ♻️ 4. Reproducibility, enforced
 
 The whole pipeline rests on `haw.lock`. Two flags make it airtight in CI:
 
@@ -103,7 +147,7 @@ haw verify               # assert tree == lock, exit 3 on drift
 baseline, never resolve fresh. `verify` then proves the checkout matches it. Together they
 guarantee the tree in CI is byte-for-byte the tree you committed.
 
-## 📦 4. Distribution — publish what the fleet produced
+## 📦 5. Distribution — publish what the fleet produced
 
 Once the fleet builds, `haw publish` uploads its artifacts to a generic/raw artifact
 registry — **Nexus, Artifactory, GitLab, or Bitbucket**:
@@ -117,14 +161,14 @@ haw publish dist/*.tar.gz --to nexus --dry-run   # print the plan, no creds, no 
 touching the network or needing credentials — perfect for wiring the step up safely first.
 Credentials come from the target's env vars (e.g. `NEXUS_URL`, `NEXUS_USER`, `NEXUS_PASS`).
 
-## 🔏 5. Signing, SBOM, and provenance — the supply chain
+## 🔏 6. Signing, SBOM, and provenance — the supply chain
 
 This is where `haw` earns its keep for serious releases. Every signed release ships with a
 `.sha256` checksum and a **keyless cosign signature** (`.sig`/`.pem`) you can verify
 offline — even on an air-gapped host (see [Installing hawser](../INSTALL.md)).
 
-For *your* fleet, the supply-chain features ship as the governance plugins you met in
-Chapter 6, subscribed to lifecycle phases:
+For *your* fleet, the supply-chain features ship as the governance plugins you met at the
+top of this chapter, subscribed to lifecycle phases:
 
 ```toml
 [plugins]
@@ -150,7 +194,7 @@ wrote evidence bundle haw-evidence.tar.gz
 
 (Run bare, `haw evidence` writes `./haw-evidence.tar.gz` by default; `--out` just picks the path.)
 
-## 🏛️ 6. The compliance / automotive angle
+## 🏛️ 7. The compliance / automotive angle
 
 If you work under a standard — ISO 26262, DO-178C, Automotive SPICE, CRA — the pieces
 above *are* your evidence, because they're grounded in the pinned lock:
@@ -166,7 +210,7 @@ The reproducible lock is the foundation: it makes "the baseline that was live in
 an exact, re-buildable, auditable fact rather than a guess. See
 [Domains](../DOMAINS.md) and [Compliance](../COMPLIANCE.md) for the full mapping.
 
-## 🪝 7. Integrity hooks — catch drift before it's committed
+## 🪝 8. Integrity hooks — catch drift before it's committed
 
 One last guardrail. `haw hooks install` writes a pre-commit hook in every repo that runs
 `haw verify` — so a commit that would drift the tree from the lock is caught *locally*,
@@ -210,8 +254,9 @@ ISO 26262 audit.
 - `--locked` + `verify` enforce that CI builds the *committed* baseline, reproducibly.
 - `haw publish --to <nexus|artifactory|gitlab|bitbucket>` distributes artifacts (`--dry-run`
   to preview).
-- Governance plugins add **SBOM, provenance, and signing** on lifecycle phases; `haw
-  evidence` bundles the audit trail; releases are cosign-signed.
+- Any unknown `haw <name>` runs a `haw-<name>` **plugin** from `PATH` — no fork; governance
+  plugins add **SBOM, provenance, and signing** on lifecycle phases; `haw evidence` bundles
+  the audit trail; releases are cosign-signed.
 - The same primitives map straight onto ASPICE / ISO 26262 / DO-178C / CRA compliance.
 
 ## 🎉 You did it
@@ -220,9 +265,10 @@ ISO 26262 audit.
 
 *The whole loop, checked off — compose, orchestrate, ship, extend, and govern.*
 
-You've gone from "what even is this?" to composing a fleet, working across it, shipping
-cross-repo changesets, living in the cockpit, writing a plugin, and running it all in
-production with an audit trail. That's the whole tool.
+You've gone from "what even is this?" to composing a fleet, pinning it to a lockfile,
+living in the cockpit, shipping cross-repo changesets, building and testing the whole
+thing, extending it with a plugin, and running it all in production with an audit trail.
+That's the whole tool.
 
 Where to next:
 - Keep the [CLI design & keymap](../CLI-DESIGN.md) handy as a reference.

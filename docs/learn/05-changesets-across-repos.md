@@ -1,4 +1,4 @@
-# 4. Cross-repo changesets
+# 5. Changesets across repos
 
 This is hawser's signature feature — the one that pays for the whole tool. In this chapter
 you'll take *one* feature that touches *several* repos and drive it as a single unit: one
@@ -244,5 +244,5 @@ multi-repo state later.
 
 ## 👉 Next
 
-You've driven the changeset from the CLI. Now meet the cockpit that does all of this —
-and more — from the keyboard → [5. The TUI cockpit](05-the-tui-cockpit.md).
+You can ship a feature across the fleet. Now let's *build, test, and verify* the whole
+thing — the daily workflow that keeps it green → [6. Build, test, and verify](06-build-test-and-verify.md).

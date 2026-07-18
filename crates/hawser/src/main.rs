@@ -289,7 +289,8 @@ Examples:
 Examples:
   $ haw run 'git fetch --tags'          quote multi-word commands
   $ haw run -c 'git status -s'           repo-tool-style -c flag also works
-  $ haw run --group firmware 'make'       only `firmware`-grouped repos"
+  $ haw run --group firmware 'make'       only `firmware`-grouped repos
+  $ haw run 'make' --format json          machine-readable (schema haw.run/1)"
     )]
     Run {
         /// The command (positional; `-c` also works, repo-tool style).
@@ -302,6 +303,9 @@ Examples:
         groups: Vec<String>,
         #[arg(long, short = 'j')]
         jobs: Option<usize>,
+        /// `text` (default) or `json` (schema haw.run/1).
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Grep across every cloned repo (or one stack) with `git grep`.
     #[command(after_help = "\
@@ -346,25 +350,33 @@ Examples:
     #[command(after_help = "\
 Examples:
   $ haw build                       run every repo's declared `build =` command
-  $ haw build --group firmware       only `firmware`-grouped repos")]
+  $ haw build --group firmware       only `firmware`-grouped repos
+  $ haw build --format json          machine-readable (schema haw.build/1)")]
     Build {
         /// Only repos in these groups (repeatable).
         #[arg(long = "group")]
         groups: Vec<String>,
         #[arg(long, short = 'j')]
         jobs: Option<usize>,
+        /// `text` (default) or `json` (schema haw.build/1).
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Run each repo's `test` command from the manifest, in parallel.
     #[command(after_help = "\
 Examples:
   $ haw test                       run every repo's declared `test =` command
-  $ haw test --group firmware -j 2  only `firmware`-grouped repos, 2 parallel jobs")]
+  $ haw test --group firmware -j 2  only `firmware`-grouped repos, 2 parallel jobs
+  $ haw test --format json          machine-readable (schema haw.test/1)")]
     Test {
         /// Only repos in these groups (repeatable).
         #[arg(long = "group")]
         groups: Vec<String>,
         #[arg(long, short = 'j')]
         jobs: Option<usize>,
+        /// `text` (default) or `json` (schema haw.test/1).
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Manage lifecycle hooks (.haw/hooks) and git integrity hooks.
     #[command(after_help = "\
@@ -462,6 +474,19 @@ Supported shells: bash, zsh, fish, powershell, elvish.")]
     Completions {
         /// Shell to generate completions for.
         shell: clap_complete::Shell,
+    },
+    /// Open a repo's forge page in the browser (mirrors the TUI `o`).
+    #[command(after_help = "\
+Examples:
+  $ haw open kernel       open kernel's forge homepage in the browser
+  $ haw open              open the only/cursor repo (else lists the choices)
+  $ haw open kernel --print   print the URL instead of spawning a browser")]
+    Open {
+        /// Repo name (default: the only repo, else list the choices).
+        repo: Option<String>,
+        /// Print the URL instead of spawning a browser (also the default when stdout isn't a TTY).
+        #[arg(long)]
+        print: bool,
     },
     /// Open the fleet dashboard (same as bare `haw`).
     #[command(
@@ -691,6 +716,9 @@ Examples:
         /// Label forwarded to the PR/MRs at `change request` (repeatable).
         #[arg(long = "label")]
         labels: Vec<String>,
+        /// `text` (default) or `json` (schema haw.change-start/1).
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Per-repo branch + PR/MR review + CI dashboard for a changeset.
     #[command(after_help = "\
@@ -713,12 +741,20 @@ Examples:
         /// Target branch for the PR/MRs (default: the locked branch, else main).
         #[arg(long)]
         base: Option<String>,
+        /// `text` (default) or `json` (schema haw.change-request/1).
+        #[arg(long, default_value = "text")]
+        format: String,
     },
     /// Merge the PR/MRs in dependency order; stops at the first failure.
     #[command(after_help = "\
 Examples:
   $ haw change land FEAT-42       merge every repo's PR/MR, in manifest `deps` order")]
-    Land { id: String },
+    Land {
+        id: String,
+        /// `text` (default) or `json` (schema haw.change-land/1).
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
     /// Print a changeset repo's path (usable as: cd "$(haw change goto ID REPO)").
     #[command(after_help = "\
 Examples:
@@ -961,11 +997,12 @@ fn run() -> Result<ExitCode> {
             command_flag,
             groups,
             jobs,
+            format,
         } => {
             let cmd = command
                 .or(command_flag)
                 .context("pass the command: haw run 'git fetch'")?;
-            run_across(&cmd, &groups, jobs)?;
+            return run_across(&cmd, &groups, jobs, &format);
         }
         Command::Grep {
             pattern,
@@ -979,16 +1016,20 @@ fn run() -> Result<ExitCode> {
                 branch,
                 skip_branch,
                 labels,
+                format,
             } => change_start(
                 &id,
                 repos.as_deref(),
                 branch.as_deref(),
                 skip_branch,
                 &labels,
+                &format,
             )?,
             ChangeCommand::Status { id, format } => change_status(&id, &format)?,
-            ChangeCommand::Request { id, base } => change_request(&id, base.as_deref())?,
-            ChangeCommand::Land { id } => change_land(&id)?,
+            ChangeCommand::Request { id, base, format } => {
+                return change_request(&id, base.as_deref(), &format);
+            }
+            ChangeCommand::Land { id, format } => return change_land(&id, &format),
             ChangeCommand::Goto { id, repo } => change_goto(&id, repo.as_deref())?,
             ChangeCommand::Snapshot { command } => match command {
                 SnapshotCommand::Save { name } => snapshot_save(&name)?,
@@ -998,8 +1039,17 @@ fn run() -> Result<ExitCode> {
             ChangeCommand::List => change_list()?,
         },
         Command::Verify { format } => return verify(&format),
-        Command::Build { groups, jobs } => build_or_test(true, &groups, jobs)?,
-        Command::Test { groups, jobs } => build_or_test(false, &groups, jobs)?,
+        Command::Build {
+            groups,
+            jobs,
+            format,
+        } => return build_or_test(true, &groups, jobs, &format),
+        Command::Test {
+            groups,
+            jobs,
+            format,
+        } => return build_or_test(false, &groups, jobs, &format),
+        Command::Open { repo, print } => return open_cmd(repo.as_deref(), print),
         Command::Hooks { command } => match command {
             HooksCommand::Install => hooks_install()?,
             HooksCommand::List => hooks_list()?,
@@ -1645,7 +1695,16 @@ fn completions(shell: clap_complete::Shell) {
     clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
 }
 
-fn run_across(command: &str, groups: &[String], jobs: Option<usize>) -> Result<()> {
+fn run_across(
+    command: &str,
+    groups: &[String],
+    jobs: Option<usize>,
+    format: &str,
+) -> Result<ExitCode> {
+    if format != "text" && format != "json" {
+        bail!("unknown format `{format}` (use text or json)");
+    }
+    let as_json = format == "json";
     let ws = open_workspace()?;
     let backend = ShellGit;
     let repos: Vec<(String, PathBuf)> = match ws.read_lock()? {
@@ -1678,6 +1737,32 @@ fn run_across(command: &str, groups: &[String], jobs: Option<usize>) -> Result<(
 
     let total = results.len();
     let mut failures = 0usize;
+    if as_json {
+        let repos = results
+            .iter()
+            .map(|(name, output)| match output {
+                Ok(out) => {
+                    let ok = out.status.success();
+                    if !ok {
+                        failures += 1;
+                    }
+                    json!({"name": name, "exit_code": out.status.code(), "ok": ok})
+                }
+                Err(err) => {
+                    failures += 1;
+                    json!({"name": name, "exit_code": null, "ok": false, "error": err.to_string()})
+                }
+            })
+            .collect::<Vec<_>>();
+        let value = json!({
+            "schema": "haw.run/1",
+            "command": command,
+            "repos": repos,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(fail_exit(failures));
+    }
+
     let c = Palette::new();
     for (name, output) in results {
         println!("{} {} {}", c.dim("──"), c.name(&name), c.dim("──"));
@@ -1700,7 +1785,17 @@ fn run_across(command: &str, groups: &[String], jobs: Option<usize>) -> Result<(
     if failures > 0 {
         bail!("command failed in {failures} repo(s)");
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `ExitCode::FAILURE` when any repo failed, else success. Keeps the
+/// "one machine doc, still exit non-zero on failure" contract for `--format json`.
+fn fail_exit(failures: usize) -> ExitCode {
+    if failures > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn grep_across(pattern: &str, stack: Option<&str>, json: bool) -> Result<()> {
@@ -1783,17 +1878,42 @@ fn shell_command(command: &str) -> std::process::Command {
     cmd
 }
 
+/// The `haw.change-start/1` document: the changeset id and its per-repo
+/// branches. Pure, so it is unit-testable without a workspace.
+fn change_start_value(id: &str, repos: &[change::ChangeRepo]) -> serde_json::Value {
+    let repos = repos
+        .iter()
+        .map(|r| json!({"name": r.name, "branch": r.branch}))
+        .collect::<Vec<_>>();
+    json!({
+        "schema": "haw.change-start/1",
+        "id": id,
+        "repos": repos,
+    })
+}
+
 fn change_start(
     id: &str,
     repos: Option<&[String]>,
     branch: Option<&str>,
     skip_branch: bool,
     labels: &[String],
+    format: &str,
 ) -> Result<()> {
+    if format != "text" && format != "json" {
+        bail!("unknown format `{format}` (use text or json)");
+    }
     let ws = open_workspace()?;
     let changeset = change::start(&ws, &ShellGit, id, repos, branch, skip_branch, labels)?;
     record(&ws, "change.start", None, None, Some(id));
     hooks::fire(&ws, hooks::Hook::PostChangeStart, &json!({"id": id}))?;
+    if format == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&change_start_value(&changeset.id, &changeset.repos))?
+        );
+        return Ok(());
+    }
     let c = Palette::new();
     println!(
         "{}",
@@ -2005,7 +2125,27 @@ fn change_status(id: &str, format: &str) -> Result<()> {
     Ok(())
 }
 
-fn change_request(id: &str, base: Option<&str>) -> Result<()> {
+/// The `haw.change-request/1` document: per-repo PR/MR url (or error) + ok.
+/// Pure, so it is unit-testable without a workspace or network.
+fn change_request_value(id: &str, outcomes: &[orchestrate::RepoOutcome]) -> serde_json::Value {
+    let repos = outcomes
+        .iter()
+        .map(|o| match &o.result {
+            Ok(url) => json!({"name": o.name, "url": url, "ok": true}),
+            Err(err) => json!({"name": o.name, "error": err.to_string(), "ok": false}),
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "schema": "haw.change-request/1",
+        "id": id,
+        "repos": repos,
+    })
+}
+
+fn change_request(id: &str, base: Option<&str>, format: &str) -> Result<ExitCode> {
+    if format != "text" && format != "json" {
+        bail!("unknown format `{format}` (use text or json)");
+    }
     let ws = open_workspace()?;
     fire_phase(
         &ws,
@@ -2014,18 +2154,25 @@ fn change_request(id: &str, base: Option<&str>) -> Result<()> {
     )?;
     let tokens = Tokens::from_env();
     let outcomes = orchestrate::request(&ws, &ShellGit, &tokens, id, base, None)?;
-    let c = Palette::new();
     let mut failures = 0usize;
     for outcome in &outcomes {
         match &outcome.result {
-            Ok(url) => {
-                record(&ws, "change.request", Some(&outcome.name), None, Some(url));
-                println!("  {} {}  {}", c.ok("✓"), c.name(&outcome.name), c.dim(url));
-            }
-            Err(err) => {
-                failures += 1;
-                eprintln!("  {} {}  {err}", c.err("✗"), outcome.name);
-            }
+            Ok(url) => record(&ws, "change.request", Some(&outcome.name), None, Some(url)),
+            Err(_) => failures += 1,
+        }
+    }
+    if format == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&change_request_value(id, &outcomes))?
+        );
+        return Ok(fail_exit(failures));
+    }
+    let c = Palette::new();
+    for outcome in &outcomes {
+        match &outcome.result {
+            Ok(url) => println!("  {} {}  {}", c.ok("✓"), c.name(&outcome.name), c.dim(url)),
+            Err(err) => eprintln!("  {} {}  {err}", c.err("✗"), outcome.name),
         }
     }
     if failures > 0 {
@@ -2035,25 +2182,59 @@ fn change_request(id: &str, base: Option<&str>) -> Result<()> {
         "requested changeset `{id}` ({} PR/MRs, cross-linked)",
         outcomes.len()
     );
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
-fn change_land(id: &str) -> Result<()> {
+/// The `haw.change-land/1` document: per-repo merge result + ok.
+/// Pure, so it is unit-testable without a workspace or network.
+fn change_land_value(id: &str, outcomes: &[orchestrate::RepoOutcome]) -> serde_json::Value {
+    let repos = outcomes
+        .iter()
+        .map(|o| match &o.result {
+            Ok(msg) => json!({"name": o.name, "merged": msg, "ok": true}),
+            Err(err) => json!({"name": o.name, "error": err.to_string(), "ok": false}),
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "schema": "haw.change-land/1",
+        "id": id,
+        "repos": repos,
+    })
+}
+
+fn change_land(id: &str, format: &str) -> Result<ExitCode> {
+    if format != "text" && format != "json" {
+        bail!("unknown format `{format}` (use text or json)");
+    }
     let ws = open_workspace()?;
     let tokens = Tokens::from_env();
     let outcomes = orchestrate::land(&ws, &tokens, id)?;
-    let c = Palette::new();
     let mut failed = false;
     for outcome in &outcomes {
         match &outcome.result {
-            Ok(msg) => {
-                record(&ws, "change.land", Some(&outcome.name), None, Some(id));
-                println!("  {} {}  {}", c.ok("✓"), c.name(&outcome.name), c.dim(msg));
-            }
-            Err(err) => {
-                failed = true;
-                eprintln!("  {} {}  {err}", c.err("✗"), outcome.name);
-            }
+            Ok(_) => record(&ws, "change.land", Some(&outcome.name), None, Some(id)),
+            Err(_) => failed = true,
+        }
+    }
+    if format == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&change_land_value(id, &outcomes))?
+        );
+        if !failed {
+            fire_phase(
+                &ws,
+                hooks::Hook::PostLand,
+                json!({"id": id, "repos": outcomes.len()}),
+            )?;
+        }
+        return Ok(fail_exit(usize::from(failed)));
+    }
+    let c = Palette::new();
+    for outcome in &outcomes {
+        match &outcome.result {
+            Ok(msg) => println!("  {} {}  {}", c.ok("✓"), c.name(&outcome.name), c.dim(msg)),
+            Err(err) => eprintln!("  {} {}  {err}", c.err("✗"), outcome.name),
         }
     }
     if failed {
@@ -2065,7 +2246,62 @@ fn change_land(id: &str) -> Result<()> {
         json!({"id": id, "repos": outcomes.len()}),
     )?;
     println!("changeset `{id}` landed ({} repos)", outcomes.len());
-    Ok(())
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The forge homepage (`https://host/owner/repo`) for a manifest repo, derived
+/// from its clone URL. `None` when the repo has no resolvable remote or the URL
+/// isn't a recognizable forge coordinate.
+fn repo_forge_url(ws: &Workspace, name: &str) -> Option<String> {
+    let url = ws
+        .manifest
+        .repos
+        .get(name)?
+        .clone_url(&ws.manifest.remotes)?;
+    let coords = haw_forge::repo_coords(&url)?;
+    Some(format!("https://{}/{}", coords.host, coords.path))
+}
+
+fn open_cmd(repo: Option<&str>, print: bool) -> Result<ExitCode> {
+    let ws = open_workspace()?;
+    // Which repo? An explicit arg, else the only repo, else ask the caller to pick.
+    let name = match repo {
+        Some(name) => {
+            if !ws.manifest.repos.contains_key(name) {
+                bail!("repo `{name}` is not in the manifest");
+            }
+            name.to_string()
+        }
+        None => {
+            let names: Vec<&String> = ws.manifest.repos.keys().collect();
+            match names.as_slice() {
+                [only] => (*only).to_string(),
+                [] => bail!("no repos in the manifest"),
+                _ => {
+                    eprintln!("pick a repo: haw open <repo>");
+                    for name in names {
+                        eprintln!("  {name}");
+                    }
+                    return Ok(ExitCode::from(2));
+                }
+            }
+        }
+    };
+    let url = repo_forge_url(&ws, &name)
+        .with_context(|| format!("repo `{name}` has no forge URL (check its remote)"))?;
+
+    // Print (never spawn) when asked, or when stdout isn't a TTY (scripts/CI).
+    if print || !std::io::stdout().is_terminal() {
+        println!("{url}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    match haw_tui::open_in_browser(&url) {
+        Ok(()) => {
+            println!("→ opened {url}");
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => bail!("open failed: {err}"),
+    }
 }
 
 fn change_goto(id: &str, repo: Option<&str>) -> Result<()> {
@@ -2416,7 +2652,29 @@ fn stream_repo(
     child.wait()
 }
 
-fn build_or_test(build: bool, groups: &[String], jobs: Option<usize>) -> Result<()> {
+/// The `haw.build/1` / `haw.test/1` document from per-repo (name, exit_code, ok)
+/// rows. Pure, so it is unit-testable without a workspace or subprocesses.
+fn build_test_value(build: bool, rows: &[(String, Option<i32>, bool)]) -> serde_json::Value {
+    let repos = rows
+        .iter()
+        .map(|(name, code, ok)| json!({"name": name, "exit_code": code, "ok": ok}))
+        .collect::<Vec<_>>();
+    json!({
+        "schema": if build { "haw.build/1" } else { "haw.test/1" },
+        "repos": repos,
+    })
+}
+
+fn build_or_test(
+    build: bool,
+    groups: &[String],
+    jobs: Option<usize>,
+    format: &str,
+) -> Result<ExitCode> {
+    if format != "text" && format != "json" {
+        bail!("unknown format `{format}` (use text or json)");
+    }
+    let as_json = format == "json";
     let ws = open_workspace()?;
     let backend = ShellGit;
     let verb = if build { "build" } else { "test" };
@@ -2445,6 +2703,39 @@ fn build_or_test(build: bool, groups: &[String], jobs: Option<usize>) -> Result<
         .collect();
     if targets.is_empty() {
         bail!("no cloned repo declares a `{verb}` command in the manifest");
+    }
+
+    // In JSON mode, capture each repo's output (one machine doc on stdout) rather
+    // than streaming live text that would clobber the document.
+    if as_json {
+        let results = fan_out(&targets, default_jobs(jobs), |(name, path, cmd)| {
+            let output = shell_command(cmd).current_dir(path).output();
+            (name.clone(), output)
+        });
+        let mut failures = 0usize;
+        let rows = results
+            .iter()
+            .map(|(name, output)| match output {
+                Ok(out) => {
+                    let ok = out.status.success();
+                    if !ok {
+                        failures += 1;
+                    }
+                    (name.clone(), out.status.code(), ok)
+                }
+                Err(_) => {
+                    failures += 1;
+                    (name.clone(), None, false)
+                }
+            })
+            .collect::<Vec<_>>();
+        let total = rows.len();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&build_test_value(build, &rows))?
+        );
+        fire_phase(&ws, post, json!({"failures": failures, "total": total}))?;
+        return Ok(fail_exit(failures));
     }
 
     let c = Palette::new();
@@ -2486,7 +2777,7 @@ fn build_or_test(build: bool, groups: &[String], jobs: Option<usize>) -> Result<
     if failures > 0 {
         bail!("{verb} failed in {failures} repo(s)");
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn hooks_install() -> Result<()> {
@@ -4691,6 +4982,70 @@ impl CliController {
         Ok(report)
     }
 
+    /// Run every cloned repo's manifest `build`/`test` command, returning a text
+    /// report for the cockpit's output overlay (`:build` / `:test`).
+    fn build_or_test_report(&self, build: bool) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        let backend = ShellGit;
+        let verb = if build { "build" } else { "test" };
+        let targets: Vec<(String, PathBuf, String)> = ws
+            .manifest
+            .repos
+            .iter()
+            .filter_map(|(name, repo)| {
+                let cmd = if build { &repo.build } else { &repo.test };
+                cmd.as_ref().map(|cmd| {
+                    (
+                        name.clone(),
+                        ws.root.join(repo.checkout_path(name)),
+                        cmd.clone(),
+                    )
+                })
+            })
+            .filter(|(_, path, _)| backend.is_repo(path))
+            .collect();
+        if targets.is_empty() {
+            return Ok(format!(
+                "no cloned repo declares a `{verb}` command in the manifest"
+            ));
+        }
+        let results = fan_out(&targets, default_jobs(None), |(name, path, cmd)| {
+            let output = shell_command(cmd).current_dir(path).output();
+            (name.clone(), output)
+        });
+        let mut report = format!("$ haw {verb}\n");
+        let mut failures = 0usize;
+        for (name, result) in &results {
+            report.push_str(&format!("── {name} ──\n"));
+            match result {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    if stdout.trim().is_empty() && stderr.trim().is_empty() {
+                        report.push_str("(no output)\n");
+                    } else {
+                        report.push_str(&stdout);
+                        report.push_str(&stderr);
+                    }
+                    if !out.status.success() {
+                        failures += 1;
+                        report.push_str(&format!("(exit: {})\n", out.status));
+                    }
+                }
+                Err(err) => {
+                    failures += 1;
+                    report.push_str(&format!("(failed to run: {err})\n"));
+                }
+            }
+        }
+        report.push_str(&format!(
+            "{verb} ran in {}/{} repos",
+            results.len() - failures,
+            results.len()
+        ));
+        Ok(report)
+    }
+
     /// Fetch every open PR/MR across the fleet (bounded-parallel in
     /// `orchestrate`). The cache-free inner fetch behind `fleet_prs_refresh`.
     fn fetch_fleet_prs() -> std::io::Result<Vec<haw_tui::FleetPr>> {
@@ -4982,6 +5337,49 @@ impl haw_tui::Controller for CliController {
 
     fn run_cmd_in(&mut self, cmd: &str, repos: &[String]) -> std::io::Result<String> {
         self.run_cmd_filtered(cmd, Some(repos))
+    }
+
+    fn build(&mut self) -> std::io::Result<String> {
+        self.build_or_test_report(true)
+    }
+
+    fn test(&mut self) -> std::io::Result<String> {
+        self.build_or_test_report(false)
+    }
+
+    fn verify(&mut self) -> std::io::Result<String> {
+        let ws = self.workspace()?;
+        if !ws.lock_path().exists() {
+            return Ok("no haw.lock to verify against — run :lock first".to_string());
+        }
+        let statuses = ws.status(&[], &ShellGit).map_err(std::io::Error::other)?;
+        let offenders: Vec<&RepoStatus> = statuses
+            .iter()
+            .filter(|s| s.missing || s.dirty || s.drift)
+            .collect();
+        let mut report = String::from("$ haw verify\n");
+        if offenders.is_empty() {
+            report.push_str(&format!(
+                "✓ verified: tree matches haw.lock ({} repos)\n",
+                statuses.len()
+            ));
+        } else {
+            for s in &offenders {
+                let why = if s.missing {
+                    "not cloned"
+                } else if s.dirty {
+                    "dirty"
+                } else {
+                    "drift (head != lock)"
+                };
+                report.push_str(&format!("✗ {}  {why}\n", s.name));
+            }
+            report.push_str(&format!(
+                "verify failed: {} repo(s) diverge from haw.lock\n",
+                offenders.len()
+            ));
+        }
+        Ok(report)
     }
 
     fn grep(
@@ -5837,6 +6235,24 @@ impl haw_tui::Controller for DemoController {
         }
         report.push_str(&format!("ran in {}/{} repos", repos.len(), repos.len()));
         Ok(report)
+    }
+
+    fn build(&mut self) -> std::io::Result<String> {
+        Ok(
+            "$ haw build\n── kernel ──\n(demo) OK\n── hal ──\n(demo) OK\nbuild ran in 2/2 repos"
+                .to_string(),
+        )
+    }
+
+    fn test(&mut self) -> std::io::Result<String> {
+        Ok(
+            "$ haw test\n── kernel ──\n(demo) OK\n── hal ──\n(demo) OK\ntest ran in 2/2 repos"
+                .to_string(),
+        )
+    }
+
+    fn verify(&mut self) -> std::io::Result<String> {
+        Ok("$ haw verify\n✓ verified: tree matches haw.lock (4 repos)".to_string())
     }
 
     fn grep(
@@ -6915,6 +7331,90 @@ mod json_output_tests {
         assert_eq!(value["id"], "FEAT-42");
         assert_eq!(value["repos"][0]["name"], "kernel");
         assert_eq!(value["repos"][0]["on_branch"], true);
+    }
+
+    #[test]
+    fn build_json_has_schema_and_exit_code() {
+        let rows = vec![
+            ("kernel".to_string(), Some(0), true),
+            ("hal".to_string(), Some(2), false),
+        ];
+        let value = build_test_value(true, &rows);
+        assert_eq!(value["schema"], "haw.build/1");
+        assert_eq!(value["repos"][0]["name"], "kernel");
+        assert_eq!(value["repos"][0]["exit_code"], 0);
+        assert_eq!(value["repos"][0]["ok"], true);
+        assert_eq!(value["repos"][1]["exit_code"], 2);
+        assert_eq!(value["repos"][1]["ok"], false);
+    }
+
+    #[test]
+    fn test_json_has_test_schema() {
+        let value = build_test_value(false, &[("kernel".to_string(), Some(0), true)]);
+        assert_eq!(value["schema"], "haw.test/1");
+        assert_eq!(value["repos"][0]["ok"], true);
+    }
+
+    #[test]
+    fn change_start_json_has_schema_and_branch() {
+        let repos = vec![
+            change::ChangeRepo {
+                name: "kernel".to_string(),
+                branch: "change/FEAT-42".to_string(),
+                pr_url: None,
+                pr_number: None,
+            },
+            change::ChangeRepo {
+                name: "hal".to_string(),
+                branch: "change/FEAT-42".to_string(),
+                pr_url: None,
+                pr_number: None,
+            },
+        ];
+        let value = change_start_value("FEAT-42", &repos);
+        assert_eq!(value["schema"], "haw.change-start/1");
+        assert_eq!(value["id"], "FEAT-42");
+        assert_eq!(value["repos"][0]["name"], "kernel");
+        assert_eq!(value["repos"][0]["branch"], "change/FEAT-42");
+    }
+
+    #[test]
+    fn change_request_json_has_schema_and_url() {
+        let outcomes = vec![
+            orchestrate::RepoOutcome {
+                name: "kernel".to_string(),
+                url: Some("https://example.com/kernel/pull/1".to_string()),
+                result: Ok("https://example.com/kernel/pull/1".to_string()),
+            },
+            orchestrate::RepoOutcome {
+                name: "hal".to_string(),
+                url: None,
+                result: Err(orchestrate::RepoFailure::NoPr),
+            },
+        ];
+        let value = change_request_value("FEAT-42", &outcomes);
+        assert_eq!(value["schema"], "haw.change-request/1");
+        assert_eq!(value["id"], "FEAT-42");
+        assert_eq!(
+            value["repos"][0]["url"],
+            "https://example.com/kernel/pull/1"
+        );
+        assert_eq!(value["repos"][0]["ok"], true);
+        assert_eq!(value["repos"][1]["ok"], false);
+    }
+
+    #[test]
+    fn change_land_json_has_schema_and_merged() {
+        let outcomes = vec![orchestrate::RepoOutcome {
+            name: "kernel".to_string(),
+            url: None,
+            result: Ok("merged #1".to_string()),
+        }];
+        let value = change_land_value("FEAT-42", &outcomes);
+        assert_eq!(value["schema"], "haw.change-land/1");
+        assert_eq!(value["id"], "FEAT-42");
+        assert_eq!(value["repos"][0]["merged"], "merged #1");
+        assert_eq!(value["repos"][0]["ok"], true);
     }
 }
 

@@ -1,12 +1,13 @@
-# 3. The daily workflow
+# 6. Build, test, and verify
 
-You can compose a fleet and pin it. Now let's make it *earn its keep* day to day. The
-promise of a multi-repo tool is simple: do something across every repo at once, in
-parallel, without a hand-rolled `for` loop.
+You can compose a fleet, pin it, and ship changesets across it. Now let's make it *earn its
+keep* day to day. The promise of a multi-repo tool is simple: do something across every
+repo at once, in parallel, without a hand-rolled `for` loop — and then gate the whole fleet
+so CI stays green.
 
-In this chapter you'll run arbitrary commands across the fleet, wire up `build` and
-`test`, search every repo in one shot, and control parallelism and scope. Keep the
-`my-first-stack` workspace from the last chapter open.
+In this chapter you'll run arbitrary commands across the fleet, wire up `build` and `test`,
+search every repo in one shot, and use `verify` as the drift gate that ties it together.
+Keep the `my-first-stack` workspace open.
 
 <img class="chapter-illus" src="../assets/img/data-processing.svg" alt="Running commands across the whole fleet in parallel">
 
@@ -16,10 +17,10 @@ In this chapter you'll run arbitrary commands across the fleet, wire up `build` 
 <strong>🎯 In this chapter, you'll learn to…</strong>
 <ul>
 <li>Fan any command across every repo with <code>haw run</code>.</li>
-<li>Declare <code>build =</code> / <code>test =</code> per repo and drive the whole fleet with <code>haw build</code> / <code>haw test</code>.</li>
+<li>Declare <code>build =</code> / <code>test =</code> per repo and drive the whole fleet with <code>haw build</code> / <code>haw test</code> — live-streamed, per-repo color.</li>
 <li>Search every repo at once with <code>haw grep</code>.</li>
+<li>Gate the fleet against the lock with <code>haw verify</code> — the CI drift gate.</li>
 <li>Control the blast radius with <code>-j</code> (parallelism) and <code>--group</code> (scope).</li>
-<li>Pick the right verb for each job without thinking.</li>
 </ul>
 </div>
 
@@ -127,8 +128,11 @@ built
 build ran in 2/2 repos
 ```
 
-Repos that don't declare the command (or aren't cloned) are simply skipped. And here's
-the detail that makes this a CI building block:
+Output is **live-streamed** as each repo runs and grouped under a per-repo header, so on a
+color terminal each repo's stream carries its own color — you can read a fleet-wide build
+without losing track of which repo produced which line. Repos that don't declare the
+command (or aren't cloned) are simply skipped. And here's the detail that makes this a CI
+building block:
 
 <div class="callout note">
 
@@ -158,7 +162,35 @@ totals the hits and repos searched — a repo with no match just doesn't appear.
 searches tracked files via Git, so it's fast and ignores your build artifacts for
 free. Scope it to one stack with `--stack <name>` when the fleet is large.
 
-## 🎚️ 4. Control the blast radius: parallelism and groups
+## 🛡️ 4. Verify — the CI gate
+
+Building and testing green is only half the story. Before any of it, CI must prove the tree
+is *the one you pinned* — no drift from `haw.lock`. That's `haw verify`, which you met in
+Chapter 3:
+
+```bash
+haw verify; echo "exit code: $?"
+```
+
+```console
+verified: tree matches haw.lock (2 repos)
+exit code: 0
+```
+
+`verify` asserts the on-disk tree matches the lock and **exits 3** on drift — a clean,
+scriptable gate. It's the first real step of every pipeline: sync to the lock, `verify`
+you're on it, *then* build and test. Chapter 7 wires the full `sync → verify → build →
+test` job.
+
+<div class="callout tip">
+
+**Tip:** `verify` reads the tree and the lock only — no network, no builds. It's cheap
+enough to run as a git pre-commit hook (`haw hooks install`) so drift never even reaches
+CI.
+
+</div>
+
+## 🎚️ 5. Control the blast radius: parallelism and groups
 
 Two levers keep fleet-wide commands under control.
 
@@ -191,7 +223,7 @@ filter means everything; a filter excludes ungrouped repos.
 haw run --group core 'git log -1 --oneline'   # only core repos
 ```
 
-## 🗺️ 5. When to reach for each
+## 🗺️ 6. When to reach for each
 
 A quick map so you pick the right verb without thinking:
 
@@ -200,33 +232,37 @@ A quick map so you pick the right verb without thinking:
 | run an ad-hoc command everywhere | `haw run '<cmd>'` | one-off, not part of the manifest |
 | build the whole product | `haw build` | runs each repo's declared `build =`, CI-ready exit code |
 | test the whole product | `haw test` | runs each repo's declared `test =`, fails on any failure |
+| prove the tree matches the lock | `haw verify` | drift gate, exit 3 on drift |
 | find text across all repos | `haw grep <pat>` | fleet-wide `git grep`, grouped output |
 | limit to part of the fleet | add `--group <g>` | act on a labeled slice |
 | tame a heavy or CI run | add `-j <n>` | cap concurrent repos |
 
 The rule of thumb: **`run` for one-off commands, `build`/`test` for the commands your repos
-declare.** The declared ones are the ones you'll want identical locally and in CI.
+declare, `verify` to gate.** The declared ones are the ones you'll want identical locally
+and in CI.
 
 <div class="your-turn">
 <strong>🙌 Your turn</strong>
 <p>Put the fleet through its paces in <code>my-first-stack</code>:</p>
 <ul>
-<li>Run <code>haw run 'git log -1 --oneline'</code> and confirm you get one line per repo, grouped by name.</li>
+<li>Add the trivial <code>build =</code> / <code>test =</code> lines above, then run <code>haw build</code> and <code>haw test</code> — watch the per-repo streamed output and the <code>2/2 repos</code> summary.</li>
 <li>Run <code>haw grep guide</code> across the fleet (a real hit in <code>spoon-knife</code>). Then narrow it: <code>haw run --group core 'git log -1 --oneline'</code> — only the <code>core</code> repo should answer.</li>
-<li>Force it fully serial with <code>haw run -j 1 'git status -s'</code> and watch the repos process one at a time instead of in parallel.</li>
+<li>Run <code>haw verify; echo $?</code> and confirm exit <code>0</code> on a clean tree. Force it fully serial with <code>haw run -j 1 'git status -s'</code> and watch the repos process one at a time.</li>
 </ul>
 </div>
 
 ## ✅ Recap
 
 - `haw run '<cmd>'` runs any command in every repo in parallel, output grouped per repo.
-- Declare `build =` / `test =` per repo in the manifest; `haw build` / `haw test` fan them
-  out and **exit non-zero on any failure** — so they double as CI steps.
+- Declare `build =` / `test =` per repo; `haw build` / `haw test` fan them out,
+  live-stream per-repo output, and **exit non-zero on any failure** — so they double as CI
+  steps.
 - `haw grep <pattern>` is a fleet-wide `git grep`.
+- `haw verify` gates the tree against `haw.lock` (**exit 3** on drift) — the first move of
+  every pipeline.
 - `-j N` caps parallelism; `--group G` (repeatable) scopes commands to labeled repos.
 
 ## 👉 Next
 
-Running commands is table stakes. Now the signature move — shipping *one feature across
-many repos* as a single coordinated changeset →
-[4. Cross-repo changesets](04-cross-repo-changesets.md).
+You can build, test, and gate the fleet locally. Now let's make all of it production-grade
+— trust, CI, signing, and audit → [7. Going to production](07-going-to-production.md).

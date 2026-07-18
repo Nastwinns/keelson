@@ -127,7 +127,7 @@ Only the repos and the declared build commands differ. See
 
 That's a real, productive skill set — and we'll build it one small step at a time.
 
-And here's where we're going — the keyboard cockpit you'll be living in by Chapter 5:
+And here's where we're going — the keyboard cockpit you'll be living in by Chapter 4:
 
 ![The hawser TUI cockpit, driving a whole fleet from the keyboard](../assets/haw-tui.gif)
 
@@ -141,7 +141,7 @@ And here's where we're going — the keyboard cockpit you'll be living in by Cha
 <li>The last time one feature forced you to open PRs in several of them at once — how did you keep track?</li>
 <li>Could you reproduce, today, the <em>exact</em> set of commits that were live three months ago?</li>
 </ul>
-<p>Hold those answers. By Chapter 4 you'll have a one-command answer to each.</p>
+<p>Hold those answers. By Chapter 3 you'll have a one-command answer to each.</p>
 </div>
 
 ## ✅ Recap
@@ -157,4 +157,4 @@ And here's where we're going — the keyboard cockpit you'll be living in by Cha
 
 ## 👉 Next
 
-Let's get the tool onto your machine → [1. Installing haw](01-install.md).
+Let's get the tool onto your machine and open the cockpit for the first time → [1. Install and first run](01-install-and-first-run.md).

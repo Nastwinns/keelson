@@ -12,7 +12,7 @@ Start with **quickstart**, then jump to whichever domain matches your fleet.
 
 | Example | What it shows |
 |---------|---------------|
-| [quickstart](https://github.com/Nastwinns/hawser/tree/main/examples/quickstart) | Two octocat repos + a stack — the whole `sync → status → lock → verify` loop (the [course](learn/02-your-first-stack.md) walks it). |
+| [quickstart](https://github.com/Nastwinns/hawser/tree/main/examples/quickstart) | Two octocat repos + a stack — the whole `sync → status → lock → verify` loop (the [course](learn/03-sync-and-the-lockfile.md) walks it). |
 | [haw-hello](https://github.com/Nastwinns/hawser/tree/main/examples/haw-hello) | A tiny plugin — the `haw <name>` → `haw-<name>` contract in ~20 lines. |
 | [governance](https://github.com/Nastwinns/hawser/tree/main/examples/governance) | `[plugins]` lifecycle hooks — SBOM / provenance / gate wired to phases. |
 

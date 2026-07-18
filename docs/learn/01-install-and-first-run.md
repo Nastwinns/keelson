@@ -1,8 +1,9 @@
-# 1. Installing haw
+# 1. Install and first run
 
-In this chapter you'll get the `haw` binary onto your machine, confirm it works, and turn
-on tab completion so the shell helps you as you learn. It's short — we want you at a
-prompt fast.
+In this chapter you'll get the `haw` binary onto your machine, confirm it works, turn on
+tab completion — and then take your very first `haw` run, watching the keyboard cockpit
+open. It's short: we want you at a prompt fast, and we want you to *see* where the course
+is heading.
 
 <img class="chapter-illus" src="../assets/img/home-settings.svg" alt="Setting up the haw tool on your machine">
 
@@ -14,6 +15,7 @@ prompt fast.
 <li>Install <code>haw</code> through the channel that fits your machine — Cargo, Homebrew, Scoop, or the static musl binary.</li>
 <li>Confirm the binary is on your <code>PATH</code> and prints <code>haw 0.1.7</code>.</li>
 <li>Turn on shell tab-completion so the shell fills in subcommands and flags as you learn.</li>
+<li>Take a first <code>haw</code> run and watch the cockpit open — a taste of where you're headed.</li>
 </ul>
 </div>
 
@@ -106,6 +108,39 @@ shell. Now `haw sy<Tab>` completes to `haw sync`.
 
 </div>
 
+## 🚁 4. Your first run — open the cockpit
+
+Here's the reward. `haw` isn't only a batch of subcommands: run it with **no subcommand at
+all** and it opens a full-screen, keyboard-driven **cockpit** for your fleet.
+
+```bash
+haw
+```
+
+You don't have a workspace yet, so there's nothing real to show. Good news: there's a
+built-in **demo controller**, populated with canned repos, PRs, and CI runs, so every view
+has something in it — no network, no setup:
+
+```bash
+haw dash --demo
+```
+
+A live fleet grid fills the terminal. Move with `↑`/`↓` (or `k`/`j`, Vim-style), press
+`Enter` to drill into a repo, `Esc` to come back, `?` for the help overlay, and `q` to
+quit.
+
+![The hawser TUI cockpit — mission control for the fleet](../assets/haw-tui.gif)
+
+*The cockpit you just opened: the fleet grid, drill-downs, and keyboard actions — all in the terminal.*
+
+<div class="callout note">
+
+**Just a taste for now.** Poke around, then quit with `q`. We'll give the cockpit a proper
+guided tour in [Chapter 4](04-the-tui-cockpit.html) — first you need a real fleet to point
+it at, which is what the next three chapters build.
+
+</div>
+
 ## ✅ Recap
 
 - `haw` is a single binary — install it with `cargo`, `brew`, `scoop`, or the static
@@ -113,6 +148,8 @@ shell. Now `haw sy<Tab>` completes to `haw sync`.
 - `haw --version` should print `haw 0.1.7`; `haw --help` lists every command.
 - `haw completions <shell>` gives you tab completion — set it up now, thank yourself
   later.
+- Bare `haw` (or `haw dash --demo`) opens the cockpit — your first glimpse of mission
+  control, explored in depth in Chapter 4.
 - The [full install matrix](../INSTALL.md) covers signed releases and air-gapped hosts.
 
 <div class="your-turn">
@@ -120,12 +157,12 @@ shell. Now `haw sy<Tab>` completes to `haw sync`.
 <p>Two-minute checkpoint — prove your setup before moving on:</p>
 <ul>
 <li>Run <code>haw --version</code> and confirm you see <code>haw 0.1.7</code>. If it says "command not found", the install dir isn't on your <code>PATH</code> yet — fix that first.</li>
-<li>Run <code>haw --help</code> and skim the subcommand list. Spot <code>sync</code>, <code>status</code>, <code>run</code>, and <code>change</code> — you'll meet every one of them soon.</li>
 <li>Set up completions for your shell, restart it, then type <code>haw sy</code> and press <code>Tab</code>. It should complete to <code>haw sync</code>.</li>
+<li>Run <code>haw dash --demo</code>, move around with <code>↑</code>/<code>↓</code>, press <code>Enter</code> to drill into a repo and <code>Esc</code> to back out, then <code>q</code> to quit. You just met the cockpit.</li>
 </ul>
 </div>
 
 ## 👉 Next
 
-Time for the fun part — let's build your first stack from real repositories and watch
-`haw` sync them → [2. Your first stack](02-your-first-stack.md).
+Now let's give `haw` something real to manage. First stop: the manifest — where you
+*declare* your fleet → [2. The manifest](02-the-manifest.md).

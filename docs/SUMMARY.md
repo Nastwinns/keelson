@@ -6,12 +6,12 @@
 # Learn hawser
 
 - [What is hawser?](learn/00-what-is-hawser.md)
-- [Installing haw](learn/01-install.md)
-- [Your first stack](learn/02-your-first-stack.md)
-- [The daily workflow](learn/03-the-daily-workflow.md)
-- [Cross-repo changesets](learn/04-cross-repo-changesets.md)
-- [The TUI cockpit](learn/05-the-tui-cockpit.md)
-- [Plugins and extending](learn/06-plugins-and-extending.md)
+- [Install and first run](learn/01-install-and-first-run.md)
+- [The manifest](learn/02-the-manifest.md)
+- [Sync and the lockfile](learn/03-sync-and-the-lockfile.md)
+- [The TUI cockpit](learn/04-the-tui-cockpit.md)
+- [Changesets across repos](learn/05-changesets-across-repos.md)
+- [Build, test, and verify](learn/06-build-test-and-verify.md)
 - [Going to production](learn/07-going-to-production.md)
 
 # Examples

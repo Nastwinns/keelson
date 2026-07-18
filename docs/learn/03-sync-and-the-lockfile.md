@@ -1,24 +1,24 @@
-# 2. Your first stack
+# 3. Sync and the lockfile
 
-This is where it clicks. In this chapter you'll write a tiny `haw.toml`, sync it against
-**real public GitHub repos**, explore the fleet, read the lockfile, and — deliberately —
-break something to see how `haw` catches drift.
+This is where it clicks. You have a `haw.toml` from the last chapter. Now you'll run `haw
+sync` to clone the fleet for real, read the lockfile that freezes it to exact commits,
+prove it's reproducible, and — deliberately — break something to watch `haw` catch drift.
 
 Everything here clones over HTTPS with no authentication, so you can actually run every
-command as you read. Grab a terminal.
+command as you read. Keep the `my-first-stack` workspace from Chapter 2 open.
 
-<img class="chapter-illus" src="../assets/img/building-blocks.svg" alt="Composing a stack from building blocks">
+<img class="chapter-illus" src="../assets/img/version-control.svg" alt="Syncing and pinning a fleet to a lockfile">
 
-*A stack is just building blocks — repos snapped together under one name.*
+*Sync clones the fleet; the lockfile freezes it to exact commits — the whole reproducibility trick.*
 
 <div class="objectives">
 <strong>🎯 In this chapter, you'll learn to…</strong>
 <ul>
-<li>Write a real <code>haw.toml</code> with a remote, two repos, and a stack.</li>
 <li>Run <code>haw sync</code> to clone the fleet and generate <code>haw.lock</code>.</li>
 <li>Read the fleet with <code>haw tree</code> and <code>haw status</code>, and understand every column.</li>
-<li>See how the lockfile pins exact SHAs — the whole reproducibility trick.</li>
-<li>Cause <strong>drift</strong> on purpose and catch it with <code>haw verify</code>.</li>
+<li>Read the lockfile's real fields — <code>rev</code> (the resolved SHA), <code>source-rev</code>, and <code>branch</code>.</li>
+<li>Re-sync and confirm it's idempotent — the lock, not the branch, is now the truth.</li>
+<li>Cause <strong>drift</strong> on purpose and catch it with <code>haw verify</code> (exit 3), then restore.</li>
 </ul>
 </div>
 
@@ -26,50 +26,7 @@ command as you read. Grab a terminal.
 
 *The full compose loop you're about to run: `sync` clones the fleet, then `tree` / `status` read it and the lock pins it.*
 
-## 🛠️ 1. Create a workspace
-
-Make an empty directory and drop in a manifest. We'll use three small, real public repos
-from GitHub's `octocat` account — the same ones the shipped
-[`examples/quickstart`](https://github.com/Nastwinns/hawser/tree/main/examples/quickstart)
-uses.
-
-```bash
-mkdir my-first-stack && cd my-first-stack
-```
-
-Now create `haw.toml` with this content:
-
-```toml
-[remote.gh]
-url = "https://github.com/octocat"
-forge = "github"
-
-[repo.hello-world]
-remote = "gh"
-repo = "Hello-World.git"
-rev = "master"
-groups = ["core"]
-
-[repo.spoon-knife]
-remote = "gh"
-repo = "Spoon-Knife.git"
-rev = "main"
-groups = ["web"]
-
-# `site` composes the two repos into one named stack.
-[stack.site]
-repos = ["hello-world", "spoon-knife"]
-description = "A shared core repo plus the fork-demo front end."
-```
-
-Read that top to bottom, because it *is* the mental model:
-
-- `[remote.gh]` names a base URL once, so you don't repeat it per repo.
-- Each `[repo.NAME]` declares one repository and the `rev` you want — a branch here.
-- `groups` are free-form labels you'll filter commands by later.
-- `[stack.site]` composes those repos into a stack. A repo is *shared*, never copied.
-
-## 🔄 2. Sync — clone everything and write the lock
+## 🔄 1. Sync — clone everything and write the lock
 
 One command materializes the tree:
 
@@ -97,7 +54,7 @@ scripts and CI.
 
 </div>
 
-## 🔍 3. Explore the fleet
+## 🔍 2. Explore the fleet
 
 Now the read commands. First, the shape of things:
 
@@ -140,11 +97,11 @@ automatically (it honors `NO_COLOR`), so it's script-friendly by default.
 
 </div>
 
-## 🔒 4. Read the lockfile
+## 🔒 3. Read the lockfile
 
 Open `haw.lock` in your editor. Each repo is pinned to a **full 40-character SHA** in its
 `rev` field — the exact commit, not the branch name — while `source-rev` records what you
-*asked* for:
+*asked* for and `branch` records the branch that SHA came from:
 
 ```toml
 # excerpt — your SHAs will differ
@@ -154,15 +111,16 @@ url = "https://github.com/octocat/Hello-World.git"
 path = "hello-world"
 rev = "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"   # the resolved commit — this is the pin
 source-rev = "master"                               # what you declared in haw.toml
-branch = "master"
+branch = "master"                                   # the branch that SHA was resolved from
 groups = ["core"]
 ```
 
 This is the whole reproducibility trick. Your manifest said "master" (a moving target),
 but the lock froze the *exact* commit master pointed at when you synced — that's the SHA
-now in `rev`. Commit
-`haw.lock` alongside `haw.toml`, and anyone who clones and runs `haw sync` gets
-**precisely these commits** — not whatever `master` happens to be today.
+now in `rev`. `source-rev` remembers your intent (`master`) and `branch` remembers where it
+came from, so `haw` can later re-resolve if you ask. Commit `haw.lock` alongside
+`haw.toml`, and anyone who clones and runs `haw sync` gets **precisely these commits** —
+not whatever `master` happens to be today.
 
 <div class="callout warning">
 
@@ -171,7 +129,7 @@ now in `rev`. Commit
 
 </div>
 
-## ♻️ 5. Prove it's reproducible — re-run sync
+## ♻️ 4. Prove it's reproducible — re-run sync
 
 ```bash
 haw sync
@@ -181,7 +139,7 @@ Because the lock exists, `haw` syncs *to the pinned SHAs*, not to wherever the b
 have moved. Run `haw status` again and you'll see the same clean fleet. That
 idempotence is the point: the lock, not the branch, is the source of truth now.
 
-## 🧭 6. See drift with your own eyes
+## 🧭 5. See drift with your own eyes
 
 Reproducibility is only useful if you can *detect* when the tree wanders off the baseline.
 Let's cause that on purpose. Move one repo to a different commit by hand:
@@ -259,27 +217,26 @@ baseline — the same four moves scale from two octocat repos to a hundred-repo 
 
 <div class="your-turn">
 <strong>🙌 Your turn</strong>
-<p>Make the stack your own and watch <code>haw</code> react:</p>
+<p>Prove the lockfile really is the source of truth:</p>
 <ul>
-<li>Add a third repo to <code>haw.toml</code> — try <code>octocat/git-consortium.git</code> — put it in a new group, and add it to the <code>site</code> stack. Run <code>haw sync</code> again and confirm it appears in <code>haw tree</code>.</li>
-<li>Open <code>haw.lock</code> and find the new repo's pinned SHA. Notice it froze the exact commit, not the branch name.</li>
-<li>Drift it on purpose (<code>git checkout HEAD~1</code> inside it), run <code>haw verify; echo $?</code>, and confirm you get exit code <code>3</code>. Then <code>haw sync</code> to restore.</li>
+<li>Open <code>haw.lock</code> and find each repo's pinned SHA in its <code>rev</code> field. Confirm it's a 40-char commit, not a branch name, and that <code>source-rev</code> still shows what you declared.</li>
+<li>Drift one repo on purpose (<code>cd hello-world &amp;&amp; git checkout HEAD~1 &amp;&amp; cd ..</code>), run <code>haw verify; echo $?</code>, and confirm you get exit code <code>3</code>.</li>
+<li>Run <code>haw sync</code> to restore, then <code>haw verify; echo $?</code> again — back to exit <code>0</code>. That round trip is the reproducibility guarantee.</li>
 </ul>
 </div>
 
 ## ✅ Recap
 
-- A `haw.toml` declares **remotes**, **repos** (each with a `rev`), and **stacks**.
 - `haw sync` clones every repo and writes `haw.lock` — real Git clones, no
   submodules/symlinks. It's idempotent.
 - `haw tree` shows the stack→repo shape; `haw status` shows branch/HEAD/**dirty**/**drift**
   per repo.
-- `haw.lock` pins each repo to an exact 40-char SHA — commit it for byte-identical
-  rebuilds.
+- `haw.lock` pins each repo to an exact 40-char SHA in `rev`, with `source-rev` (your
+  declared intent) and `branch` alongside — commit it for byte-identical rebuilds.
 - **Drift** = HEAD differs from the lock. `haw status` flags it; `haw verify` **exits 3**
   on drift (your CI gate). `haw sync` restores the baseline.
 
 ## 👉 Next
 
-You can compose and pin a fleet. Now let's *work* across it — run commands, builds, tests,
-and searches everywhere at once → [3. The daily workflow](03-the-daily-workflow.md).
+You can compose and pin a fleet — now let's *live* in it. Meet the cockpit that drives the
+whole thing from the keyboard → [4. The TUI cockpit](04-the-tui-cockpit.md).
