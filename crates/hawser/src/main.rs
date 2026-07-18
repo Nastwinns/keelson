@@ -419,6 +419,9 @@ Credentials come from the environment (the CI matrix). Missing creds without
         /// Print exactly what would upload and exit; no network, no creds needed.
         #[arg(long)]
         dry_run: bool,
+        /// Allow a non-https (`http://`) registry — credentials are sent in cleartext.
+        #[arg(long)]
+        insecure: bool,
         /// Emit a JSON summary {target, name, version, uploads:[...]}.
         #[arg(long)]
         format: Option<String>,
@@ -1009,6 +1012,7 @@ fn run() -> Result<ExitCode> {
             version,
             url,
             dry_run,
+            insecure,
             format,
         } => {
             return publish_cmd(
@@ -1018,6 +1022,7 @@ fn run() -> Result<ExitCode> {
                 version.as_deref(),
                 url.as_deref(),
                 dry_run,
+                insecure,
                 format.as_deref(),
             );
         }
@@ -2867,6 +2872,7 @@ fn publish_cmd(
     version: Option<&str>,
     url: Option<&str>,
     dry_run: bool,
+    insecure: bool,
     format: Option<&str>,
 ) -> Result<ExitCode> {
     let json = match format {
@@ -2903,6 +2909,16 @@ fn publish_cmd(
     }
 
     let config = resolve_publish_config(target, url)?;
+    // Refuse to send upload credentials over cleartext http:// (accidental leak /
+    // MITM). Internal https registries on private IPs are fine — only the scheme
+    // is gated. `--insecure` overrides for a deliberately-plaintext registry.
+    if !insecure && config.base.starts_with("http://") {
+        bail!(
+            "publish target `{}` is http:// — credentials would be sent in cleartext.\n\
+             Use an https:// registry, or pass --insecure to allow it.",
+            config.base
+        );
+    }
     // Bound redirects so a hostile/misconfigured registry can't bounce an
     // authenticated upload (with its credentials) off to an arbitrary host.
     let client = reqwest::blocking::Client::builder()
