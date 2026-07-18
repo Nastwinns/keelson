@@ -3,22 +3,22 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Nastwinns/hawser"
 
 [workspace.dependencies]
-haw-core = { path = "crates/haw-core", version = "0.1.9" }
-haw-git = { path = "crates/haw-git", version = "0.1.9" }
-haw-forge = { path = "crates/haw-forge", version = "0.1.9" }
-haw-merge = { path = "crates/haw-merge", version = "0.1.9" }
-haw-tui = { path = "crates/haw-tui", version = "0.1.9" }
-haw-plugin = { path = "crates/haw-plugin", version = "0.1.9" }
-haw-aspice = { path = "crates/haw-aspice", version = "0.1.9" }
-haw-jira = { path = "crates/haw-jira", version = "0.1.9" }
-haw-misra = { path = "crates/haw-misra", version = "0.1.9" }
+haw-core = { path = "crates/haw-core", version = "0.1.10" }
+haw-git = { path = "crates/haw-git", version = "0.1.10" }
+haw-forge = { path = "crates/haw-forge", version = "0.1.10" }
+haw-merge = { path = "crates/haw-merge", version = "0.1.10" }
+haw-tui = { path = "crates/haw-tui", version = "0.1.10" }
+haw-plugin = { path = "crates/haw-plugin", version = "0.1.10" }
+haw-aspice = { path = "crates/haw-aspice", version = "0.1.10" }
+haw-jira = { path = "crates/haw-jira", version = "0.1.10" }
+haw-misra = { path = "crates/haw-misra", version = "0.1.10" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

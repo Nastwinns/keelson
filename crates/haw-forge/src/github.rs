@@ -98,7 +98,12 @@ impl GitHub {
         let response = request
             .send()
             .map_err(|err| ForgeError::Api(format!("GET {url}: {err}")))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
+        // 404 = never existed; 410 Gone = logs aged out of GitHub's retention.
+        // Both mean "no log body to show" — surface as absent, not an API error.
+        if matches!(
+            response.status(),
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE
+        ) {
             return Ok(None);
         }
         let status = response.status();
