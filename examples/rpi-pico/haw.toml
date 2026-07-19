@@ -1,0 +1,63 @@
+# rpi-pico — REAL Raspberry Pi Pico (RP2040) firmware + an embedded C lib.
+#
+# Every repo here is a genuine public GitHub project with ACTIVE GitHub Actions
+# CI on its default branch, and every `build =` / `test =` below was actually
+# executed with haw and seen to succeed end-to-end on macOS (Apple clang / cmake
+# + Rust). Two are Raspberry Pi Pico firmware stacks that cross-compile with
+# Rust's BUILT-IN `thumbv6m-none-eabi` target — NO external ARM toolchain
+# needed; one is an embedded C JSON library that builds AND tests natively.
+#
+#   haw sync              # clone all three (needs network)
+#   haw build -j3         # cross-compile the two Pico firmwares + build cJSON
+#   haw test              # run cJSON's ctest suite (19/19)
+#   haw dash              # cockpit: press 4 for live CI runs, 3 for PRs
+#
+# One-time toolchain setup for the two Pico repos (Rust's own target, no ARM GCC):
+#
+#   rustup target add thumbv6m-none-eabi
+#
+# Grouped by domain: rpi-pico (embedded firmware) / data (embedded C lib).
+
+[remote.gh]
+url = "https://github.com"
+forge = "github"
+
+# --- rpi-pico ----------------------------------------------------------------
+# Embassy: the modern async embedded Rust framework. `examples/rp` are RP2040 /
+# RP235x (Raspberry Pi Pico / Pico 2) firmware. We cross-compile the blinky
+# firmware for the Pico's Cortex-M0+ (thumbv6m). Pulls ~40 crates. Very active
+# CI (github.com/embassy-rs/embassy/actions).
+[repo.embassy]
+remote = "gh"
+repo = "embassy-rs/embassy.git"
+rev = "main"
+groups = ["rpi-pico"]
+build = "cargo build --release --manifest-path examples/rp/Cargo.toml --bin blinky --target thumbv6m-none-eabi"
+
+# rp-hal: the community RP2040 Hardware Abstraction Layer (register access +
+# HAL). Builds the library crate for the Pico's thumbv6m target. Active CI.
+[repo.rp-hal]
+remote = "gh"
+repo = "rp-rs/rp-hal.git"
+rev = "main"
+groups = ["rpi-pico"]
+build = "cargo build --release --manifest-path rp2040-hal/Cargo.toml --target thumbv6m-none-eabi"
+
+# --- data --------------------------------------------------------------------
+# cJSON: the ubiquitous embedded JSON parser. Full CMake build + its ctest
+# suite (both build AND test run natively on this host). Active CI.
+[repo.cjson]
+remote = "gh"
+repo = "DaveGamble/cJSON.git"
+rev = "master"
+groups = ["data"]
+build = "cmake -S . -B build -DENABLE_CJSON_TEST=On && cmake --build build -j3"
+test = "ctest --test-dir build --output-on-failure"
+
+[stack.fleet]
+repos = ["embassy", "rp-hal", "cjson"]
+description = "Three alive embedded upstreams: two Raspberry Pi Pico firmwares (Rust) + one embedded C JSON lib."
+
+[stack.pico]
+repos = ["embassy", "rp-hal"]
+description = "Just the Raspberry Pi Pico (RP2040) firmware stacks."

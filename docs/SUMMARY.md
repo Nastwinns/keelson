@@ -13,6 +13,7 @@
 - [Changesets across repos](learn/05-changesets-across-repos.md)
 - [Build, test, and verify](learn/06-build-test-and-verify.md)
 - [Going to production](learn/07-going-to-production.md)
+- [Build a plugin (MCP for Claude)](learn/08-build-a-plugin-mcp.md)
 
 # Examples
 

@@ -69,7 +69,7 @@ are absent (print help, operate on cwd, or exit cleanly).
 
 ### TUI panels — rendering your own cockpit surface
 
-The cockpit (`haw dash`) has a first-class **Plugins** view (press `P`, or `:plugins`)
+The cockpit (`haw dash`) has a first-class **Plugins** view (press `7`, or `:plugins`)
 that lists every available plugin — the manifest `[plugins]` keys unioned with the
 `haw-*` executables discovered on `PATH`. Selecting one with `Enter` runs the plugin in
 a **render intent** and shows its output in the scrollable detail panel titled

@@ -18,7 +18,9 @@ guided tour. Open it and follow along.
 <li>Open the cockpit with bare <code>haw</code> (or <code>haw dash --demo</code> to explore offline).</li>
 <li>Read the live fleet grid — the same columns as <code>haw status</code>, refreshing themselves.</li>
 <li>Work the core loop: <strong>read → drill (<code>Enter</code>) → act → back (<code>Esc</code>)</strong>.</li>
-<li>Act from the home row: sync, fetch, mark, run, filter, browse files, and open the PR / CI / governance views.</li>
+<li>Act from the home row: sync, mark, run, filter, browse files, and jump to the PR / CI / governance views with the digits <code>1</code>–<code>7</code>.</li>
+<li>Open a view's context <strong>actions menu</strong> with <code>a</code> — merge, approve, checkout, request-PR, land — each confirm-gated.</li>
+<li>Browse any repo's files at any branch, tag, or SHA — local <em>or</em> straight from the forge, no checkout.</li>
 <li>Use the command bar (<code>:</code>) that mirrors the CLI you already learned.</li>
 </ul>
 </div>
@@ -57,7 +59,7 @@ Either way you land on the **fleet grid** — the cockpit's home screen.
 ──────────────────────────────────────────────────────────────────────────────────────
  hal  ›  path hal/   branch main (ahead 2)   dirty   locked 9f8e7d6c   grp firmware
 ──────────────────────────────────────────────────────────────────────────────────────
- [s]ync [F]etch [f]iles [x]shell [!]exec [/]filter [p]roblems [:]cmd [Enter]drill [?]help
+ [s]ync [f]iles [x]shell [!]exec [/]filter [p]roblems [a]ctions [1-7]views [:]cmd [?]help
 ```
 
 This is `haw status`, alive. Each row is a repo; the columns are the same ones you already
@@ -84,8 +86,7 @@ Single keys on the cursor row do things. The essentials:
 | Key | Does |
 |-----|------|
 | `s` | **sync** — the marked repos if any, else the cursor repo, else the stack |
-| `F` | **git fetch** the cursor repo — refresh its remote, distinct from `s` sync |
-| `f` | browse the repo's **files** (local disk; forge API when a PR is in view) |
+| `f` | browse the repo's **files** — local disk or straight from the forge |
 | `x` | drop into a **shell** in that repo (exits the cockpit) |
 | `!` | run one **command** (`exec`) in the repo, in its detail view |
 | `/` | fuzzy **filter** the grid live — `/knl` narrows to `kernel` |
@@ -93,6 +94,12 @@ Single keys on the cursor row do things. The essentials:
 | `Space` | **mark** / unmark the cursor repo (`◉`) |
 | `r` | **run** a command — across the marked repos if any, else the whole fleet |
 | `g` | **goto** — quit and print the cursor repo's path (`cd "$(haw dash)"`) |
+
+Git-fetch, switch-stack, and lock moved to the command bar — `:fetch`, `:stack`
+(picker) or `:stack NAME`, and `:lock`. One key you'll use everywhere is **`a`** — the
+**actions menu**. It opens a little popup listing exactly the actions the current view
+supports, each with its own sub-key; pick one and any *write* action (merge, land, …)
+still asks you `y/n` first. Views with no actions just say so.
 
 <div class="callout tip">
 
@@ -104,29 +111,56 @@ without touching a manifest.
 
 ## 🌐 5. The network views — PRs, CI, and acting on them
 
-Three keys open fleet-wide network views. They load on demand (nothing hits the network
-until you ask):
+View-switching is one keystroke: the **digits `1`–`7`** jump straight to a view from any
+top-level list. The network ones load on demand (nothing hits the network until you ask):
 
-- **`m`** — every open **PR/MR** across the fleet.
-- **`i`** — recent **CI** runs.
-- **`v`** — the **governance** view (plugins, SBOM, findings).
+| Key | View | `:` alias |
+|-----|------|-----------|
+| `1` | fleet | `:fleet` |
+| `2` | changesets | `:changesets` |
+| `3` | **PR/MRs** — every open PR/MR across the fleet | `:prs` |
+| `4` | **CI runs** — recent runs, live progress | `:ci` |
+| `5` | tree | `:tree` |
+| `6` | **governance** — plugins, SBOM, findings | `:governance` |
+| `7` | **plugins** | `:plugins` |
 
-Inside the PR/MR or CI views, `Enter` drills into detail — a PR's reviewers and checks, or
-a CI run's jobs and live progress. Press `d` to read a PR's diff, `l` for a CI run's logs,
-and `f` to browse a PR's **changed files**. And from there, the *action* keys — each
-**confirm-gated** with a `y/n` so you never merge by fat-finger:
+Inside the PR/MR (`3`) or CI (`4`) views, `Enter` drills into detail — a PR's reviewers and
+checks, or a CI run's jobs and live progress. Press `d` to read a PR's diff, `l` for a CI
+run's logs, and `f` to browse a PR's **changed files**. (A CI log that the forge has aged
+out — GitHub returns 410 — renders honestly as *"logs unavailable — expired or empty"*
+rather than an error.)
+
+To *act*, press **`a`** for the actions menu. In the PR/MR view it offers:
+
+| Sub-key | Does |
+|-----|------|
+| `m` | **merge** the PR/MR on its forge |
+| `a` | **approve** the PR/MR |
+| `c` | **checkout** the PR branch locally |
+
+Every write is **confirm-gated** with a `y/n` so you never merge by fat-finger. `o` opens
+the cursor row in your browser. So the full cross-forge flow from Chapter 5 — see PRs,
+approve, merge — is right here, keyboard-only, all under `a`.
+
+## 📂 6. Browsing files & branches — any ref, local or forge
+
+Press **`f`** on any repo to open its **file browser** — a *read-only* view (it never
+stages or commits, only reads). Three keys turn it into a proper code explorer:
 
 | Key | Does |
 |-----|------|
-| `M` | **merge** the PR/MR on its forge |
-| `A` | **approve** the PR/MR |
-| `C` | **checkout** the PR branch locally as `haw-pr-<n>` |
-| `o` | **open** the row in your browser |
+| `T` | **toggle** the flat one-directory list ⇄ a navigable **tree** (`▸`/`▾` to expand/collapse, `→`/`Enter` expand, `←` collapse) |
+| `r` | **ref picker** — pick a branch or tag from the list, or type any SHA; the view reloads *as of* that ref and the header shows `@ <ref>` |
+| `e` | **edit** the file under the cursor in your `$EDITOR` (local files only) |
+| `R` | **toggle** local disk ⇄ the forge |
 
-So the full cross-forge flow from Chapter 5 — see PRs, approve, merge — is right here,
-keyboard-only.
+The payoff: with `r` you can read a file **as it exists on any branch of the remote** —
+across GitHub, GitLab, or Bitbucket — **without checking anything out**. Point at a
+colleague's `feature/x` branch, read the file straight from the forge API, and never touch
+your working tree. `e` is the one exception to read-only: it hands the file to your editor
+for a quick local fix, then reloads the listing.
 
-## 💬 6. The command bar — one language for CLI and TUI
+## 💬 7. The command bar — one language for CLI and TUI
 
 Press **`:`** to open the command bar (the command palette). Its verbs *mirror the CLI you
 already learned*, and the status line echoes the exact command each one runs — so the
@@ -142,13 +176,14 @@ cockpit doubles as a way to discover the CLI:
 
 Learn one, know both. `:name` also jumps the cursor to a repo by name.
 
-## 🎨 7. Two more views, and themes
+## 🎨 8. Two more views, and themes
 
-- **`P`** — the **Plugins** view: every available plugin (manifest `[plugins]` keys unioned
-  with `haw-*` executables on your `PATH`); `Enter` runs one and shows its output in a
-  panel.
-- **`E`** — the **Errors** view: a rolling log of this session's failures, so a transient
-  error never scrolls away before you can read it.
+- **`7`** (`:plugins`) — the **Plugins** view: every available plugin (manifest `[plugins]`
+  keys unioned with `haw-*` executables on your `PATH`); `Enter` runs one and shows its
+  output in a panel. You'll build one that lands here in
+  [Chapter 8](08-build-a-plugin-mcp.md).
+- **`:errors`** (`:err`) — the **Errors** view: a rolling log of this session's failures, so
+  a transient error never scrolls away before you can read it.
 
 **Themes.** Six built-in skins — `catppuccin` (default), `dracula`, `nord`, `gruvbox`,
 `solarized`, `monochrome`. Switch live with `:theme nord`, set one at startup with
@@ -168,7 +203,8 @@ sync, a fetch, or a forge call is in flight. Keep navigating.
 <p>No workspace or network needed — the demo controller has everything to poke at:</p>
 <ul>
 <li>Launch <code>haw dash --demo</code>. Move with <code>↑</code>/<code>↓</code>, then press <code>Enter</code> to drill into a repo and <code>Esc</code> to come back — feel the read → drill → act → back rhythm.</li>
-<li>Press <code>Space</code> to mark a couple of repos (watch the <code>◉</code>), then <code>/</code> to fuzzy-filter the grid, and <code>F</code> to fetch the cursor repo. Press <code>?</code> to open the help overlay.</li>
+<li>Press <code>Space</code> to mark a couple of repos (watch the <code>◉</code>), then <code>/</code> to fuzzy-filter the grid. Press <code>3</code> for PRs and <code>4</code> for CI, then <code>a</code> to see the actions menu. Press <code>?</code> for the help overlay.</li>
+<li>Press <code>f</code> on a repo to browse its files, then <code>T</code> for the tree and <code>r</code> to read a file as of another branch or tag. Press <code>b</code> to come back.</li>
 <li>Press <code>:</code> and type <code>:theme nord</code>. The skin changes live — and the status line echoes the exact command, so the cockpit is teaching you the CLI as you go.</li>
 </ul>
 </div>
@@ -177,12 +213,15 @@ sync, a fetch, or a forge call is in flight. Keep navigating.
 
 - Bare `haw` (or `haw dash --demo`) opens the cockpit — a live `haw status` you can act on.
 - The loop is **read → drill (`Enter`) → act → back (`Esc`)**.
-- Fleet keys: `s` sync, `F` fetch, `f` files, `x` shell, `!` exec, `/` filter, `p`
-  problems, `Space` mark, `r` run, `g` goto.
-- Network views: `m` PRs, `i` CI, `v` governance; then `M`/`A`/`C` merge/approve/checkout
+- Fleet keys: `s` sync, `f` files, `x` shell, `!` exec, `/` filter, `p` problems, `Space`
+  mark, `r` run, `g` goto, `a` actions.
+- View jumps are the digits **`1`–`7`**: `1` fleet, `2` changesets, `3` PRs, `4` CI, `5`
+  tree, `6` governance, `7` plugins. In PRs/CI, `a` (actions) does merge/approve/checkout
   (confirm-gated), `d` diff, `l` logs, `f` PR files.
-- `:` is a command bar (palette) mirroring the CLI; `P` plugins, `E` errors; six themes via
-  `:theme` / `HAW_THEME`.
+- File browser (`f`): `T` toggles tree, `r` picks a branch/tag/SHA (read any ref, local or
+  forge, no checkout), `e` edits locally, `R` toggles local ⇄ forge.
+- `:` is a command bar (palette) mirroring the CLI; `:plugins` and `:errors` reach those
+  views; six themes via `:theme` / `HAW_THEME`.
 
 ## 👉 Next
 

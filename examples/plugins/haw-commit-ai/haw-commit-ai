@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""haw-commit-ai — draft commit messages + PR text from a haw workspace,
+and expose the same context to Claude as an MCP server.
+
+Two faces, one script:
+
+  1. As a haw plugin (`haw commit-ai`):
+       reads the haw.plugin/1 context (from $HAW_JSON, falling back to stdin),
+       runs `git diff` per repo, and prints a suggested conventional-commit
+       message + a PR body skeleton. Supports:
+         --format json   -> a haw.plugin.report/1 document
+         render intent    -> a haw.plugin.view/1 panel (HAW_RENDER=1)
+
+  2. As an MCP server for Claude (`haw-commit-ai --mcp`, stdio):
+       exposes small, safe tools so Claude Code / Claude Desktop can read the
+       workspace + diffs and write the text itself:
+
+       Niveau 1 (mono-repo — learn the protocol):
+         haw_context()                     -> root, stack, repos
+         repo_diff(repo)                   -> staged+unstaged git diff for a repo
+         changeset_repos()                 -> repos touched by the current changeset
+         write_commit(repo, message)       -> git commit -m (path-guarded to root)
+         draft_pr(repo, title, body)       -> returns PR text (dry by default)
+
+       Niveau 2 (cross-repo — the real power of haw):
+         changeset_diff()                  -> COMBINED diff across ALL changeset repos
+         draft_changeset_pr(title)         -> ONE coherent cross-repo PR skeleton
+
+The plugin (non-MCP) face uses only the Python stdlib — zero dependencies.
+The --mcp face needs the official MCP SDK:  pip install mcp
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from typing import Any, Optional
+
+
+# --------------------------------------------------------------------------- #
+# haw.plugin/1 context
+# --------------------------------------------------------------------------- #
+def read_context() -> dict[str, Any]:
+    """Read the haw.plugin/1 context haw hands us.
+
+    haw passes the same JSON document two ways: in the $HAW_JSON env var and on
+    stdin. We prefer the env var (always present, never blocks) and fall back to
+    stdin. Outside a workspace this degrades to {"schema": "haw.plugin/1"}.
+    """
+    raw = os.environ.get("HAW_JSON", "")
+    if not raw and not sys.stdin.isatty():
+        try:
+            raw = sys.stdin.read()
+        except Exception:
+            raw = ""
+    if not raw:
+        return {"schema": "haw.plugin/1"}
+    try:
+        ctx = json.loads(raw)
+    except (ValueError, TypeError):
+        return {"schema": "haw.plugin/1"}
+    if not isinstance(ctx, dict):
+        return {"schema": "haw.plugin/1"}
+    return ctx
+
+
+def context_repos(ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    repos = ctx.get("repos")
+    return [r for r in repos if isinstance(r, dict)] if isinstance(repos, list) else []
+
+
+def _run(cmd: list[str], cwd: Optional[str] = None) -> tuple[int, str, str]:
+    """Run a command, capturing output. Never raises on non-zero exit."""
+    try:
+        p = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True, check=False
+        )
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError as e:
+        return 127, "", str(e)
+
+
+def repo_diff_text(path: str) -> str:
+    """The combined staged + unstaged diff for a repo on disk."""
+    # `git diff HEAD` shows both staged and unstaged changes vs the last commit.
+    rc, out, err = _run(["git", "-C", path, "diff", "HEAD"], cwd=path)
+    if rc != 0 and not out:
+        # New repo with no commits yet: fall back to the plain worktree diff.
+        rc2, out2, _ = _run(["git", "-C", path, "diff"], cwd=path)
+        return out2
+    return out
+
+
+def repo_is_dirty(path: str) -> bool:
+    rc, out, _ = _run(["git", "-C", path, "status", "--porcelain"], cwd=path)
+    return rc == 0 and bool(out.strip())
+
+
+def changeset_repos(ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    """Repos touched by the current changeset, via `haw change status --format
+    json`; falls back to the dirty repos in the context if there's no changeset
+    (or haw isn't on PATH)."""
+    root = ctx.get("root")
+    repos = context_repos(ctx)
+    if root:
+        rc, out, _ = _run(["haw", "change", "status", "--format", "json"], cwd=root)
+        if rc == 0 and out.strip():
+            try:
+                data = json.loads(out)
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                names = set()
+                for r in data.get("repos", []) or []:
+                    if isinstance(r, dict) and r.get("name"):
+                        names.add(r["name"])
+                    elif isinstance(r, str):
+                        names.add(r)
+                touched = [r for r in repos if r.get("name") in names]
+                if touched:
+                    return touched
+    # Fallback: repos with a dirty working tree.
+    return [r for r in repos if r.get("path") and repo_is_dirty(r["path"])]
+
+
+# --------------------------------------------------------------------------- #
+# Commit / PR drafting (heuristic — Claude does the real writing via MCP)
+# --------------------------------------------------------------------------- #
+def diff_stat(path: str) -> tuple[int, int]:
+    """(files_changed, lines_changed) from `git diff --shortstat HEAD`."""
+    rc, out, _ = _run(["git", "-C", path, "diff", "--shortstat", "HEAD"], cwd=path)
+    files = lines = 0
+    for tok, prev in zip(out.split(), [""] + out.split()):
+        if tok.startswith("file"):
+            try:
+                files = int(prev)
+            except ValueError:
+                pass
+        if tok.startswith("insertion") or tok.startswith("deletion"):
+            try:
+                lines += int(prev)
+            except ValueError:
+                pass
+    return files, lines
+
+
+def suggest_subject(repo: dict[str, Any]) -> str:
+    """A conservative conventional-commit subject skeleton for a repo.
+
+    This is a *skeleton* — the whole point of the MCP server is to let Claude
+    read the diff and write a real message. Kept deterministic + short.
+    """
+    name = repo.get("name", "repo")
+    path = repo.get("path", "")
+    files, _ = diff_stat(path) if path else (0, 0)
+    scope = name
+    what = "update" if files else "chore"
+    return f"{what}({scope}): describe the change in {name}"
+
+
+def suggest_pr_body(repos: list[dict[str, Any]]) -> str:
+    lines = ["## Summary", "", "<!-- what changed and why -->", "", "## Repos touched", ""]
+    for r in repos:
+        lines.append(f"- **{r.get('name', '?')}** — <!-- one line -->")
+    lines += ["", "## Testing", "", "- [ ] `haw build`", "- [ ] `haw test`", ""]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Cross-repo (changeset-wide) helpers — Niveau 2
+# --------------------------------------------------------------------------- #
+def changeset_diff_text(ctx: dict[str, Any]) -> str:
+    """The COMBINED git diff across every repo of the current changeset.
+
+    This is the killer view: neither Claude nor lazygit can see a fleet-wide
+    changeset on its own. We concatenate each repo's `git diff HEAD` under a
+    clear per-repo header so the whole cross-repo story reads top to bottom.
+    """
+    repos = changeset_repos(ctx) or context_repos(ctx)
+    if not repos:
+        return "no changeset and no dirty repos — nothing to diff."
+    chunks: list[str] = []
+    for r in repos:
+        name = r.get("name", "?")
+        path = r.get("path")
+        diff = repo_diff_text(path) if path else ""
+        body = diff.rstrip() if diff.strip() else "(no changes)"
+        chunks.append(f"=== {name} ===\n{body}")
+    return "\n\n".join(chunks)
+
+
+def draft_changeset_pr_body(ctx: dict[str, Any], title: str) -> str:
+    """A ONE-PR skeleton that narrates every repo of the changeset together.
+
+    The plugin assembles the deterministic scaffold — a per-repo section for
+    each touched repo plus a combined-summary slot. Claude fills the prose from
+    the diffs. This is the cross-repo story a single-repo tool can't tell.
+    """
+    repos = changeset_repos(ctx) or context_repos(ctx)
+    lines = [f"# {title}", "", "## Combined summary", "",
+             "<!-- one narrative covering all repos below and why they move together -->", ""]
+    lines += ["## Per-repo changes", ""]
+    if not repos:
+        lines.append("_no repos in the current changeset._")
+    for r in repos:
+        name = r.get("name", "?")
+        path = r.get("path", "")
+        files, changed = diff_stat(path) if path else (0, 0)
+        stat = f" ({files} file(s), {changed} line(s))" if files or changed else ""
+        lines.append(f"### {name}{stat}")
+        lines.append("")
+        lines.append("<!-- what changed in this repo and why -->")
+        lines.append("")
+    lines += ["## Testing", "", "- [ ] `haw build`", "- [ ] `haw test`", ""]
+    lines += ["<!-- to open the linked PRs across the fleet: commit each repo,",
+              "     then run `haw change request`. -->", ""]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Plugin faces: human, --format json, render intent
+# --------------------------------------------------------------------------- #
+def emit_report(ctx: dict[str, Any]) -> int:
+    """--format json -> a haw.plugin.report/1 document."""
+    repos = changeset_repos(ctx) or context_repos(ctx)
+    findings = []
+    for r in repos:
+        findings.append(
+            {"level": "info", "message": f"{r.get('name')}: {suggest_subject(r)}"}
+        )
+    report = {
+        "schema": "haw.plugin.report/1",
+        "plugin": "commit-ai",
+        "ok": True,
+        "summary": f"drafted commit subjects for {len(repos)} repo(s)",
+        "findings": findings,
+    }
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def emit_view(ctx: dict[str, Any]) -> int:
+    """render intent -> a haw.plugin.view/1 panel."""
+    repos = changeset_repos(ctx) or context_repos(ctx)
+    lines = []
+    if not repos:
+        lines.append("no dirty repos — nothing to commit")
+    for r in repos:
+        lines.append(f"{r.get('name', '?'):<16} {suggest_subject(r)}")
+    view = {
+        "schema": "haw.plugin.view/1",
+        "title": "commit-ai — proposed commit subjects",
+        "lines": lines,
+    }
+    print(json.dumps(view))
+    return 0
+
+
+def run_plugin(ctx: dict[str, Any], args: list[str]) -> int:
+    """The default (human) plugin face + --format json + render intent."""
+    if "--format" in args:
+        i = args.index("--format")
+        if i + 1 < len(args) and args[i + 1] == "json":
+            return emit_report(ctx)
+    if os.environ.get("HAW_RENDER") == "1" or ctx.get("intent") == "render":
+        return emit_view(ctx)
+
+    repos = changeset_repos(ctx) or context_repos(ctx)
+    if not ctx.get("root"):
+        print("haw-commit-ai: run me inside a haw workspace (or with --mcp).")
+        return 0
+    if not repos:
+        print("haw-commit-ai: no changeset and no dirty repos — nothing to draft.")
+        return 0
+
+    print(f"haw-commit-ai — {len(repos)} repo(s) to draft:\n")
+    for r in repos:
+        print(f"  {r.get('name')}  ->  {suggest_subject(r)}")
+    print("\n--- suggested PR body ---\n")
+    print(suggest_pr_body(repos))
+    print(
+        "\nTip: wire this as an MCP server so Claude reads the diffs and writes the\n"
+        "real message:  haw-commit-ai --mcp   (see the README)."
+    )
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# MCP server face: haw-commit-ai --mcp
+# --------------------------------------------------------------------------- #
+def run_mcp() -> int:
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError:
+        sys.stderr.write(
+            "haw-commit-ai --mcp needs the MCP Python SDK.\n"
+            "Install it with:\n\n    pip install mcp\n\n"
+            "The plugin's non-MCP mode works with zero dependencies.\n"
+        )
+        return 1
+
+    mcp = FastMCP("haw-commit-ai")
+
+    def _ctx() -> dict[str, Any]:
+        return read_context()
+
+    def _repo_path(ctx: dict[str, Any], repo: str) -> Optional[str]:
+        for r in context_repos(ctx):
+            if r.get("name") == repo:
+                return r.get("path")
+        return None
+
+    def _within_root(root: Optional[str], path: Optional[str]) -> bool:
+        """Guard: only allow writes to paths inside the workspace root."""
+        if not root or not path:
+            return False
+        root_abs = os.path.realpath(root)
+        path_abs = os.path.realpath(path)
+        return path_abs == root_abs or path_abs.startswith(root_abs + os.sep)
+
+    @mcp.tool()
+    def haw_context() -> dict[str, Any]:
+        """Return the haw workspace context: root, current stack, and repos
+        (name, path, rev, groups)."""
+        ctx = _ctx()
+        return {
+            "root": ctx.get("root"),
+            "stack": ctx.get("stack"),
+            "repos": context_repos(ctx),
+        }
+
+    @mcp.tool()
+    def repo_diff(repo: str) -> str:
+        """Return the combined staged+unstaged `git diff` for the named repo, so
+        you can see exactly what changed before writing a commit message."""
+        ctx = _ctx()
+        path = _repo_path(ctx, repo)
+        if not path:
+            return f"error: no repo named {repo!r} in this workspace."
+        diff = repo_diff_text(path)
+        return diff if diff.strip() else f"{repo}: no changes."
+
+    @mcp.tool()
+    def changeset_repos_tool() -> list[dict[str, Any]]:
+        """Return the repos touched by the current changeset (via `haw change
+        status`), or the dirty repos if there is no active changeset."""
+        return changeset_repos(_ctx())
+
+    @mcp.tool()
+    def write_commit(repo: str, message: str) -> str:
+        """Commit the staged changes in the named repo with the given message
+        (`git commit -m`). Path-guarded: refuses any repo outside the workspace
+        root. Stages nothing itself — commit what's already staged.
+
+        For a whole changeset, commit each repo this way, then run
+        `haw change request` to open the linked PRs across the fleet."""
+        ctx = _ctx()
+        root = ctx.get("root")
+        path = _repo_path(ctx, repo)
+        if not _within_root(root, path):
+            return f"refused: {repo!r} is not a repo inside the workspace root."
+        rc, out, err = _run(["git", "-C", path, "commit", "-m", message], cwd=path)
+        if rc == 0:
+            return f"committed {repo}:\n{out.strip()}"
+        return f"git commit failed ({rc}):\n{(err or out).strip()}"
+
+    @mcp.tool()
+    def draft_pr(repo: str, title: str, body: str, submit: bool = False) -> str:
+        """Return the PR text for the named repo. Dry by default: it does NOT
+        push or open a PR unless submit=True (which shells `haw change request`).
+        Nothing is force-pushed."""
+        ctx = _ctx()
+        rendered = f"# {title}\n\n{body}"
+        if not submit:
+            return rendered + "\n\n(dry run — pass submit=True to run `haw change request`)"
+        root = ctx.get("root")
+        path = _repo_path(ctx, repo)
+        if not _within_root(root, path):
+            return f"refused: {repo!r} is not a repo inside the workspace root."
+        rc, out, err = _run(
+            ["haw", "change", "request", "--title", title, "--body", body], cwd=root
+        )
+        status = "requested" if rc == 0 else f"failed ({rc})"
+        return f"{rendered}\n\n[haw change request: {status}]\n{(out or err).strip()}"
+
+    # ----- Niveau 2 : cross-repo tools (the real power of haw) ----- #
+    @mcp.tool()
+    def changeset_diff() -> str:
+        """Return the COMBINED `git diff` across ALL repos of the current
+        changeset (via `haw change status`, else every dirty repo in the
+        context), concatenated with `=== <repo> ===` headers per repo.
+
+        This is the fleet-wide view a single-repo tool can't give you: read it
+        top to bottom to understand the whole cross-repo change at once."""
+        return changeset_diff_text(_ctx())
+
+    @mcp.tool()
+    def draft_changeset_pr(title: str) -> str:
+        """Return ONE coherent cross-repo PR skeleton narrating every repo of the
+        changeset together: a combined-summary slot plus a per-repo section for
+        each touched repo. Dry — assembles the scaffold only (you fill the prose);
+        feed the result to `haw change request` to open the linked PRs."""
+        return draft_changeset_pr_body(_ctx(), title)
+
+    mcp.run()
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Entry point
+# --------------------------------------------------------------------------- #
+HELP = """haw-commit-ai — draft commits + PRs from a haw workspace, and serve them to Claude via MCP
+
+USAGE:
+    haw commit-ai [--format json]     # as a haw plugin
+    haw-commit-ai --mcp               # as an MCP server for Claude (stdio)
+
+OPTIONS:
+    -h, --help        Print this help
+        --format json Emit a haw.plugin.report/1 document
+        --mcp         Run as an MCP server over stdio (needs: pip install mcp)
+
+haw passes the workspace context as haw.plugin/1 JSON in $HAW_JSON and on stdin.
+"""
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(HELP)
+        return 0
+    if "--mcp" in args:
+        return run_mcp()
+    return run_plugin(read_context(), args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

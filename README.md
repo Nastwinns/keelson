@@ -387,6 +387,14 @@ licensed suite. Validated recipes (with real captured output) — littlefs cross
 patterns for **EB tresos, Vector MICROSAR, Green Hills, IAR, Tasking, Zephyr, Renode**:
 **[docs/INTEGRATION.md](docs/INTEGRATION.md)**.
 
+Want a validated, zero-toolchain-hunting starting point? [`examples/rpi-pico`](examples/rpi-pico)
+cross-compiles **two real Raspberry Pi Pico (RP2040) firmwares** (embassy blinky + rp-hal)
+to Cortex-M0+ using Rust's built-in `thumbv6m-none-eabi` — **no external ARM GCC** — plus
+cJSON (ctest 19/19). `haw sync && haw build -j3 && haw test`, all three with active GitHub
+Actions CI. And [`examples/embedded-real`](examples/embedded-real) builds five real
+embedded upstreams (CoreMark · cJSON · Monocypher · libcanard · Mbed-TLS) with one
+`haw build -j4`. See the full [examples index](docs/EXAMPLES.md).
+
 ## Secrets & tokens
 
 `haw` never stores a credential. It reads forge tokens from the environment at call

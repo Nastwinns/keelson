@@ -271,6 +271,8 @@ thing, extending it with a plugin, and running it all in production with an audi
 That's the whole tool.
 
 Where to next:
+- Ready to build your own? [8. Build a plugin — and let Claude write your commits](08-build-a-plugin-mcp.md)
+  turns everything you learned into a real plugin that doubles as an MCP server for Claude.
 - Keep the [CLI design & keymap](../CLI-DESIGN.md) handy as a reference.
 - Deepen the domain fit in [Domains](../DOMAINS.md).
 - Extend further with [Plugins](../PLUGINS.md) and [Extending](../EXTENDING.md).

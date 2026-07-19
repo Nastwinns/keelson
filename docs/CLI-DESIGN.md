@@ -277,9 +277,11 @@ one at startup; `:theme <name>` switches live.
 - TUI `g` (goto) quits and prints the repo path — `cd "$(haw dash)"` — instead of
   spawning a nested shell.
 - TUI: live idle auto-refresh (~5s), fuzzy `/` filter (nucleo), column sorting
-  (`<`/`>`/`.`), marks + bulk `s`/`r`, drill-ins for repos/PRs/CI runs, `M` merge /
-  `A` approve, fleet-wide governance (`v`) view, and six themes (`HAW_THEME`,
-  `NO_COLOR`, live `:theme`).
+  (`<`/`>`/`.`), marks + bulk `s`/`r`, drill-ins for repos/PRs/CI runs, the `a`
+  actions menu (merge / approve / checkout in PR/MR; request-PR / land in Changeset),
+  fleet-wide governance (`6`) view, the file browser (`f`) with a navigable tree (`T`),
+  ref picker (`r`), and local edit (`e`), and six themes (`HAW_THEME`, `NO_COLOR`,
+  live `:theme`).
 
 ## Planned (not yet implemented)
 
