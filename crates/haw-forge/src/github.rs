@@ -588,6 +588,88 @@ impl Forge for GitHub {
             None => Ok("(file not present at this ref)\n".to_string()),
         }
     }
+
+    fn repo_file_paths(
+        &self,
+        repo_url: &str,
+        git_ref: Option<&str>,
+    ) -> Result<Vec<String>, ForgeError> {
+        let (host, path) = self.split(repo_url)?;
+        // Resolve the tree-ish: an explicit ref, else the repo's default branch.
+        let git_ref = match git_ref.filter(|r| !r.is_empty()) {
+            Some(r) => r.to_string(),
+            None => {
+                let repo = self.get(&host, &format!("/repos/{path}"))?;
+                repo["default_branch"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("HEAD")
+                    .to_string()
+            }
+        };
+        let tree = self.get(
+            &host,
+            &format!("/repos/{path}/git/trees/{git_ref}?recursive=1"),
+        )?;
+        Ok(paths_from_github_tree(&tree))
+    }
+
+    fn list_refs(&self, repo_url: &str) -> Result<Vec<crate::ForgeRef>, ForgeError> {
+        let (host, path) = self.split(repo_url)?;
+        let branches = self.get(&host, &format!("/repos/{path}/branches?per_page=100"))?;
+        let tags = self.get(&host, &format!("/repos/{path}/tags?per_page=100"))?;
+        Ok(refs_from_github(&branches, &tags))
+    }
+}
+
+/// The FILE paths of a GitHub `git/trees?recursive=1` response, deduped and
+/// capped. `blob` entries are files; `tree` entries (directories) are dropped.
+fn paths_from_github_tree(tree: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for entry in tree["tree"].as_array().into_iter().flatten() {
+        if entry["type"].as_str() != Some("blob") {
+            continue;
+        }
+        let Some(path) = entry["path"].as_str() else {
+            continue;
+        };
+        if seen.insert(path.to_string()) {
+            out.push(path.to_string());
+            if out.len() >= crate::FILE_PATHS_CAP {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Branches then tags from GitHub `/branches` + `/tags` list responses, each
+/// capped at [`REFS_CAP`].
+fn refs_from_github(branches: &Value, tags: &Value) -> Vec<crate::ForgeRef> {
+    let mut out = Vec::new();
+    for b in branches
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(crate::REFS_CAP)
+    {
+        if let Some(name) = b["name"].as_str() {
+            out.push(crate::ForgeRef {
+                name: name.to_string(),
+                kind: crate::ForgeRefKind::Branch,
+            });
+        }
+    }
+    for t in tags.as_array().into_iter().flatten().take(crate::REFS_CAP) {
+        if let Some(name) = t["name"].as_str() {
+            out.push(crate::ForgeRef {
+                name: name.to_string(),
+                kind: crate::ForgeRefKind::Tag,
+            });
+        }
+    }
+    out
 }
 
 /// Emoji + label for a PR state, used in the drill-in detail header.
@@ -676,6 +758,39 @@ mod tests {
             api_base("github.corp.example"),
             "https://github.corp.example/api/v3"
         );
+    }
+
+    use super::{paths_from_github_tree, refs_from_github};
+    use crate::ForgeRefKind;
+    use serde_json::json;
+
+    #[test]
+    fn tree_keeps_blobs_drops_dirs_and_dedupes() {
+        let tree = json!({
+            "tree": [
+                { "path": "src", "type": "tree" },
+                { "path": "src/lib.rs", "type": "blob" },
+                { "path": "src/lib.rs", "type": "blob" },
+                { "path": "README.md", "type": "blob" },
+            ]
+        });
+        let paths = paths_from_github_tree(&tree);
+        assert_eq!(
+            paths,
+            vec!["src/lib.rs".to_string(), "README.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn refs_lists_branches_then_tags() {
+        let branches = json!([{ "name": "main" }, { "name": "dev" }]);
+        let tags = json!([{ "name": "v1.0.0" }]);
+        let refs = refs_from_github(&branches, &tags);
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs[0].name, "main");
+        assert_eq!(refs[0].kind, ForgeRefKind::Branch);
+        assert_eq!(refs[2].name, "v1.0.0");
+        assert_eq!(refs[2].kind, ForgeRefKind::Tag);
     }
 }
 

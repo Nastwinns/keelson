@@ -627,6 +627,76 @@ impl Forge for Bitbucket {
             None => Ok("(file not present at this ref)\n".to_string()),
         }
     }
+
+    fn repo_file_paths(
+        &self,
+        repo_url: &str,
+        git_ref: Option<&str>,
+    ) -> Result<Vec<String>, ForgeError> {
+        let api = self.repo_api(repo_url)?;
+        let git_ref = self.resolve_ref(&api, git_ref)?;
+        // Bitbucket's `src` endpoint flattens the tree when given a large
+        // `max_depth`; each value carries its full repo path + a type. Paginate
+        // (following `next`) up to the cap.
+        let url = format!(
+            "{api}/src/{}/?max_depth=100&pagelen=100",
+            encode_segment(&git_ref)
+        );
+        let entries = self.paginate(&url, crate::FILE_PATHS_CAP)?;
+        Ok(paths_from_bitbucket_src(&entries))
+    }
+
+    fn list_refs(&self, repo_url: &str) -> Result<Vec<crate::ForgeRef>, ForgeError> {
+        let api = self.repo_api(repo_url)?;
+        let branches =
+            self.paginate(&format!("{api}/refs/branches?pagelen=100"), crate::REFS_CAP)?;
+        let tags = self.paginate(&format!("{api}/refs/tags?pagelen=100"), crate::REFS_CAP)?;
+        Ok(refs_from_bitbucket(&branches, &tags))
+    }
+}
+
+/// The FILE paths of a Bitbucket `src?max_depth=…` flattened listing, deduped
+/// and capped. `commit_file` entries are files; `commit_directory` is dropped.
+fn paths_from_bitbucket_src(entries: &[Value]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for entry in entries {
+        if entry["type"].as_str() != Some("commit_file") {
+            continue;
+        }
+        if let Some(path) = entry["path"].as_str()
+            && seen.insert(path.to_string())
+        {
+            out.push(path.to_string());
+            if out.len() >= crate::FILE_PATHS_CAP {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Branches then tags from Bitbucket `/refs/branches` + `/refs/tags` paginated
+/// value lists, each capped at [`crate::REFS_CAP`].
+fn refs_from_bitbucket(branches: &[Value], tags: &[Value]) -> Vec<crate::ForgeRef> {
+    let mut out = Vec::new();
+    for b in branches.iter().take(crate::REFS_CAP) {
+        if let Some(name) = b["name"].as_str() {
+            out.push(crate::ForgeRef {
+                name: name.to_string(),
+                kind: crate::ForgeRefKind::Branch,
+            });
+        }
+    }
+    for t in tags.iter().take(crate::REFS_CAP) {
+        if let Some(name) = t["name"].as_str() {
+            out.push(crate::ForgeRef {
+                name: name.to_string(),
+                kind: crate::ForgeRefKind::Tag,
+            });
+        }
+    }
+    out
 }
 
 impl Bitbucket {
@@ -789,6 +859,31 @@ mod tests {
     fn encodes_path_segments_but_keeps_separators() {
         assert_eq!(encode_path("src/main rs/a.txt"), "src/main%20rs/a.txt");
         assert_eq!(encode_path("plain/path"), "plain/path");
+    }
+
+    #[test]
+    fn src_listing_keeps_files_dropping_dirs() {
+        let entries = vec![
+            json!({ "path": "src", "type": "commit_directory" }),
+            json!({ "path": "src/lib.rs", "type": "commit_file" }),
+            json!({ "path": "README.md", "type": "commit_file" }),
+        ];
+        let paths = paths_from_bitbucket_src(&entries);
+        assert_eq!(
+            paths,
+            vec!["src/lib.rs".to_string(), "README.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn refs_lists_branches_then_tags() {
+        let branches = vec![json!({ "name": "main" })];
+        let tags = vec![json!({ "name": "v3" })];
+        let refs = refs_from_bitbucket(&branches, &tags);
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].kind, crate::ForgeRefKind::Branch);
+        assert_eq!(refs[1].name, "v3");
+        assert_eq!(refs[1].kind, crate::ForgeRefKind::Tag);
     }
 
     #[test]

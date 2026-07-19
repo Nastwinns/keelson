@@ -81,6 +81,144 @@ fn is_full_sha(rev: &str) -> bool {
     rev.len() == 40 && rev.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// A local branch/tag/commit ref, for the file browser's ref picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRef {
+    pub name: String,
+    pub kind: LocalRefKind,
+}
+
+/// Which kind of ref a [`LocalRef`] names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalRefKind {
+    Branch,
+    Tag,
+    Head,
+}
+
+/// Cap on the number of file paths [`ls_tree_recursive`] returns.
+pub const LS_TREE_CAP: usize = 5000;
+
+/// Reject a git-ref that could be mis-parsed as an option or smuggle a path
+/// traversal — a `-`-leading ref becomes a flag; `..` is never a valid ref
+/// atom for our read-only browsing. Empty is rejected too.
+fn safe_ref(git_ref: &str) -> Result<(), GitError> {
+    if git_ref.is_empty()
+        || git_ref.starts_with('-')
+        || git_ref.contains("..")
+        || git_ref.contains(char::is_whitespace)
+        || git_ref.contains(['\0', '~', '^', ':', '\\'])
+    {
+        return Err(GitError::Command {
+            context: format!("validate ref `{git_ref}`"),
+            stderr: "unsafe or malformed git ref".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Reject a repo-relative path that leaves the tree or starts like an option.
+fn safe_rel_path(path: &str) -> Result<(), GitError> {
+    let p = path.trim_matches('/');
+    if p.starts_with('-') || p.split('/').any(|seg| seg == ".." || seg.starts_with('-')) {
+        return Err(GitError::Command {
+            context: format!("validate path `{path}`"),
+            stderr: "unsafe or malformed path".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// The repo's local branches, then tags, then the current HEAD (branch name or
+/// short sha when detached). Read-only; used by the file browser's ref picker.
+pub fn list_refs(repo: &Path) -> Result<Vec<LocalRef>, GitError> {
+    let mut out = Vec::new();
+    let branches = run(
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        Some(repo),
+    )?;
+    for name in branches.lines().filter(|l| !l.trim().is_empty()) {
+        out.push(LocalRef {
+            name: name.trim().to_string(),
+            kind: LocalRefKind::Branch,
+        });
+    }
+    let tags = run(
+        &["for-each-ref", "--format=%(refname:short)", "refs/tags"],
+        Some(repo),
+    )?;
+    for name in tags.lines().filter(|l| !l.trim().is_empty()) {
+        out.push(LocalRef {
+            name: name.trim().to_string(),
+            kind: LocalRefKind::Tag,
+        });
+    }
+    // Surface the current HEAD so the picker can show where the checkout sits.
+    if let Ok(branch) = run(&["symbolic-ref", "--short", "-q", "HEAD"], Some(repo)) {
+        let branch = branch.trim().to_string();
+        if !branch.is_empty() && !out.iter().any(|r| r.name == branch) {
+            out.insert(
+                0,
+                LocalRef {
+                    name: branch,
+                    kind: LocalRefKind::Head,
+                },
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// One level of the tree at `git_ref` under `subpath` ("" = root), as
+/// `(leaf-name, is_dir)`. Directories keep no trailing slash.
+pub fn ls_tree(repo: &Path, git_ref: &str, subpath: &str) -> Result<Vec<(String, bool)>, GitError> {
+    safe_ref(git_ref)?;
+    safe_rel_path(subpath)?;
+    let sub = subpath.trim_matches('/');
+    // `git ls-tree <ref> <dir>/` lists one level under <dir>; at the root pass
+    // no pathspec (an empty string is not a valid pathspec).
+    let out = if sub.is_empty() {
+        run(&["ls-tree", git_ref], Some(repo))?
+    } else {
+        run(&["ls-tree", git_ref, &format!("{sub}/")], Some(repo))?
+    };
+    let mut entries = Vec::new();
+    for line in out.lines() {
+        // Format: `<mode> <type> <sha>\t<path>`
+        let Some((meta, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let is_dir = meta.split_whitespace().nth(1) == Some("tree");
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        if !name.is_empty() {
+            entries.push((name, is_dir));
+        }
+    }
+    Ok(entries)
+}
+
+/// Every FILE path in the tree at `git_ref`, recursive, posix `/`-separated,
+/// capped at [`LS_TREE_CAP`].
+pub fn ls_tree_recursive(repo: &Path, git_ref: &str) -> Result<Vec<String>, GitError> {
+    safe_ref(git_ref)?;
+    let out = run(&["ls-tree", "-r", "--name-only", "--", git_ref], Some(repo))?;
+    let mut paths: Vec<String> = out
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.to_string())
+        .collect();
+    paths.truncate(LS_TREE_CAP);
+    Ok(paths)
+}
+
+/// The raw text of `path` at `git_ref` via `git show <ref>:<path>`.
+pub fn show_file(repo: &Path, git_ref: &str, path: &str) -> Result<String, GitError> {
+    safe_ref(git_ref)?;
+    safe_rel_path(path)?;
+    let file = path.trim_matches('/');
+    run(&["show", &format!("{git_ref}:{file}")], Some(repo))
+}
+
 /// Build the `git clone` argv (everything after `git`) for `opts`.
 ///
 /// `--reference` (shared mirror), `--filter=<spec>` (partial clone), and

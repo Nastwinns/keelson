@@ -542,6 +542,109 @@ impl Forge for GitLab {
             None => Ok("(file not present at this ref)\n".to_string()),
         }
     }
+
+    fn repo_file_paths(
+        &self,
+        repo_url: &str,
+        git_ref: Option<&str>,
+    ) -> Result<Vec<String>, ForgeError> {
+        let api = self.project_api(repo_url)?;
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        // Recursive tree, page-walked (100/page) until empty, the cap, or a
+        // sane page ceiling so a huge repo can't loop unbounded.
+        let max_pages = crate::FILE_PATHS_CAP.div_ceil(100).max(1) + 1;
+        for page in 1..=max_pages {
+            let mut url = format!("{api}/repository/tree?recursive=true&per_page=100&page={page}");
+            if let Some(git_ref) = git_ref.filter(|r| !r.is_empty()) {
+                url.push_str(&format!("&ref={git_ref}"));
+            }
+            let list = self.call(Method::GET, &url, None)?;
+            let entries = list.as_array().cloned().unwrap_or_default();
+            if entries.is_empty() {
+                break;
+            }
+            let before = out.len();
+            append_gitlab_tree_paths(&entries, &mut out, &mut seen);
+            if out.len() >= crate::FILE_PATHS_CAP {
+                out.truncate(crate::FILE_PATHS_CAP);
+                break;
+            }
+            // A short page means the last one.
+            if entries.len() < 100 && out.len() == before + entries.len() {
+                break;
+            }
+            if entries.len() < 100 {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    fn list_refs(&self, repo_url: &str) -> Result<Vec<crate::ForgeRef>, ForgeError> {
+        let api = self.project_api(repo_url)?;
+        let branches = self.call(
+            Method::GET,
+            &format!("{api}/repository/branches?per_page=100"),
+            None,
+        )?;
+        let tags = self.call(
+            Method::GET,
+            &format!("{api}/repository/tags?per_page=100"),
+            None,
+        )?;
+        Ok(refs_from_gitlab(&branches, &tags))
+    }
+}
+
+/// Append the FILE paths (`type == "blob"`) of one GitLab tree page into `out`,
+/// deduping via `seen`. Directories (`type == "tree"`) are dropped.
+fn append_gitlab_tree_paths(
+    entries: &[Value],
+    out: &mut Vec<String>,
+    seen: &mut std::collections::HashSet<String>,
+) {
+    for entry in entries {
+        if entry["type"].as_str() != Some("blob") {
+            continue;
+        }
+        if let Some(path) = entry["path"].as_str()
+            && seen.insert(path.to_string())
+        {
+            out.push(path.to_string());
+            if out.len() >= crate::FILE_PATHS_CAP {
+                return;
+            }
+        }
+    }
+}
+
+/// Branches then tags from GitLab `/repository/branches` + `/repository/tags`
+/// list responses, each capped at [`crate::REFS_CAP`].
+fn refs_from_gitlab(branches: &Value, tags: &Value) -> Vec<crate::ForgeRef> {
+    let mut out = Vec::new();
+    for b in branches
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(crate::REFS_CAP)
+    {
+        if let Some(name) = b["name"].as_str() {
+            out.push(crate::ForgeRef {
+                name: name.to_string(),
+                kind: crate::ForgeRefKind::Branch,
+            });
+        }
+    }
+    for t in tags.as_array().into_iter().flatten().take(crate::REFS_CAP) {
+        if let Some(name) = t["name"].as_str() {
+            out.push(crate::ForgeRef {
+                name: name.to_string(),
+                kind: crate::ForgeRefKind::Tag,
+            });
+        }
+    }
+    out
 }
 
 /// Whether a GitLab job/pipeline `status` is a terminal (finished) state.
@@ -646,5 +749,36 @@ mod tests {
         let dumped = format!("{client:?}");
         assert!(!dumped.contains("glpat-supersecret"), "{dumped}");
         assert!(dumped.contains("<redacted>"), "{dumped}");
+    }
+
+    use super::{append_gitlab_tree_paths, refs_from_gitlab};
+    use crate::ForgeRefKind;
+    use serde_json::json;
+
+    #[test]
+    fn tree_page_keeps_blobs_dropping_trees() {
+        let entries = vec![
+            json!({ "path": "src", "type": "tree" }),
+            json!({ "path": "src/main.rs", "type": "blob" }),
+            json!({ "path": "Cargo.toml", "type": "blob" }),
+        ];
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        append_gitlab_tree_paths(&entries, &mut out, &mut seen);
+        assert_eq!(
+            out,
+            vec!["src/main.rs".to_string(), "Cargo.toml".to_string()]
+        );
+    }
+
+    #[test]
+    fn refs_lists_branches_then_tags() {
+        let branches = json!([{ "name": "main" }, { "name": "dev" }]);
+        let tags = json!([{ "name": "v2.0" }]);
+        let refs = refs_from_gitlab(&branches, &tags);
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs[0].kind, ForgeRefKind::Branch);
+        assert_eq!(refs[2].name, "v2.0");
+        assert_eq!(refs[2].kind, ForgeRefKind::Tag);
     }
 }

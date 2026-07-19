@@ -205,6 +205,29 @@ impl Forge for FakeForge {
     ) -> Result<String, ForgeError> {
         Ok(String::new())
     }
+    fn repo_file_paths(
+        &self,
+        _repo_url: &str,
+        _git_ref: Option<&str>,
+    ) -> Result<Vec<String>, ForgeError> {
+        Ok(vec![
+            "README.md".to_string(),
+            "src/lib.rs".to_string(),
+            "src/bin/main.rs".to_string(),
+        ])
+    }
+    fn list_refs(&self, _repo_url: &str) -> Result<Vec<haw_forge::ForgeRef>, ForgeError> {
+        Ok(vec![
+            haw_forge::ForgeRef {
+                name: "main".to_string(),
+                kind: haw_forge::ForgeRefKind::Branch,
+            },
+            haw_forge::ForgeRef {
+                name: "v1.0.0".to_string(),
+                kind: haw_forge::ForgeRefKind::Tag,
+            },
+        ])
+    }
 }
 
 struct FakeFactory {

@@ -229,6 +229,120 @@ pub struct FileEntry {
     pub is_dir: bool,
 }
 
+/// One selectable ref in the file browser's ref picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefEntry {
+    pub name: String,
+    pub kind: RefKind,
+}
+
+/// Which kind of ref a [`RefEntry`] names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefKind {
+    /// The repo's current HEAD (a branch checkout).
+    Head,
+    Branch,
+    Tag,
+    /// An arbitrary commit / typed ref.
+    Commit,
+}
+
+/// One visible row of the tree view (`View::FileTree`), derived from the flat
+/// path list + the expanded-dir set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TreeRow {
+    /// Full posix path from the repo root (`src/drivers/i2c.c`).
+    path: String,
+    /// The leaf name shown (`i2c.c`).
+    name: String,
+    /// Nesting depth (0 = top level), for indentation.
+    depth: usize,
+    /// Whether this row is a directory (expandable) vs a file (openable).
+    is_dir: bool,
+    /// For a directory, whether it is currently expanded.
+    expanded: bool,
+}
+
+/// Build the visible tree rows from a flat file-path list and the set of
+/// expanded directory prefixes. Directories are synthesized from path segments;
+/// a directory's children appear only when its prefix is in `expanded`. Rows
+/// come out in depth-first, dirs-before-files, lexicographic order — pure and
+/// unit-testable (no terminal, no controller).
+fn tree_visible_rows(
+    paths: &[String],
+    expanded: &std::collections::HashSet<String>,
+) -> Vec<TreeRow> {
+    use std::collections::BTreeMap;
+
+    // A lazily-built tree node: child dirs (name -> subtree) and leaf files.
+    #[derive(Default)]
+    struct Node {
+        dirs: BTreeMap<String, Node>,
+        files: std::collections::BTreeSet<String>,
+    }
+    let mut root = Node::default();
+    for path in paths {
+        let path = path.trim_matches('/');
+        if path.is_empty() {
+            continue;
+        }
+        let segments: Vec<&str> = path.split('/').collect();
+        let mut node = &mut root;
+        for seg in &segments[..segments.len() - 1] {
+            node = node.dirs.entry((*seg).to_string()).or_default();
+        }
+        if let Some(leaf) = segments.last() {
+            node.files.insert((*leaf).to_string());
+        }
+    }
+
+    fn walk(
+        node: &Node,
+        prefix: &str,
+        depth: usize,
+        expanded: &std::collections::HashSet<String>,
+        out: &mut Vec<TreeRow>,
+    ) {
+        // Directories first (lexicographic via BTreeMap), then files.
+        for (name, child) in &node.dirs {
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let is_expanded = expanded.contains(&path);
+            out.push(TreeRow {
+                path: path.clone(),
+                name: name.clone(),
+                depth,
+                is_dir: true,
+                expanded: is_expanded,
+            });
+            if is_expanded {
+                walk(child, &path, depth + 1, expanded, out);
+            }
+        }
+        for name in &node.files {
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            out.push(TreeRow {
+                path,
+                name: name.clone(),
+                depth,
+                is_dir: false,
+                expanded: false,
+            });
+        }
+    }
+
+    let mut out = Vec::new();
+    walk(&root, "", 0, expanded, &mut out);
+    out
+}
+
 /// One file changed by a PR/MR, for the `View::PrFiles` list. `status` is a
 /// short change label (`added`/`modified`/`removed`/`renamed`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -492,10 +606,34 @@ pub trait Controller: Send {
     fn repo_fetch(&mut self, repo: &str) -> io::Result<String>;
     /// Run a shell command in one repo's checkout dir (combined stdout+stderr).
     fn exec_in(&mut self, repo: &str, cmd: &str) -> io::Result<String>;
-    /// List `subpath` ("" = root) of `repo`'s tree, on local disk or the forge.
-    fn repo_tree(&mut self, repo: &str, subpath: &str, remote: bool) -> io::Result<Vec<FileEntry>>;
-    /// The text content of `path` in `repo`, from local disk or the forge.
-    fn file_content(&mut self, repo: &str, path: &str, remote: bool) -> io::Result<String>;
+    /// List `subpath` ("" = root) of `repo`'s tree, on local disk or the forge,
+    /// AS OF `git_ref` (the current checkout / forge default when `None`).
+    fn repo_tree(
+        &mut self,
+        repo: &str,
+        subpath: &str,
+        remote: bool,
+        git_ref: Option<&str>,
+    ) -> io::Result<Vec<FileEntry>>;
+    /// The text content of `path` in `repo`, from local disk or the forge, AS OF
+    /// `git_ref` (the current checkout / forge default when `None`).
+    fn file_content(
+        &mut self,
+        repo: &str,
+        path: &str,
+        remote: bool,
+        git_ref: Option<&str>,
+    ) -> io::Result<String>;
+    /// Every FILE path in `repo`'s tree AS OF `git_ref`, recursive, posix
+    /// `/`-separated, capped/truncated. Feeds the file browser's tree mode.
+    fn repo_file_paths(
+        &mut self,
+        repo: &str,
+        remote: bool,
+        git_ref: Option<&str>,
+    ) -> io::Result<Vec<String>>;
+    /// The repo's selectable refs (HEAD, branches, tags) for the ref picker.
+    fn list_refs(&mut self, repo: &str, remote: bool) -> io::Result<Vec<RefEntry>>;
 }
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -563,6 +701,7 @@ enum View {
     PrDetail,
     CiDetail,
     Files,
+    FileTree,
     PrFiles,
     Grep,
 }
@@ -579,6 +718,14 @@ enum InputMode {
     /// render. Pressing a listed sub-key fires the same dispatch the old capital
     /// did; `Esc`/any-unlisted-key cancels.
     ActionsMenu(Vec<(char, &'static str)>),
+    /// The file-browser ref picker: `refs` are the selectable branches/tags with
+    /// a cursor `sel` (0..=refs.len(); the last row is the "type a ref/SHA" input
+    /// carrying the typed `input`). `Esc` cancels.
+    RefPicker {
+        refs: Vec<RefEntry>,
+        sel: usize,
+        input: String,
+    },
 }
 
 enum Job {
@@ -606,10 +753,14 @@ enum Job {
     PrFiles(String, u64),
     /// (repo, number, path, title) — fetch one changed file's content at the PR ref.
     PrFileContent(String, u64, String, String),
-    /// (repo, subpath, remote) — list a directory in the file browser.
-    RepoTree(String, String, bool),
-    /// (repo, path, remote, title) — fetch one file's content into the detail view.
-    FileContent(String, String, bool, String),
+    /// (repo, subpath, remote, git_ref) — list a directory in the file browser.
+    RepoTree(String, String, bool, Option<String>),
+    /// (repo, path, remote, git_ref, title) — fetch one file's content into the detail view.
+    FileContent(String, String, bool, Option<String>, String),
+    /// (repo, remote, git_ref) — every file path of the repo, for tree mode.
+    FilePaths(String, bool, Option<String>),
+    /// (repo, remote) — the repo's selectable refs, for the ref picker.
+    ListRefs(String, bool),
     /// (pattern, stack) — cross-repo grep on the worker thread.
     Grep(String, Option<String>),
     Action(&'static str, ActionKind),
@@ -656,6 +807,10 @@ enum Outcome {
     Detail(String, Box<io::Result<String>>),
     /// A file browser directory listing.
     Tree(Box<io::Result<Vec<FileEntry>>>),
+    /// The recursive file-path list for tree mode.
+    FilePaths(Box<io::Result<Vec<String>>>),
+    /// The repo's refs for the ref picker.
+    Refs(Box<io::Result<Vec<RefEntry>>>),
     /// A PR/MR's changed-files listing.
     PrFiles(Box<io::Result<Vec<PrFileEntry>>>),
     /// Cross-repo grep results.
@@ -704,6 +859,15 @@ struct App {
     files_remote: bool,
     /// File browser: the current directory listing; `None` while loading.
     files_entries: Option<Vec<FileEntry>>,
+    /// File browser: the active git ref (branch/tag/sha) the browser reads AS OF.
+    /// `None` = the current checkout (local) / the forge default (remote).
+    files_ref: Option<String>,
+    /// Tree mode (`View::FileTree`): the flat list of every file path at
+    /// `files_ref`; `None` while loading.
+    file_paths: Option<Vec<String>>,
+    /// Tree mode: the set of expanded directory prefixes (posix, no trailing
+    /// slash). A dir shows its children only when its prefix is in this set.
+    tree_expanded: std::collections::HashSet<String>,
     /// Set when an action with real side effects (land, request) awaits y/n.
     pending_confirm: Option<Confirm>,
     /// Full multi-repo output from the last `r`/`:run`, shown as a dismissable overlay.
@@ -942,6 +1106,7 @@ impl App {
             View::Plugins => self.panel_rows().len(),
             View::Errors => self.error_rows().len(),
             View::Files => self.file_rows().len(),
+            View::FileTree => self.tree_rows().len(),
             View::PrFiles => self.pr_file_rows().len(),
             View::Grep => self.grep_rows().len(),
             View::RepoDetail | View::PrDetail | View::CiDetail => 0,
@@ -960,6 +1125,32 @@ impl App {
             .collect();
         rows.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
         rows
+    }
+
+    /// The currently-VISIBLE rows of the tree view: top-level entries, plus the
+    /// children of every expanded directory, in depth-first order. Pure over
+    /// `file_paths` + `tree_expanded`.
+    fn tree_rows(&self) -> Vec<TreeRow> {
+        let all = self.file_paths.as_deref().unwrap_or_default();
+        if self.filter.is_empty() {
+            return tree_visible_rows(all, &self.tree_expanded);
+        }
+        // With an active filter, restrict to matching paths and auto-expand the
+        // dirs on the way so the matches are visible.
+        let matched: Vec<String> = all
+            .iter()
+            .filter(|p| hit(p, &self.filter))
+            .cloned()
+            .collect();
+        let mut expanded = self.tree_expanded.clone();
+        for path in &matched {
+            // Auto-expand every ancestor dir so a deep match stays visible.
+            let segs: Vec<&str> = path.split('/').collect();
+            for i in 1..segs.len() {
+                expanded.insert(segs[..i].join("/"));
+            }
+        }
+        tree_visible_rows(&matched, &expanded)
     }
 
     /// A PR/MR's changed files, filtered by the live filter (path/status).
@@ -1190,10 +1381,16 @@ impl App {
             self.filter.clear();
             self.sort = None;
             self.selected_repos.clear();
-            if view != View::Files {
+            // The file browser's two modes (flat Files + FileTree) share the
+            // repo/ref/scope context; keep it while toggling between them, and
+            // clear it only when leaving the browser entirely.
+            if view != View::Files && view != View::FileTree {
                 self.files_repo = None;
                 self.files_entries = None;
                 self.files_subpath.clear();
+                self.files_ref = None;
+                self.file_paths = None;
+                self.tree_expanded.clear();
             }
             if view != View::PrFiles {
                 self.pr_file_entries = None;
@@ -1350,8 +1547,14 @@ fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: 
                     format!("logs {repo} #{run_id}"),
                     Box::new(controller.ci_logs(&repo, run_id)),
                 ),
-                Job::RepoTree(repo, subpath, remote) => {
-                    Outcome::Tree(Box::new(controller.repo_tree(&repo, &subpath, remote)))
+                Job::RepoTree(repo, subpath, remote, git_ref) => Outcome::Tree(Box::new(
+                    controller.repo_tree(&repo, &subpath, remote, git_ref.as_deref()),
+                )),
+                Job::FilePaths(repo, remote, git_ref) => Outcome::FilePaths(Box::new(
+                    controller.repo_file_paths(&repo, remote, git_ref.as_deref()),
+                )),
+                Job::ListRefs(repo, remote) => {
+                    Outcome::Refs(Box::new(controller.list_refs(&repo, remote)))
                 }
                 Job::PrFiles(repo, number) => {
                     Outcome::PrFiles(Box::new(controller.pr_files(&repo, number)))
@@ -1360,9 +1563,9 @@ fn spawn_worker(controller: Box<dyn Controller>, jobs: Receiver<Job>, outcomes: 
                     title,
                     Box::new(controller.pr_file_content(&repo, number, &path)),
                 ),
-                Job::FileContent(repo, path, remote, title) => Outcome::Detail(
+                Job::FileContent(repo, path, remote, git_ref, title) => Outcome::Detail(
                     title,
-                    Box::new(controller.file_content(&repo, &path, remote)),
+                    Box::new(controller.file_content(&repo, &path, remote, git_ref.as_deref())),
                 ),
                 Job::Grep(pattern, stack) => {
                     Outcome::Grep(Box::new(controller.grep(&pattern, stack.as_deref())))
@@ -1573,10 +1776,11 @@ fn open_files(app: &mut App, jobs: &Sender<Job>, repo: &str, remote: bool) {
     app.files_repo = Some(repo.to_string());
     app.files_subpath = String::new();
     app.files_remote = remote;
+    app.files_ref = None;
     reload_files(app, jobs);
 }
 
-/// (Re)fetch the current file-browser directory listing.
+/// (Re)fetch the current file-browser directory listing at `files_ref`.
 fn reload_files(app: &mut App, jobs: &Sender<Job>) {
     let Some(repo) = app.files_repo.clone() else {
         return;
@@ -1588,39 +1792,149 @@ fn reload_files(app: &mut App, jobs: &Sender<Job>) {
         repo,
         app.files_subpath.clone(),
         app.files_remote,
+        app.files_ref.clone(),
     ));
 }
 
-/// Fetch one file's content into the shared scrollable detail view. The detail
-/// view lives under `View::RepoDetail`, titled `<repo>:/<path>`.
-fn open_file_content(app: &mut App, jobs: &Sender<Job>, name: &str) {
+/// (Re)fetch the whole file-path list for tree mode at `files_ref`.
+fn reload_file_tree(app: &mut App, jobs: &Sender<Job>) {
     let Some(repo) = app.files_repo.clone() else {
         return;
     };
-    let path = if app.files_subpath.is_empty() {
-        name.to_string()
-    } else {
-        format!("{}/{}", app.files_subpath, name)
+    app.file_paths = None;
+    app.cursor.select(Some(0));
+    app.busy = Some("tree");
+    let _ = jobs.send(Job::FilePaths(
+        repo,
+        app.files_remote,
+        app.files_ref.clone(),
+    ));
+}
+
+/// Fetch one file's content (given its full repo-relative `path`) into the
+/// shared scrollable detail view, AS OF `files_ref`. `origin` is the browser
+/// view (`Files` or `FileTree`) to snapshot + return into.
+fn open_file_at_path(app: &mut App, jobs: &Sender<Job>, path: &str, origin: View) {
+    let Some(repo) = app.files_repo.clone() else {
+        return;
     };
+    let path = path.to_string();
     let title = format!("{repo}:/{path}");
     app.detail_title = title.clone();
     app.detail_text = None;
     app.detail_scroll = 0;
     app.pending_scroll = None;
-    // Snapshot the browser so `go_back` into Files restores the same listing;
-    // `goto_view` clears `files_*` on the way into the detail view.
-    app.files_return = Some((
-        repo.clone(),
-        app.files_subpath.clone(),
-        app.files_entries.clone(),
-    ));
+    // Snapshot the flat browser so `go_back` into Files restores the same
+    // listing; `goto_view` clears `files_*` on the way into the detail view.
+    // Tree mode rebuilds itself from `file_paths`, which goto_view keeps for the
+    // browser-family views, so its snapshot slot is unused.
+    if origin == View::Files {
+        app.files_return = Some((
+            repo.clone(),
+            app.files_subpath.clone(),
+            app.files_entries.clone(),
+        ));
+    }
     let remote = app.files_remote;
-    // Freeze the Files crumb (with its repo:/subpath) before goto_view clears
-    // the files_* state that view_name reads.
-    app.outgoing_crumb = Some(view_name(app, View::Files));
+    let git_ref = app.files_ref.clone();
+    // Freeze the browser crumb before goto_view clears the files_* state that
+    // view_name reads.
+    app.outgoing_crumb = Some(view_name(app, origin));
     app.goto_view(View::RepoDetail);
     app.busy = Some("file");
-    let _ = jobs.send(Job::FileContent(repo, path, remote, title));
+    let _ = jobs.send(Job::FileContent(repo, path, remote, git_ref, title));
+}
+
+/// Fetch one file's content into the detail view, resolving `name` relative to
+/// the flat browser's current `files_subpath` (the `View::Files` path).
+fn open_file_content(app: &mut App, jobs: &Sender<Job>, name: &str) {
+    let path = if app.files_subpath.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", app.files_subpath, name)
+    };
+    open_file_at_path(app, jobs, &path, View::Files);
+}
+
+/// Open (or reload) the tree-mode file browser for `repo`, preserving the
+/// browser's repo/ref/scope context captured on the flat view.
+fn open_file_tree(app: &mut App, jobs: &Sender<Job>) {
+    app.goto_view(View::FileTree);
+    reload_file_tree(app, jobs);
+}
+
+/// Expand the directory at the cursor (or open the file). If the row is an
+/// already-expanded dir, this re-expands (no-op); collapse is a separate key.
+fn tree_expand_at(app: &mut App, selected: usize, jobs: &Sender<Job>) {
+    let Some(row) = app.tree_rows().get(selected).cloned() else {
+        return;
+    };
+    if row.is_dir {
+        app.tree_expanded.insert(row.path);
+    } else {
+        open_file_at_path(app, jobs, &row.path, View::FileTree);
+    }
+}
+
+/// Collapse the directory at the cursor; if it's a file or an already-collapsed
+/// dir, move the cursor to (and collapse) its parent directory instead.
+fn tree_collapse_at(app: &mut App, selected: usize) {
+    let rows = app.tree_rows();
+    let Some(row) = rows.get(selected).cloned() else {
+        return;
+    };
+    if row.is_dir && row.expanded {
+        app.tree_expanded.remove(&row.path);
+        return;
+    }
+    // Jump to the parent dir row and collapse it.
+    if let Some((parent, _)) = row.path.rsplit_once('/') {
+        app.tree_expanded.remove(parent);
+        if let Some(idx) = app
+            .tree_rows()
+            .iter()
+            .position(|r| r.is_dir && r.path == parent)
+        {
+            app.cursor.select(Some(idx));
+        }
+    }
+}
+
+/// Load the repo's refs and open the ref picker over the current browser.
+fn open_ref_picker(app: &mut App, jobs: &Sender<Job>) {
+    let Some(repo) = app.files_repo.clone() else {
+        app.message = "ref: open a file browser first".to_string();
+        return;
+    };
+    // Show an immediately-usable picker (just the input row) and load refs in
+    // the background; the outcome fills them in.
+    app.input = InputMode::RefPicker {
+        refs: Vec::new(),
+        sel: 0,
+        input: String::new(),
+    };
+    app.busy = Some("refs");
+    let _ = jobs.send(Job::ListRefs(repo, app.files_remote));
+}
+
+/// Set the active ref and reload whichever browser view is showing. `None`
+/// resets to the checkout/forge default.
+fn select_files_ref(app: &mut App, jobs: &Sender<Job>, git_ref: Option<String>) {
+    app.files_ref = git_ref.filter(|r| !r.trim().is_empty());
+    app.input = InputMode::None;
+    match app.view {
+        View::FileTree => {
+            app.tree_expanded.clear();
+            reload_file_tree(app, jobs);
+        }
+        _ => {
+            // Flat view re-roots at the repo root for the new ref.
+            app.files_subpath.clear();
+            reload_files(app, jobs);
+        }
+    }
+    let label = app.files_ref.as_deref().unwrap_or("default");
+    app.message = format!("ref → {label}");
 }
 
 /// Outcome of the `e` (edit) guard in `View::Files`: either launch an editor on
@@ -1703,6 +2017,7 @@ fn open_grep_hit(app: &mut App, jobs: &Sender<Job>, hit: &GrepHit) {
         hit.repo.clone(),
         hit.path.clone(),
         false,
+        None,
         title,
     ));
 }
@@ -2258,6 +2573,9 @@ fn event_loop(
         files_subpath: String::new(),
         files_remote: false,
         files_entries: None,
+        files_ref: None,
+        file_paths: None,
+        tree_expanded: std::collections::HashSet::new(),
         pending_confirm: None,
         output: None,
         prs: None,
@@ -2432,6 +2750,45 @@ fn event_loop(
                             app.files_entries = Some(Vec::new());
                             app.message = format!("files failed: {err}");
                             app.push_error("files", err.to_string());
+                        }
+                    }
+                }
+                Outcome::FilePaths(result) => {
+                    app.busy = None;
+                    match *result {
+                        Ok(paths) => {
+                            let count = paths.len();
+                            app.file_paths = Some(paths);
+                            app.cursor.select(Some(0));
+                            app.clamp_cursor();
+                            app.message = format!("{count} file(s)");
+                        }
+                        Err(err) => {
+                            app.file_paths = Some(Vec::new());
+                            app.message = format!("tree failed: {err}");
+                            app.push_error("tree", err.to_string());
+                        }
+                    }
+                }
+                Outcome::Refs(result) => {
+                    app.busy = None;
+                    match *result {
+                        Ok(refs) => {
+                            let count = refs.len();
+                            // Only fill the picker if it's still open (the user
+                            // may have dismissed it before refs arrived).
+                            if let InputMode::RefPicker { refs: slot, .. } = &mut app.input {
+                                *slot = refs;
+                            }
+                            app.message = format!("{count} ref(s)");
+                        }
+                        Err(err) => {
+                            app.message = format!("refs failed: {err}");
+                            app.push_error("refs", err.to_string());
+                            if matches!(app.input, InputMode::RefPicker { .. }) {
+                                // Leave the picker open with just the input row so
+                                // the user can still type an explicit SHA.
+                            }
                         }
                     }
                 }
@@ -2708,7 +3065,9 @@ fn event_loop(
                                     );
                                 }
                             }
-                            InputMode::ActionsMenu(_) | InputMode::None => {}
+                            InputMode::ActionsMenu(_)
+                            | InputMode::RefPicker { .. }
+                            | InputMode::None => {}
                         }
                     }
                     _ => {}
@@ -2724,6 +3083,45 @@ fn event_loop(
                     // Fired; the confirm gate (if any) is now armed.
                 } else if key != KeyCode::Esc {
                     app.message = "cancelled".to_string();
+                }
+                continue;
+            }
+            InputMode::RefPicker { refs, sel, input } => {
+                // Rows: one per ref, then a trailing "type a ref/SHA" input row.
+                let rows = refs.len() + 1;
+                let input_row = refs.len();
+                match key.code {
+                    KeyCode::Esc => {
+                        app.input = InputMode::None;
+                        app.message = "ref pick cancelled".to_string();
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        *sel = (*sel + 1).min(rows - 1);
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        *sel = sel.saturating_sub(1);
+                    }
+                    KeyCode::Backspace if *sel == input_row => {
+                        input.pop();
+                    }
+                    KeyCode::Char(c) if *sel == input_row => {
+                        input.push(c);
+                    }
+                    KeyCode::Enter => {
+                        let chosen = if *sel == input_row {
+                            let typed = input.trim().to_string();
+                            (!typed.is_empty()).then_some(typed)
+                        } else {
+                            refs.get(*sel).map(|r| r.name.clone())
+                        };
+                        match chosen {
+                            Some(git_ref) => select_files_ref(&mut app, jobs, Some(git_ref)),
+                            None => {
+                                app.message = "ref: type a ref/SHA or pick one".to_string();
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 continue;
             }
@@ -2762,6 +3160,31 @@ fn event_loop(
             KeyCode::Char('R') if app.view == View::Files => {
                 app.files_remote = !app.files_remote;
                 reload_files(&mut app, jobs);
+            }
+            KeyCode::Char('R') if app.view == View::FileTree => {
+                app.files_remote = !app.files_remote;
+                app.tree_expanded.clear();
+                reload_file_tree(&mut app, jobs);
+            }
+            // `T` toggles between the flat list and the tree, preserving the
+            // repo/ref/scope context.
+            KeyCode::Char('T') if app.view == View::Files => {
+                open_file_tree(&mut app, jobs);
+            }
+            KeyCode::Char('T') if app.view == View::FileTree => {
+                app.goto_view(View::Files);
+                reload_files(&mut app, jobs);
+            }
+            // `r` opens the ref picker in either browser mode.
+            KeyCode::Char('r') if matches!(app.view, View::Files | View::FileTree) => {
+                open_ref_picker(&mut app, jobs);
+            }
+            // Tree navigation: →/l expand (or descend), ←/h collapse (or parent).
+            KeyCode::Right | KeyCode::Char('l') if app.view == View::FileTree => {
+                tree_expand_at(&mut app, selected, jobs);
+            }
+            KeyCode::Left | KeyCode::Char('h') if app.view == View::FileTree => {
+                tree_collapse_at(&mut app, selected);
             }
             KeyCode::Down | KeyCode::Char('j') if app.is_detail_view() => {
                 app.detail_scroll = app
@@ -2957,6 +3380,20 @@ fn event_loop(
                             reload_files(&mut app, jobs);
                         } else {
                             open_file_content(&mut app, jobs, &entry.name);
+                        }
+                    }
+                }
+                View::FileTree => {
+                    if let Some(row) = app.tree_rows().get(selected).cloned() {
+                        if row.is_dir {
+                            // Toggle expand/collapse on the dir.
+                            if row.expanded {
+                                app.tree_expanded.remove(&row.path);
+                            } else {
+                                app.tree_expanded.insert(row.path);
+                            }
+                        } else {
+                            open_file_at_path(&mut app, jobs, &row.path, View::FileTree);
                         }
                     }
                 }
@@ -3176,6 +3613,16 @@ fn hint_key_tokens(label: &str) -> Vec<&str> {
     tokens
 }
 
+/// The honest active-ref label for the file browser header: `@ <ref>` when a
+/// ref is pinned, else `@ HEAD` (local) / `@ default` (remote).
+fn files_ref_label(app: &App) -> String {
+    match app.files_ref.as_deref() {
+        Some(git_ref) => format!("@ {git_ref}"),
+        None if app.files_remote => "@ default".to_string(),
+        None => "@ HEAD".to_string(),
+    }
+}
+
 fn view_name(app: &App, view: View) -> String {
     match view {
         View::Stacks => "stacks".to_string(),
@@ -3191,11 +3638,17 @@ fn view_name(app: &App, view: View) -> String {
         View::Files => {
             let repo = app.files_repo.as_deref().unwrap_or("—");
             let scope = if app.files_remote { "forge" } else { "local" };
+            let at = files_ref_label(app);
             if app.files_subpath.is_empty() {
-                format!("files {repo} ({scope})")
+                format!("files {repo} {at} ({scope})")
             } else {
-                format!("files {repo}:/{} ({scope})", app.files_subpath)
+                format!("files {repo}:/{} {at} ({scope})", app.files_subpath)
             }
+        }
+        View::FileTree => {
+            let repo = app.files_repo.as_deref().unwrap_or("—");
+            let scope = if app.files_remote { "forge" } else { "local" };
+            format!("tree {repo} {} ({scope})", files_ref_label(app))
         }
         View::RepoDetail | View::PrDetail | View::CiDetail => app.detail_title.clone(),
         View::PrFiles => match &app.pr_files_pr {
@@ -3361,10 +3814,23 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
         ],
         View::Files => &[
             ("enter", "open"),
+            ("T", "tree"),
+            ("r", "ref"),
             ("e", "edit"),
             ("R", "remote"),
             ("b", "up / back"),
             ("x", "shell"),
+            ("/", "filter"),
+            ("q", "quit"),
+        ],
+        View::FileTree => &[
+            ("enter", "expand/open"),
+            ("→", "expand"),
+            ("←", "collapse"),
+            ("r", "ref"),
+            ("T", "list"),
+            ("R", "remote"),
+            ("b", "back"),
             ("/", "filter"),
             ("q", "quit"),
         ],
@@ -3424,6 +3890,9 @@ pub fn render_snapshot<B: ratatui::backend::Backend>(
         files_subpath: String::new(),
         files_remote: false,
         files_entries: None,
+        files_ref: None,
+        file_paths: None,
+        tree_expanded: std::collections::HashSet::new(),
         pending_confirm: None,
         output: None,
         prs: None,
@@ -3431,6 +3900,74 @@ pub fn render_snapshot<B: ratatui::backend::Backend>(
         gov: None,
         detail_text: None,
         detail_title: "detail".to_string(),
+        outgoing_crumb: None,
+        detail_scroll: 0,
+        pending_scroll: None,
+        files_return: None,
+        detail_pr: None,
+        detail_ci: None,
+        page_size: 10,
+        problems_only: false,
+        grep_hits: None,
+        grep_pattern: String::new(),
+        panels: None,
+        pr_file_entries: None,
+        pr_files_pr: None,
+        pr_files_return: None,
+        errors: Vec::new(),
+        error_seq: 0,
+        watch: false,
+    };
+    terminal.draw(|frame| draw(frame, &mut app))?;
+    Ok(())
+}
+
+/// Test-only render seam for the FileTree view: build a tree-mode [`App`] over
+/// `paths`, expand `expanded` dir prefixes, pin `git_ref`, and draw one frame.
+/// Exercises the real tree flatten + render path (indentation, expand markers,
+/// the `@ <ref>` header) without a controller or process.
+#[cfg(any(test, feature = "test-render"))]
+pub fn render_file_tree<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    repo: &str,
+    paths: Vec<String>,
+    expanded: &[&str],
+    git_ref: Option<&str>,
+) -> io::Result<()> {
+    let mut cursor = ListState::default();
+    cursor.select(Some(0));
+    let mut app = App {
+        view: View::FileTree,
+        back: Vec::new(),
+        snapshot: Snapshot::default(),
+        stack: None,
+        changeset: None,
+        selected_repos: Vec::new(),
+        sort: None,
+        cursor,
+        input: InputMode::None,
+        filter: String::new(),
+        message: String::new(),
+        busy: None,
+        spinner: 0,
+        tick: 0,
+        help: false,
+        help_scroll: 0,
+        exit: None,
+        files_repo: Some(repo.to_string()),
+        files_subpath: String::new(),
+        files_remote: false,
+        files_entries: None,
+        files_ref: git_ref.map(str::to_string),
+        file_paths: Some(paths),
+        tree_expanded: expanded.iter().map(|s| s.to_string()).collect(),
+        pending_confirm: None,
+        output: None,
+        prs: None,
+        ci: None,
+        gov: None,
+        detail_text: None,
+        detail_title: String::new(),
         outgoing_crumb: None,
         detail_scroll: 0,
         pending_scroll: None,
@@ -3489,6 +4026,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         View::Plugins => draw_plugins(frame, app, zones[1]),
         View::Errors => draw_errors(frame, app, zones[1]),
         View::Files => draw_files(frame, app, zones[1]),
+        View::FileTree => draw_file_tree(frame, app, zones[1]),
         View::PrFiles => draw_pr_files(frame, app, zones[1]),
         View::Grep => draw_grep(frame, app, zones[1]),
         View::RepoDetail | View::PrDetail | View::CiDetail => draw_detail(frame, app, zones[1]),
@@ -3504,6 +4042,9 @@ fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let InputMode::ActionsMenu(actions) = &app.input {
         draw_actions_menu(frame, actions);
+    }
+    if let InputMode::RefPicker { refs, sel, input } = &app.input {
+        draw_ref_picker(frame, refs, *sel, input, app.busy.is_some());
     }
     if app.help {
         draw_help(frame, app.help_scroll);
@@ -3699,6 +4240,88 @@ fn draw_actions_menu(frame: &mut Frame, actions: &[(char, &'static str)]) {
                 .border_style(Style::default().fg(theme::teal()))
                 .title(Span::styled(
                     " actions ",
+                    Style::default()
+                        .fg(theme::mauve())
+                        .add_modifier(Modifier::BOLD),
+                )),
+        ),
+        popup,
+    );
+}
+
+/// The ref picker popup: branches then tags, each selectable, plus a trailing
+/// "type a ref/SHA" input row. `sel` is the highlighted row (the input row is
+/// the last). Modelled on the actions menu popup.
+fn draw_ref_picker(frame: &mut Frame, refs: &[RefEntry], sel: usize, input: &str, loading: bool) {
+    let mut text: Vec<Line> = Vec::with_capacity(refs.len() + 4);
+    if loading && refs.is_empty() {
+        text.push(Line::from(Span::styled(
+            " loading refs… ",
+            Style::default().fg(theme::dim()),
+        )));
+    }
+    for (i, entry) in refs.iter().enumerate() {
+        let marker = if i == sel { "▍ " } else { "  " };
+        let kind = match entry.kind {
+            RefKind::Head => "HEAD",
+            RefKind::Branch => "branch",
+            RefKind::Tag => "tag",
+            RefKind::Commit => "commit",
+        };
+        let name_style = if i == sel {
+            Style::default()
+                .fg(theme::green())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::text())
+        };
+        text.push(Line::from(vec![
+            Span::styled(marker, Style::default().fg(theme::accent())),
+            Span::styled(entry.name.clone(), name_style),
+            Span::styled(format!("  ({kind})"), Style::default().fg(theme::dim())),
+        ]));
+    }
+    // The input row (always last).
+    let input_row = refs.len();
+    let on_input = sel == input_row;
+    let marker = if on_input { "▍ " } else { "  " };
+    let caret = if on_input { "▏" } else { "" };
+    text.push(Line::raw(""));
+    text.push(Line::from(vec![
+        Span::styled(marker, Style::default().fg(theme::accent())),
+        Span::styled("ref/SHA: ", Style::default().fg(theme::dim())),
+        Span::styled(
+            format!("{input}{caret}"),
+            Style::default()
+                .fg(theme::text())
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    text.push(Line::from(Span::styled(
+        " j/k move · enter pick · esc cancel ",
+        Style::default().fg(theme::dim()),
+    )));
+
+    let area = frame.area();
+    let width = area.width.min(50);
+    let height = u16::try_from(text.len() + 2)
+        .unwrap_or(u16::MAX)
+        .min(area.height);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(text)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme::teal()))
+                .title(Span::styled(
+                    " pick ref ",
                     Style::default()
                         .fg(theme::mauve())
                         .add_modifier(Modifier::BOLD),
@@ -4933,6 +5556,60 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+fn draw_file_tree(frame: &mut Frame, app: &mut App, area: Rect) {
+    let fetched = app.file_paths.is_some();
+    let rows = app.tree_rows();
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| {
+            let indent = "  ".repeat(row.depth);
+            let (marker, color) = if row.is_dir {
+                (if row.expanded { "▾ " } else { "▸ " }, theme::accent())
+            } else {
+                ("· ", theme::text())
+            };
+            let name = if row.is_dir {
+                format!("{}/", row.name)
+            } else {
+                row.name.clone()
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw(indent),
+                Span::styled(marker, Style::default().fg(theme::accent())),
+                Span::styled(name, Style::default().fg(color)),
+            ]))
+        })
+        .collect();
+    let count = items.len();
+    let repo = app.files_repo.as_deref().unwrap_or("—");
+    let scope = if app.files_remote { "forge" } else { "local" };
+    let at = files_ref_label(app);
+    let list = List::new(items)
+        .block(panel(format!(
+            "tree {repo} {at} ({scope}){}",
+            row_indicator(app, count)
+        )))
+        .highlight_style(cursor_style())
+        .highlight_symbol("▍");
+    let mut state = ListState::default();
+    state.select(app.cursor.selected());
+    frame.render_stateful_widget(list, area, &mut state);
+
+    if count == 0 {
+        draw_empty_hint(
+            frame,
+            area,
+            if fetched {
+                "no files"
+            } else if app.busy.is_some() {
+                "loading tree…"
+            } else {
+                "no files"
+            },
+        );
+    }
+}
+
 fn draw_pr_files(frame: &mut Frame, app: &mut App, area: Rect) {
     let fetched = app.pr_file_entries.is_some();
     let rows = app.pr_file_rows();
@@ -5225,6 +5902,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             " actions — pick a key, esc cancels",
             Style::default().fg(theme::dim()),
         ),
+        (InputMode::RefPicker { .. }, _) => Line::styled(
+            " pick ref — j/k move, type a ref/SHA, enter picks, esc cancels",
+            Style::default().fg(theme::dim()),
+        ),
         (InputMode::None, Some(label)) => Line::from(vec![
             Span::styled(
                 format!(" {} ", SPINNER[app.spinner]),
@@ -5412,11 +6093,18 @@ fn help_lines() -> Vec<Line<'static>> {
         help_entry("space", "toggle a repo · a→r with no selection = all repos"),
         help_entry("a", "actions — r request PR/MRs · l land (asks y/n)"),
         Line::raw(""),
-        help_section("files"),
+        help_section("files (read-only browser — view/pick at any ref)"),
         help_entry("enter", "open a dir or view a file (scrollable)"),
+        help_entry("T", "toggle flat list ⇄ tree view"),
+        help_entry("r", "ref picker — read AS OF a branch/tag/SHA"),
         help_entry("e", "edit the file in $EDITOR (local files only)"),
         help_entry("R", "toggle local disk / forge view"),
         help_entry("b", "up a directory, then back to the fleet"),
+        Line::raw(""),
+        help_section("tree view (T from files)"),
+        help_entry("enter / →", "expand the dir (or open the file)"),
+        help_entry("←", "collapse the dir (or its parent)"),
+        help_entry("r", "ref picker · T back to the flat list"),
         Line::raw(""),
         help_section("collaborative merge (MERGE column)"),
         help_entry("MERGE", "resolved/total slices of an in-progress merge"),
@@ -5516,6 +6204,9 @@ mod tests {
             files_subpath: String::new(),
             files_remote: false,
             files_entries: None,
+            files_ref: None,
+            file_paths: None,
+            tree_expanded: std::collections::HashSet::new(),
             pending_confirm: None,
             output: None,
             prs: None,
@@ -5647,7 +6338,7 @@ mod tests {
         }
     }
 
-    const ALL_VIEWS: [View; 16] = [
+    const ALL_VIEWS: [View; 17] = [
         View::Stacks,
         View::Fleet,
         View::Changesets,
@@ -5662,6 +6353,7 @@ mod tests {
         View::PrDetail,
         View::CiDetail,
         View::Files,
+        View::FileTree,
         View::PrFiles,
         View::Grep,
     ];
@@ -5778,8 +6470,11 @@ mod tests {
             "p" => matches!(view, View::Fleet | View::Stacks),
             "!" => matches!(view, View::Fleet | View::RepoDetail),
             "n" => matches!(view, View::Changesets | View::Changeset),
-            "R" => view == View::Files,
+            "R" => matches!(view, View::Files | View::FileTree),
             "e" => view == View::Files,
+            "T" => matches!(view, View::Files | View::FileTree),
+            // Tree navigation arrows expand/collapse the dir at the cursor.
+            "→" | "←" => view == View::FileTree,
             "f" => matches!(
                 view,
                 View::Fleet | View::Changeset | View::Prs | View::PrDetail | View::Ci | View::Grep
@@ -6740,6 +7435,185 @@ mod tests {
         assert_eq!(names, vec!["alpha", "gamma", "beta.rs", "zeta.rs"]);
     }
 
+    // ---- tree mode (View::FileTree) --------------------------------------
+
+    fn paths(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn expanded_set(items: &[&str]) -> std::collections::HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn tree_collapsed_shows_only_top_level_dirs_and_files() {
+        let p = paths(&["README.md", "src/lib.rs", "src/bin/main.rs", "Cargo.toml"]);
+        let rows = tree_visible_rows(&p, &expanded_set(&[]));
+        // Top level only: `src` dir (collapsed), then files `Cargo.toml`,
+        // `README.md` — dirs before files, each lexicographic.
+        let shown: Vec<(&str, usize, bool)> = rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.depth, r.is_dir))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                ("src", 0, true),
+                ("Cargo.toml", 0, false),
+                ("README.md", 0, false)
+            ]
+        );
+        assert!(rows.iter().all(|r| !r.expanded));
+    }
+
+    #[test]
+    fn tree_expanding_a_dir_reveals_its_children_indented() {
+        let p = paths(&["README.md", "src/lib.rs", "src/bin/main.rs"]);
+        let rows = tree_visible_rows(&p, &expanded_set(&["src"]));
+        // `src` is expanded: its child dir `bin` (collapsed, depth 1) and file
+        // `lib.rs` (depth 1) appear; `bin`'s child stays hidden.
+        let names: Vec<(&str, usize)> = rows.iter().map(|r| (r.name.as_str(), r.depth)).collect();
+        assert_eq!(
+            names,
+            vec![("src", 0), ("bin", 1), ("lib.rs", 1), ("README.md", 0)]
+        );
+        assert!(rows.iter().find(|r| r.name == "src").unwrap().expanded);
+        // Fully expand the nested dir too.
+        let rows = tree_visible_rows(&p, &expanded_set(&["src", "src/bin"]));
+        assert!(rows.iter().any(|r| r.name == "main.rs" && r.depth == 2));
+    }
+
+    #[test]
+    fn tree_row_paths_are_full_posix_paths() {
+        let p = paths(&["src/bin/main.rs"]);
+        let rows = tree_visible_rows(&p, &expanded_set(&["src", "src/bin"]));
+        let main = rows.iter().find(|r| r.name == "main.rs").unwrap();
+        assert_eq!(main.path, "src/bin/main.rs");
+        let bin = rows.iter().find(|r| r.name == "bin").unwrap();
+        assert_eq!(bin.path, "src/bin");
+    }
+
+    #[test]
+    fn tree_enter_on_dir_toggles_expand_state() {
+        let mut app = fleet_app();
+        app.view = View::FileTree;
+        app.files_repo = Some("kernel".to_string());
+        app.file_paths = Some(paths(&["src/lib.rs", "README.md"]));
+        app.cursor.select(Some(0)); // `src` dir sorts first
+        let (tx, _rx) = channel();
+        // Expand.
+        tree_expand_at(&mut app, 0, &tx);
+        assert!(app.tree_expanded.contains("src"));
+        // Collapse via the collapse helper.
+        tree_collapse_at(&mut app, 0);
+        assert!(!app.tree_expanded.contains("src"));
+    }
+
+    #[test]
+    fn tree_enter_on_file_opens_content_at_ref() {
+        let mut app = fleet_app();
+        app.view = View::FileTree;
+        app.files_repo = Some("kernel".to_string());
+        app.files_ref = Some("v1.0.0".to_string());
+        app.file_paths = Some(paths(&["README.md"]));
+        app.tree_expanded = expanded_set(&[]);
+        app.cursor.select(Some(0)); // only a file
+        let (tx, rx) = channel();
+        // Row 0 is `README.md` (a file).
+        tree_expand_at(&mut app, 0, &tx);
+        assert_eq!(app.view, View::RepoDetail);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Job::FileContent(repo, path, false, Some(git_ref), _))
+                if repo == "kernel" && path == "README.md" && git_ref == "v1.0.0"
+        ));
+    }
+
+    #[test]
+    fn t_toggle_preserves_repo_ref_scope_context() {
+        let mut app = fleet_app();
+        app.view = View::Files;
+        app.files_repo = Some("kernel".to_string());
+        app.files_remote = true;
+        app.files_ref = Some("dev".to_string());
+        let (tx, rx) = channel();
+        // Flat -> tree.
+        open_file_tree(&mut app, &tx);
+        assert_eq!(app.view, View::FileTree);
+        assert_eq!(app.files_repo.as_deref(), Some("kernel"));
+        assert!(app.files_remote);
+        assert_eq!(app.files_ref.as_deref(), Some("dev"));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Job::FilePaths(repo, true, Some(git_ref)))
+                if repo == "kernel" && git_ref == "dev"
+        ));
+    }
+
+    #[test]
+    fn ref_picker_selection_sets_files_ref_and_reloads_flat_view() {
+        let mut app = fleet_app();
+        app.view = View::Files;
+        app.files_repo = Some("kernel".to_string());
+        app.files_subpath = "drivers".to_string();
+        let (tx, rx) = channel();
+        select_files_ref(&mut app, &tx, Some("v2.0.0".to_string()));
+        assert_eq!(app.files_ref.as_deref(), Some("v2.0.0"));
+        // Flat view re-roots at the repo root for the new ref.
+        assert!(app.files_subpath.is_empty());
+        assert!(matches!(app.input, InputMode::None));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Job::RepoTree(repo, sub, _, Some(git_ref)))
+                if repo == "kernel" && sub.is_empty() && git_ref == "v2.0.0"
+        ));
+    }
+
+    #[test]
+    fn ref_picker_selection_reloads_tree_and_clears_expansion() {
+        let mut app = fleet_app();
+        app.view = View::FileTree;
+        app.files_repo = Some("kernel".to_string());
+        app.tree_expanded = expanded_set(&["src"]);
+        let (tx, rx) = channel();
+        select_files_ref(&mut app, &tx, Some("abc123".to_string()));
+        assert_eq!(app.files_ref.as_deref(), Some("abc123"));
+        assert!(app.tree_expanded.is_empty());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Job::FilePaths(repo, _, Some(git_ref)))
+                if repo == "kernel" && git_ref == "abc123"
+        ));
+    }
+
+    #[test]
+    fn ref_picker_empty_selection_resets_to_default() {
+        let mut app = fleet_app();
+        app.view = View::Files;
+        app.files_repo = Some("kernel".to_string());
+        app.files_ref = Some("dev".to_string());
+        let (tx, _rx) = channel();
+        select_files_ref(&mut app, &tx, Some("   ".to_string()));
+        assert!(app.files_ref.is_none(), "blank ref resets to the default");
+    }
+
+    #[test]
+    fn files_ref_label_is_honest_per_scope() {
+        let mut app = fleet_app();
+        app.view = View::Files;
+        app.files_repo = Some("kernel".to_string());
+        // Local, no ref -> HEAD.
+        app.files_remote = false;
+        app.files_ref = None;
+        assert_eq!(files_ref_label(&app), "@ HEAD");
+        // Remote, no ref -> default.
+        app.files_remote = true;
+        assert_eq!(files_ref_label(&app), "@ default");
+        // Pinned ref -> @ <ref>.
+        app.files_ref = Some("v1.0.0".to_string());
+        assert_eq!(files_ref_label(&app), "@ v1.0.0");
+    }
+
     #[test]
     fn pick_editor_prefers_visual_then_editor_then_candidates() {
         // $VISUAL wins over $EDITOR.
@@ -6863,7 +7737,7 @@ mod tests {
         assert!(!app.files_remote);
         assert!(matches!(
             rx.try_recv(),
-            Ok(Job::RepoTree(repo, sub, false)) if repo == "kernel" && sub.is_empty()
+            Ok(Job::RepoTree(repo, sub, false, None)) if repo == "kernel" && sub.is_empty()
         ));
     }
 
@@ -6883,7 +7757,7 @@ mod tests {
         assert_eq!(app.files_subpath, "drivers");
         assert!(matches!(
             rx.try_recv(),
-            Ok(Job::RepoTree(_, sub, _)) if sub == "drivers"
+            Ok(Job::RepoTree(_, sub, _, _)) if sub == "drivers"
         ));
     }
 
@@ -6914,7 +7788,7 @@ mod tests {
         assert_eq!(app.detail_title, "kernel:/drivers/i2c/dma.c");
         assert!(matches!(
             rx.try_recv(),
-            Ok(Job::FileContent(repo, path, false, _))
+            Ok(Job::FileContent(repo, path, false, None, _))
                 if repo == "kernel" && path == "drivers/i2c/dma.c"
         ));
     }
@@ -7096,7 +7970,7 @@ mod tests {
         assert_eq!(app.pending_scroll, Some(11));
         assert!(matches!(
             rx.try_recv(),
-            Ok(Job::FileContent(repo, path, false, _)) if repo == "kernel" && path == "src/boot.rs"
+            Ok(Job::FileContent(repo, path, false, None, _)) if repo == "kernel" && path == "src/boot.rs"
         ));
     }
 

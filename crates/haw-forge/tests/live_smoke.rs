@@ -159,3 +159,31 @@ fn github_list_ci_runs_parse() {
     }
     eprintln!("live_smoke: list_ci_runs returned {} run(s)", runs.len());
 }
+
+#[test]
+#[ignore = "hits the live GitHub API; guarded by HAW_LIVE_FORGE=1"]
+fn github_list_refs_and_file_paths_parse() {
+    if !live_enabled() {
+        return;
+    }
+    let Some(gh) = github() else { return };
+    let refs = gh
+        .list_refs(REPO_URL)
+        .expect("list_refs must parse the branches+tags API responses");
+    assert!(
+        refs.iter().any(|r| r.name == "master"),
+        "octocat/Hello-World has a `master` branch: {refs:?}"
+    );
+    let paths = gh
+        .repo_file_paths(REPO_URL, None)
+        .expect("repo_file_paths must parse the recursive-tree API response");
+    assert!(
+        paths.iter().any(|p| p == "README"),
+        "octocat/Hello-World has a top-level README: {paths:?}"
+    );
+    eprintln!(
+        "live_smoke: list_refs={} refs, repo_file_paths={} paths",
+        refs.len(),
+        paths.len()
+    );
+}

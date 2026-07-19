@@ -111,6 +111,29 @@ pub struct TreeEntry {
     pub is_dir: bool,
 }
 
+/// Which kind of ref a [`ForgeRef`] names. Forge-local (haw-forge can't depend
+/// on the TUI's richer `RefKind`); the front-end maps this onto its own enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForgeRefKind {
+    Branch,
+    Tag,
+}
+
+/// One selectable ref (branch or tag) on a forge repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgeRef {
+    pub name: String,
+    pub kind: ForgeRefKind,
+}
+
+/// Cap on the number of file paths [`Forge::repo_file_paths`] returns before
+/// truncation — keeps the recursive-tree fetch bounded on large repos.
+pub const FILE_PATHS_CAP: usize = 5000;
+
+/// Cap on the number of refs of each kind (branches, tags) that
+/// [`Forge::list_refs`] returns — keeps the ref picker's fetch bounded.
+pub const REFS_CAP: usize = 200;
+
 /// One file changed by a PR/MR, forge-neutral. `status` is one of
 /// `"added"`, `"modified"`, `"removed"`, or `"renamed"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,6 +218,18 @@ pub trait Forge {
         number: u64,
         path: &str,
     ) -> Result<String, ForgeError>;
+    /// Every FILE path in the repo tree at `git_ref` (the forge default when
+    /// `None`), as posix `/`-separated paths, recursive, capped + deduped at
+    /// [`FILE_PATHS_CAP`]. Directories are omitted — the caller reconstructs the
+    /// tree client-side. Used by the file browser's tree mode.
+    fn repo_file_paths(
+        &self,
+        repo_url: &str,
+        git_ref: Option<&str>,
+    ) -> Result<Vec<String>, ForgeError>;
+    /// The repo's branches then tags (each capped at [`REFS_CAP`]) for the ref
+    /// picker. HEAD/default is left to the caller to surface.
+    fn list_refs(&self, repo_url: &str) -> Result<Vec<ForgeRef>, ForgeError>;
 }
 
 /// Cap on the number of lines a `pr_diff` returns before truncation.

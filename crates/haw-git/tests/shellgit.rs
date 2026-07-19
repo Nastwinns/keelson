@@ -244,3 +244,67 @@ fn create_branch_and_fetch() {
     );
     ShellGit.fetch(&dest).unwrap();
 }
+
+#[test]
+fn list_refs_ls_tree_and_show_file_at_ref() {
+    use haw_git::{LocalRefKind, list_refs, ls_tree, ls_tree_recursive, show_file};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("repo");
+    std::fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-b", "main"]);
+    git(&src, &["config", "user.email", "test@hawser.dev"]);
+    git(&src, &["config", "user.name", "hawser Test"]);
+    std::fs::create_dir_all(src.join("src/drivers")).unwrap();
+    std::fs::write(src.join("README.md"), "root readme\n").unwrap();
+    std::fs::write(src.join("src/lib.rs"), "// lib on main\n").unwrap();
+    std::fs::write(src.join("src/drivers/i2c.c"), "// i2c\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-m", "initial"]);
+    git(&src, &["tag", "v1.0.0"]);
+    // A second branch that changes a file, so `@ ref` selection is observable.
+    git(&src, &["checkout", "-b", "dev"]);
+    std::fs::write(src.join("src/lib.rs"), "// lib on dev\n").unwrap();
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "-m", "dev change"]);
+    git(&src, &["checkout", "main"]);
+
+    // list_refs: HEAD (main) first, branches, then tags.
+    let refs = list_refs(&src).unwrap();
+    assert!(refs.iter().any(|r| r.name == "main"));
+    assert!(
+        refs.iter()
+            .any(|r| r.name == "dev" && r.kind == LocalRefKind::Branch)
+    );
+    assert!(
+        refs.iter()
+            .any(|r| r.name == "v1.0.0" && r.kind == LocalRefKind::Tag)
+    );
+
+    // ls_tree at root: one level, dirs flagged.
+    let root = ls_tree(&src, "main", "").unwrap();
+    assert!(root.iter().any(|(n, dir)| n == "src" && *dir));
+    assert!(root.iter().any(|(n, dir)| n == "README.md" && !*dir));
+    // ls_tree under a subdir.
+    let under = ls_tree(&src, "main", "src").unwrap();
+    assert!(under.iter().any(|(n, dir)| n == "drivers" && *dir));
+    assert!(under.iter().any(|(n, dir)| n == "lib.rs" && !*dir));
+
+    // ls_tree_recursive: every file path, posix separators.
+    let paths = ls_tree_recursive(&src, "main").unwrap();
+    assert!(paths.contains(&"src/drivers/i2c.c".to_string()));
+    assert!(paths.contains(&"README.md".to_string()));
+
+    // show_file honors the ref: dev vs main differ.
+    let on_main = show_file(&src, "main", "src/lib.rs").unwrap();
+    assert!(on_main.contains("lib on main"));
+    let on_dev = show_file(&src, "dev", "src/lib.rs").unwrap();
+    assert!(on_dev.contains("lib on dev"));
+    let on_tag = show_file(&src, "v1.0.0", "README.md").unwrap();
+    assert!(on_tag.contains("root readme"));
+
+    // Injection guards: a `-`-leading ref and a `..` path are rejected.
+    assert!(show_file(&src, "-oops", "README.md").is_err());
+    assert!(show_file(&src, "main", "../escape").is_err());
+    assert!(ls_tree(&src, "main", "../../etc").is_err());
+}

@@ -712,6 +712,7 @@ int i2c_dma_xfer(struct i2c_bus *bus, struct i2c_msg *msg) {{\n\
         _repo: &str,
         subpath: &str,
         _remote: bool,
+        _git_ref: Option<&str>,
     ) -> std::io::Result<Vec<haw_tui::FileEntry>> {
         let dir = |name: &str| haw_tui::FileEntry {
             name: name.to_string(),
@@ -735,9 +736,16 @@ int i2c_dma_xfer(struct i2c_bus *bus, struct i2c_msg *msg) {{\n\
         })
     }
 
-    fn file_content(&mut self, repo: &str, path: &str, _remote: bool) -> std::io::Result<String> {
+    fn file_content(
+        &mut self,
+        repo: &str,
+        path: &str,
+        _remote: bool,
+        git_ref: Option<&str>,
+    ) -> std::io::Result<String> {
+        let at = git_ref.unwrap_or("HEAD");
         Ok(format!(
-            "// {repo}:/{path}\n\
+            "// {repo}:/{path} @ {at}\n\
 // canned demo content\n\
 \n\
 #include \"i2c.h\"\n\
@@ -747,6 +755,39 @@ int i2c_dma_xfer(struct i2c_bus *bus, struct i2c_msg *msg) {{\n\
     return dma_submit(bus->dma, msg->buf, msg->len);\n\
 }}\n"
         ))
+    }
+
+    fn repo_file_paths(
+        &mut self,
+        _repo: &str,
+        _remote: bool,
+        _git_ref: Option<&str>,
+    ) -> std::io::Result<Vec<String>> {
+        Ok(vec![
+            "Cargo.toml".to_string(),
+            "README.md".to_string(),
+            "drivers/Kconfig".to_string(),
+            "drivers/i2c/dma.c".to_string(),
+            "drivers/i2c/i2c.h".to_string(),
+            "include/kernel.h".to_string(),
+        ])
+    }
+
+    fn list_refs(&mut self, _repo: &str, _remote: bool) -> std::io::Result<Vec<haw_tui::RefEntry>> {
+        Ok(vec![
+            haw_tui::RefEntry {
+                name: "main".to_string(),
+                kind: haw_tui::RefKind::Head,
+            },
+            haw_tui::RefEntry {
+                name: "dev".to_string(),
+                kind: haw_tui::RefKind::Branch,
+            },
+            haw_tui::RefEntry {
+                name: "v1.0.0".to_string(),
+                kind: haw_tui::RefKind::Tag,
+            },
+        ])
     }
 
     fn ci_logs(&mut self, repo: &str, run_id: u64) -> std::io::Result<String> {

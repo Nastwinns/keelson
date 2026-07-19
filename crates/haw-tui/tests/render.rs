@@ -192,3 +192,66 @@ fn small_terminal_collapses_header_and_keeps_data_rows_visible() {
         "fleet panel title missing on small terminal:\n{screen}"
     );
 }
+
+/// Render the FileTree view and assert on the indented rows, expand markers,
+/// and the honest `@ <ref>` header — the tree-mode counterpart of the fleet
+/// grid checks above, driven through the `render_file_tree` test seam.
+fn render_tree(width: u16, height: u16) -> Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let paths = vec![
+        "README.md".to_string(),
+        "src/lib.rs".to_string(),
+        "src/bin/main.rs".to_string(),
+    ];
+    // `src` expanded, `src/bin` collapsed, pinned at tag v1.0.0.
+    haw_tui::render_file_tree(&mut terminal, "kernel", paths, &["src"], Some("v1.0.0")).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+#[test]
+fn file_tree_renders_indented_rows_expand_markers_and_ref_header() {
+    let buf = render_tree(40, 160);
+    let rows = rows_text(&buf);
+    let screen = rows.join("\n");
+
+    // The panel title carries the repo and the honest active-ref label.
+    assert!(
+        screen.contains("tree kernel") && screen.contains("@ v1.0.0"),
+        "tree header/ref label missing:\n{screen}"
+    );
+    // The expanded dir shows the ▾ marker; a collapsed dir shows ▸.
+    assert!(
+        screen.contains('▾'),
+        "expanded dir marker (▾) missing:\n{screen}"
+    );
+    assert!(
+        screen.contains('▸'),
+        "collapsed dir marker (▸) missing:\n{screen}"
+    );
+    // The child of the expanded `src/` is visible and indented (its leaf name
+    // sits deeper than the top-level entries).
+    let lib_row = rows
+        .iter()
+        .find(|r| r.contains("lib.rs"))
+        .expect("lib.rs row present after expanding src");
+    let bin_row = rows
+        .iter()
+        .find(|r| r.contains("bin/"))
+        .expect("bin/ row present under expanded src");
+    let readme_row = rows
+        .iter()
+        .find(|r| r.contains("README.md"))
+        .expect("top-level README row present");
+    let indent = |s: &str| s.len() - s.trim_start_matches([' ', '│', '▍', '·', '▸', '▾']).len();
+    assert!(
+        indent(lib_row) > indent(readme_row),
+        "child row should be indented deeper than a top-level row:\nchild={lib_row:?}\ntop={readme_row:?}"
+    );
+    // The nested `bin` dir stays collapsed (its child main.rs is hidden).
+    assert!(
+        !screen.contains("main.rs"),
+        "collapsed nested dir must hide its children:\n{screen}"
+    );
+    let _ = bin_row;
+}

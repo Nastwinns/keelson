@@ -164,13 +164,43 @@ and `r`/`:run` act on just the marked set.
 
 **Files view (`f` from a repo)**
 
+A read-only browser: view or pick a file at any ref, on local disk or the forge (GitHub /
+GitLab / Bitbucket). It never stages/commits — it only *reads*. Two modes share the same
+repo / ref / scope context and toggle with `T`: a flat one-directory list (default) and a
+navigable expandable **tree**.
+
 | Key | Action |
 |-----|--------|
 | `enter` | open a directory, or view a file's content (scrollable) |
+| `T` | toggle to the tree view (and back) |
+| `r` | ref picker — read files AS OF a chosen branch / tag / SHA |
 | `e` | edit the file under the cursor in `$EDITOR` (local files only) |
 | `R` | toggle between the local-disk tree and the forge view |
 | `b` / `esc` | up a directory, then back to the fleet |
 | `x` | drop into a shell in the repo |
+
+**Tree view (`T` from Files)**
+
+| Key | Action |
+|-----|--------|
+| `enter` / `→` | expand the directory (or open the file) under the cursor |
+| `←` | collapse the directory (or jump to and collapse its parent) |
+| `r` | ref picker (same as Files) |
+| `T` | back to the flat list |
+| `R` | toggle local ⇄ forge |
+| `b` / `esc` | back to the fleet |
+
+The tree fetches every file path of the repo at the active ref once, then expands/collapses
+client-side. Collapsed dirs show `▸`, expanded `▾`; files are indented under their parents.
+
+**Ref picker (`r` in either mode)**
+
+`r` opens a popup listing the repo's branches then tags (`j`/`k` + `enter` to pick), plus an
+input row to type an arbitrary ref or commit SHA. Selecting a ref reloads the current view AS
+OF that ref (the flat list re-roots at the repo root; the tree re-fetches its paths). The panel
+title shows the active ref honestly: `@ main`, `@ v1.0.0`, `@ a1b2c3d`, or `@ HEAD` (local) /
+`@ default` (remote) when none is pinned. Local refs come from `git for-each-ref` / `git
+ls-tree` / `git show <ref>:<path>`; forge refs and trees come from each forge's REST API.
 
 `e` suspends the cockpit, hands the current TTY to `$VISUAL`/`$EDITOR` (falling back to
 `nvim`/`vim`/`vi`) on the file's absolute path, then resumes and reloads the listing. It is

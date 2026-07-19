@@ -937,13 +937,17 @@ impl haw_tui::Controller for CliController {
         repo: &str,
         subpath: &str,
         remote: bool,
+        git_ref: Option<&str>,
     ) -> std::io::Result<Vec<haw_tui::FileEntry>> {
         let ws = self.workspace()?;
         if remote {
             let (forge, url) = forge_for_repo(&ws, repo)?;
-            let git_ref = locked_sha(&ws, repo);
+            // An explicit picked ref wins; else fall back to the locked SHA
+            // (today's behavior).
+            let fallback = locked_sha(&ws, repo);
+            let effective = git_ref.map(str::to_string).or(fallback);
             let entries = forge
-                .repo_tree(&url, subpath, git_ref.as_deref())
+                .repo_tree(&url, subpath, effective.as_deref())
                 .map_err(std::io::Error::other)?;
             Ok(entries
                 .into_iter()
@@ -952,7 +956,18 @@ impl haw_tui::Controller for CliController {
                     is_dir: e.is_dir,
                 })
                 .collect())
+        } else if let Some(git_ref) = git_ref {
+            // Local, AS OF a picked ref: read the tree via git ls-tree.
+            let root = repo_root(&ws, repo)?;
+            let entries =
+                haw_git::ls_tree(&root, git_ref, subpath).map_err(std::io::Error::other)?;
+            Ok(entries
+                .into_iter()
+                .filter(|(name, _)| name != ".git")
+                .map(|(name, is_dir)| haw_tui::FileEntry { name, is_dir })
+                .collect())
         } else {
+            // Local, current checkout: read the working directory.
             let root = repo_root(&ws, repo)?;
             let dir = safe_join(&root, subpath)?;
             let mut out = Vec::new();
@@ -969,14 +984,27 @@ impl haw_tui::Controller for CliController {
         }
     }
 
-    fn file_content(&mut self, repo: &str, path: &str, remote: bool) -> std::io::Result<String> {
+    fn file_content(
+        &mut self,
+        repo: &str,
+        path: &str,
+        remote: bool,
+        git_ref: Option<&str>,
+    ) -> std::io::Result<String> {
         let ws = self.workspace()?;
         if remote {
             let (forge, url) = forge_for_repo(&ws, repo)?;
-            let git_ref = locked_sha(&ws, repo);
+            let fallback = locked_sha(&ws, repo);
+            let effective = git_ref.map(str::to_string).or(fallback);
             return forge
-                .file_blob(&url, path, git_ref.as_deref())
+                .file_blob(&url, path, effective.as_deref())
                 .map_err(std::io::Error::other);
+        }
+        if let Some(git_ref) = git_ref {
+            // Local, AS OF a picked ref: `git show <ref>:<path>`.
+            let root = repo_root(&ws, repo)?;
+            let text = haw_git::show_file(&root, git_ref, path).map_err(std::io::Error::other)?;
+            return Ok(haw_forge::cap_lines(&text, 600));
         }
         let root = repo_root(&ws, repo)?;
         let file = safe_join(&root, path)?;
@@ -990,6 +1018,93 @@ impl haw_tui::Controller for CliController {
         let bytes = std::fs::read(&file)?;
         Ok(render_file_bytes(&bytes))
     }
+
+    fn repo_file_paths(
+        &mut self,
+        repo: &str,
+        remote: bool,
+        git_ref: Option<&str>,
+    ) -> std::io::Result<Vec<String>> {
+        let ws = self.workspace()?;
+        if remote {
+            let (forge, url) = forge_for_repo(&ws, repo)?;
+            let fallback = locked_sha(&ws, repo);
+            let effective = git_ref.map(str::to_string).or(fallback);
+            return forge
+                .repo_file_paths(&url, effective.as_deref())
+                .map_err(std::io::Error::other);
+        }
+        let root = repo_root(&ws, repo)?;
+        match git_ref {
+            Some(git_ref) => {
+                haw_git::ls_tree_recursive(&root, git_ref).map_err(std::io::Error::other)
+            }
+            None => Ok(walk_working_dir(&root)),
+        }
+    }
+
+    fn list_refs(&mut self, repo: &str, remote: bool) -> std::io::Result<Vec<haw_tui::RefEntry>> {
+        let ws = self.workspace()?;
+        if remote {
+            let (forge, url) = forge_for_repo(&ws, repo)?;
+            let refs = forge.list_refs(&url).map_err(std::io::Error::other)?;
+            return Ok(refs
+                .into_iter()
+                .map(|r| haw_tui::RefEntry {
+                    name: r.name,
+                    kind: match r.kind {
+                        haw_forge::ForgeRefKind::Branch => haw_tui::RefKind::Branch,
+                        haw_forge::ForgeRefKind::Tag => haw_tui::RefKind::Tag,
+                    },
+                })
+                .collect());
+        }
+        let root = repo_root(&ws, repo)?;
+        let refs = haw_git::list_refs(&root).map_err(std::io::Error::other)?;
+        Ok(refs
+            .into_iter()
+            .map(|r| haw_tui::RefEntry {
+                name: r.name,
+                kind: match r.kind {
+                    haw_git::LocalRefKind::Head => haw_tui::RefKind::Head,
+                    haw_git::LocalRefKind::Branch => haw_tui::RefKind::Branch,
+                    haw_git::LocalRefKind::Tag => haw_tui::RefKind::Tag,
+                },
+            })
+            .collect())
+    }
+}
+
+/// Recursively collect every FILE path under `root` (posix `/`-separated,
+/// relative to `root`), skipping `.git`, bounded at [`haw_git::LS_TREE_CAP`].
+/// The working-dir counterpart of `git ls-tree -r` for the "current checkout"
+/// (no picked ref) tree view.
+fn walk_working_dir(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name == ".git" {
+                continue;
+            }
+            let path = entry.path();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                stack.push(path);
+            } else if let Ok(rel) = path.strip_prefix(root) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+                if out.len() >= haw_git::LS_TREE_CAP {
+                    return out;
+                }
+            }
+        }
+    }
+    out.sort();
+    out
 }
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
