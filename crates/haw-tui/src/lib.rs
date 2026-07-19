@@ -1623,6 +1623,55 @@ fn open_file_content(app: &mut App, jobs: &Sender<Job>, name: &str) {
     let _ = jobs.send(Job::FileContent(repo, path, remote, title));
 }
 
+/// Outcome of the `e` (edit) guard in `View::Files`: either launch an editor on
+/// an absolute path (carrying the display `name`), or decline with a message.
+/// Split out from the inline key arm so the guards are unit-testable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EditPlan {
+    /// Edit `path`; `name` is the entry's display name for the status message.
+    Edit { path: PathBuf, name: String },
+    /// Do nothing but show this status message.
+    Decline(String),
+}
+
+impl App {
+    /// Decide what pressing `e` in `View::Files` should do for the entry at
+    /// `selected`. Pure: resolves the on-disk path and applies the guards
+    /// (forge view, directories, not-cloned) without touching the terminal.
+    fn plan_edit(&self, selected: usize) -> Option<EditPlan> {
+        if self.files_remote {
+            return Some(EditPlan::Decline(
+                "edit works on local files — press R for the local tree".to_string(),
+            ));
+        }
+        let entry = self.file_rows().get(selected).map(|e| (*e).clone())?;
+        if entry.is_dir {
+            return Some(EditPlan::Decline(
+                "edit: select a file, not a folder".to_string(),
+            ));
+        }
+        let rel = if self.files_subpath.is_empty() {
+            entry.name.clone()
+        } else {
+            format!("{}/{}", self.files_subpath, entry.name)
+        };
+        let abs = self
+            .files_repo
+            .as_deref()
+            .and_then(|r| self.repo_path(r))
+            .map(|p| p.join(&rel));
+        match abs {
+            Some(path) if path.exists() => Some(EditPlan::Edit {
+                path,
+                name: entry.name,
+            }),
+            _ => Some(EditPlan::Decline(
+                "not on disk — press s to sync".to_string(),
+            )),
+        }
+    }
+}
+
 /// Run a cross-repo grep on the worker thread and open the results list.
 fn run_grep(app: &mut App, jobs: &Sender<Job>, pattern: &str) {
     let pattern = pattern.trim().to_string();
@@ -1901,6 +1950,66 @@ pub fn open_in_browser(url: &str) -> io::Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
+}
+
+/// Choose an editor command from `$VISUAL`, then `$EDITOR`, then the first of
+/// `candidates` that resolves on `PATH`. Pure so it can be unit-tested without
+/// mutating process env: `visual`/`editor` are the (already-read) env values and
+/// `candidates` is the fallback list probed via [`on_path`].
+fn pick_editor(
+    visual: Option<String>,
+    editor: Option<String>,
+    candidates: &[&str],
+) -> Option<String> {
+    if let Some(v) = visual.filter(|s| !s.trim().is_empty()) {
+        return Some(v);
+    }
+    if let Some(e) = editor.filter(|s| !s.trim().is_empty()) {
+        return Some(e);
+    }
+    candidates
+        .iter()
+        .find(|c| on_path(c))
+        .map(|c| (*c).to_string())
+}
+
+/// Best-effort probe: is `program` an executable resolvable on `PATH`? Mirrors a
+/// `which`/`where` lookup without shelling out, honouring `PATHEXT` on Windows.
+fn on_path(program: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    #[cfg(windows)]
+    let exts: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string())
+        .split(';')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    for dir in std::env::split_paths(&paths) {
+        let candidate = dir.join(program);
+        if candidate.is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        for ext in &exts {
+            if dir.join(format!("{program}{ext}")).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Resolve the interactive editor for the `e` key: `$VISUAL`/`$EDITOR`, then the
+/// first of `nvim`/`vim`/`vi` on `PATH`, else `vi` as a last resort.
+fn resolve_editor() -> Option<String> {
+    pick_editor(
+        std::env::var("VISUAL").ok(),
+        std::env::var("EDITOR").ok(),
+        &["nvim", "vim", "vi"],
+    )
+    .or_else(|| Some("vi".to_string()))
 }
 
 /// A confirmation gate for actions with real side effects (opens/merges PRs).
@@ -2768,6 +2877,39 @@ fn event_loop(
                     None => app.message = "shell: put the cursor on a repo row".to_string(),
                 }
             }
+            KeyCode::Char('e') if app.view == View::Files => {
+                match app.plan_edit(selected) {
+                    Some(EditPlan::Decline(msg)) => app.message = msg,
+                    Some(EditPlan::Edit { path, name }) => match resolve_editor() {
+                        Some(editor) => {
+                            // Split so `EDITOR="code -w"` and `"nvim"` both work:
+                            // first token is the program, the rest are leading args,
+                            // then the file path last.
+                            let mut parts = editor.split_whitespace();
+                            let program = parts.next().unwrap_or("vi");
+                            let leading: Vec<&str> = parts.collect();
+                            // Suspend the TUI, hand the TTY to the editor, then resume.
+                            ratatui::restore();
+                            let status = std::process::Command::new(program)
+                                .args(&leading)
+                                .arg(&path)
+                                .status();
+                            *terminal = ratatui::init();
+                            terminal.clear()?;
+                            match status {
+                                Ok(_) => app.message = format!("edited {name}"),
+                                Err(err) => app.message = format!("editor exited: {err}"),
+                            }
+                            // The file (and repo dirty state) may have changed:
+                            // reload the listing and request a fleet/status refresh.
+                            reload_files(&mut app, jobs);
+                            request_refresh(&mut app, jobs);
+                        }
+                        None => app.message = "no editor: set $EDITOR".to_string(),
+                    },
+                    None => {}
+                }
+            }
             KeyCode::Char('f')
                 if matches!(
                     app.view,
@@ -3219,6 +3361,7 @@ fn key_hints(view: View) -> &'static [(&'static str, &'static str)] {
         ],
         View::Files => &[
             ("enter", "open"),
+            ("e", "edit"),
             ("R", "remote"),
             ("b", "up / back"),
             ("x", "shell"),
@@ -5271,6 +5414,7 @@ fn help_lines() -> Vec<Line<'static>> {
         Line::raw(""),
         help_section("files"),
         help_entry("enter", "open a dir or view a file (scrollable)"),
+        help_entry("e", "edit the file in $EDITOR (local files only)"),
         help_entry("R", "toggle local disk / forge view"),
         help_entry("b", "up a directory, then back to the fleet"),
         Line::raw(""),
@@ -5635,6 +5779,7 @@ mod tests {
             "!" => matches!(view, View::Fleet | View::RepoDetail),
             "n" => matches!(view, View::Changesets | View::Changeset),
             "R" => view == View::Files,
+            "e" => view == View::Files,
             "f" => matches!(
                 view,
                 View::Fleet | View::Changeset | View::Prs | View::PrDetail | View::Ci | View::Grep
@@ -6593,6 +6738,118 @@ mod tests {
         ]);
         let names: Vec<_> = app.file_rows().iter().map(|e| e.name.clone()).collect();
         assert_eq!(names, vec!["alpha", "gamma", "beta.rs", "zeta.rs"]);
+    }
+
+    #[test]
+    fn pick_editor_prefers_visual_then_editor_then_candidates() {
+        // $VISUAL wins over $EDITOR.
+        assert_eq!(
+            pick_editor(Some("emacs".into()), Some("nano".into()), &["vi"]),
+            Some("emacs".to_string())
+        );
+        // Empty/whitespace $VISUAL is skipped; $EDITOR is used.
+        assert_eq!(
+            pick_editor(Some("   ".into()), Some("nano".into()), &["vi"]),
+            Some("nano".to_string())
+        );
+        // Neither set: fall back to the first candidate that resolves on PATH.
+        // "definitely-not-a-real-binary" never resolves; "sh" does on any unix.
+        let picked = pick_editor(None, None, &["definitely-not-a-real-binary", "sh"]);
+        #[cfg(unix)]
+        assert_eq!(picked, Some("sh".to_string()));
+        // No candidate resolvable → None (the caller adds the `vi` last resort).
+        assert_eq!(
+            pick_editor(None, None, &["definitely-not-a-real-binary"]),
+            None
+        );
+        // resolve_editor never returns None thanks to the `vi` fallback.
+        assert!(resolve_editor().is_some());
+    }
+
+    #[test]
+    fn plan_edit_declines_on_the_forge_view() {
+        let mut app = fleet_app();
+        app.view = View::Files;
+        app.files_repo = Some("kernel".to_string());
+        app.files_remote = true;
+        app.files_entries = Some(vec![fe("main.rs", false)]);
+        match app.plan_edit(0) {
+            Some(EditPlan::Decline(msg)) => assert!(
+                msg.contains("local files"),
+                "expected the local-files decline, got {msg:?}"
+            ),
+            other => panic!("expected Decline on the forge view, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_edit_declines_on_a_directory() {
+        let mut app = fleet_app();
+        app.view = View::Files;
+        app.files_repo = Some("kernel".to_string());
+        app.files_remote = false;
+        app.files_entries = Some(vec![fe("drivers", true)]);
+        match app.plan_edit(0) {
+            Some(EditPlan::Decline(msg)) => assert!(
+                msg.contains("not a folder"),
+                "expected the folder decline, got {msg:?}"
+            ),
+            other => panic!("expected Decline on a directory, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_edit_declines_when_the_file_is_not_on_disk() {
+        let mut app = fleet_app();
+        app.view = View::Files;
+        // fleet_app maps "kernel" -> /w/kernel, which does not exist on disk.
+        app.files_repo = Some("kernel".to_string());
+        app.files_remote = false;
+        app.files_entries = Some(vec![fe("main.rs", false)]);
+        match app.plan_edit(0) {
+            Some(EditPlan::Decline(msg)) => assert!(
+                msg.contains("not on disk"),
+                "expected the not-on-disk decline, got {msg:?}"
+            ),
+            other => panic!("expected Decline when the file is absent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_edit_targets_the_absolute_path_for_a_local_file() {
+        let dir = std::env::temp_dir().join(format!("haw-edit-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), b"fn main() {}").unwrap();
+
+        let mut app = fleet_app();
+        app.view = View::Files;
+        app.snapshot.paths = vec![("kernel".to_string(), dir.clone())];
+        app.files_repo = Some("kernel".to_string());
+        app.files_remote = false;
+        app.files_subpath = "src".to_string();
+        app.files_entries = Some(vec![fe("main.rs", false)]);
+        match app.plan_edit(0) {
+            Some(EditPlan::Edit { path, name }) => {
+                assert_eq!(path, dir.join("src/main.rs"));
+                assert_eq!(name, "main.rs");
+            }
+            other => panic!("expected Edit for an on-disk file, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_hint_row_advertises_edit() {
+        let hints = key_hints(View::Files);
+        assert!(
+            hints.iter().any(|(k, v)| *k == "e" && *v == "edit"),
+            "Files hints must advertise `e`/`edit`, got {hints:?}"
+        );
+        // Not advertised on the PR-files view.
+        assert!(
+            !key_hints(View::PrFiles).iter().any(|(k, _)| *k == "e"),
+            "PrFiles must not advertise `e`"
+        );
     }
 
     #[test]
