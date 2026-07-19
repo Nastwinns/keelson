@@ -5530,9 +5530,10 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         format!("{repo}:/{}/", app.files_subpath)
     };
+    let at = files_ref_label(app);
     let list = List::new(items)
         .block(panel(format!(
-            "files {crumb} ({scope}){}",
+            "files {crumb} {at} ({scope}){}",
             row_indicator(app, count)
         )))
         .highlight_style(cursor_style())
