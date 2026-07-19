@@ -1,4 +1,12 @@
+<!-- Maintainer note: the reaction GIFs in this course (class="meme") are
+     hotlinked directly from Giphy (external URLs). That's intentional and
+     fine — they render via <img>. If Giphy ever changes a URL, just swap it. -->
+
 # 8. Build a plugin — and let Claude write your commits
+
+<img class="chapter-illus" src="../assets/img/pair-programming.svg" alt="Pair-programming with Claude to build a haw plugin">
+
+*You bring the workspace, Claude brings the prose — pair-programming your commits and PRs.*
 
 You've composed a fleet, pinned it, lived in the cockpit, shipped changesets, and gated it
 in CI. Now the fun part: **extend haw yourself**. haw follows the git / cargo / kubectl
@@ -39,6 +47,9 @@ We'll build it in **two levels**, and the second one is the whole point:
 This is the foundation: one repo at a time, and everything you need to understand the
 plugin protocol and the MCP handshake. It's deliberately simple — get comfortable here,
 then Niveau 2 unlocks the cross-repo superpower.
+
+*Spoiler : le niveau 1, c'est les petites roues. Utile, honnête, et volontairement pas
+encore magique. Reste jusqu'au niveau 2 — c'est là que le vélo décolle.* 🚲
 
 ## 🧩 1. The plugin contract, in one breath
 
@@ -294,6 +305,15 @@ PATH="$PWD:$PATH" haw commit-ai              # human draft
 PATH="$PWD:$PATH" haw commit-ai --format json # a haw.plugin.report/1
 ```
 
+![Running `haw commit-ai` — a plugin haw dispatches to `haw-commit-ai` on your PATH](../assets/haw-cli.gif)
+
+*No recompile, no core change: drop `haw-commit-ai` on your `PATH` and haw dispatches to it like any built-in.*
+
+And because it also emits a `haw.plugin.view/1`, your plugin gets a home in the cockpit —
+open `haw dash`, press `7`, and there it is in the Plugins panel:
+
+![The cockpit's Plugins panel (press `7`) rendering the plugin's `haw.plugin.view/1`](../assets/haw-tui.gif)
+
 ## 🔌 5. Wire the MCP server into Claude Code
 
 First, the SDK (only for the `--mcp` face):
@@ -360,6 +380,14 @@ protocole haw proprement. Le vrai pouvoir arrive au **niveau 2** : lui montrer u
 changeset *entier*, réparti sur plusieurs repos, en une seule vue.
 
 </div>
+
+Yep — so far we've mostly reinvented what Claude does for one repo for free. 😅 Keep the
+faith: the next niveau is the part it *can't* do on its own.
+
+<!-- render via <img>; giphy hotlink — swap if giphy changes -->
+<img class="meme" src="https://media.giphy.com/media/LBNbGeT9nwdEZdxNgj/giphy.gif" alt="This is fine — a cartoon dog sipping coffee as the room burns">
+
+*"We built a whole plugin to do what Claude already did." This is fine — niveau 2 fixes it. 🔥*
 
 # 🚀 Niveau 2 : la vision cross-repo (changeset-wide)
 
@@ -477,9 +505,15 @@ disconnected diffs; haw + this plugin hand Claude the *changeset*, so it writes 
 story that spans them. When you're happy, commit each repo (`write_commit`, per repo) and
 run `haw change request` to open the linked PRs across the fleet.
 
+<!-- render via <img>; giphy hotlink — swap if giphy changes -->
+<img class="meme" src="https://media.giphy.com/media/iyFmY2m2nfyAj5VFi8/giphy.gif" alt="Jubilant celebration reaction">
+
+*One prompt. Three repos. One coherent PR narrative. That's the superpower — go celebrate. 🎉*
+
 ## 🔒 9. Safety notes — this is the important bit
 
-Writing tools + an LLM means guardrails matter. This plugin bakes them in:
+Writing tools + an LLM means guardrails matter — ⚠️ this is the section you *don't* skim.
+This plugin bakes the guardrails in:
 
 - **Path-guarded writes.** `write_commit` and `draft_pr(submit=True)` refuse any repo path
   that isn't inside the workspace `root` — Claude can't commit outside your fleet.
