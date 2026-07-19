@@ -78,6 +78,12 @@ em { font-style: normal; color: var(--accent); }
 .nav-links a { color: var(--text-dim); font-size: .92rem; }
 .nav-links a:hover { color: var(--text); text-decoration: none; }
 .nav-gh { color: var(--text) !important; font-weight: 600; }
+.nav-lang {
+  color: var(--text) !important; font-weight: 600; font-family: var(--mono);
+  font-size: .82rem; border: 1px solid var(--border); border-radius: 7px;
+  padding: .15rem .5rem; line-height: 1;
+}
+.nav-lang:hover { border-color: var(--accent); text-decoration: none; }
 .theme-toggle {
   background: var(--surface); border: 1px solid var(--border); color: var(--text);
   width: 34px; height: 34px; border-radius: 8px; cursor: pointer; font-size: 1rem;

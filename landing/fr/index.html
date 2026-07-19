@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hawser — épingle ta stack multi-dépôts dans un seul lockfile</title>
+<meta name="description" content="haw épingle toute ta stack multi-dépôts dans un seul lockfile — pour que toi, ta CI et tes coéquipiers récupériez l'arbre identique, à chaque fois. Un seul binaire. En Rust.">
+<meta name="color-scheme" content="dark light">
+<meta property="og:title" content="hawser — épingle ta stack multi-dépôts dans un seul lockfile">
+<meta property="og:description" content="Ton produit vit dans 10 dépôts. Quels commits vont ensemble ? haw les épingle tous dans un seul lockfile — arbre identique, partout. Un seul binaire. En Rust.">
+<meta property="og:image" content="/hawser/hawser-comic.jpeg">
+<meta property="og:type" content="website">
+<link rel="stylesheet" href="/hawser/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪢</text></svg>">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="#top">
+    <span class="brand-mark">🪢</span>
+    <span class="brand-name">hawser</span>
+  </a>
+  <nav class="nav-links">
+    <a href="#what">Le concept</a>
+    <a href="#quickstart">Démarrage rapide</a>
+    <a href="#learn">Apprendre</a>
+    <a href="#docs">Docs</a>
+    <a href="#install">Installer</a>
+    <a href="https://github.com/Nastwinns/hawser" class="nav-gh" rel="noopener">GitHub ↗</a>
+    <a href="/hawser/" class="nav-lang" hreflang="en" title="English version">EN</a>
+  </nav>
+  <button id="theme-toggle" class="theme-toggle" aria-label="Basculer le thème clair/sombre" title="Basculer le thème">◐</button>
+</header>
+
+<a id="top"></a>
+
+<!-- ============ HERO ============ -->
+<section class="hero">
+  <div class="hero-inner">
+    <div class="hero-copy">
+      <p class="eyebrow">Un seul binaire · en Rust · <span class="badge">v0.1.7</span></p>
+      <h1>Ton produit vit dans 10 dépôts.<br><em>Quels commits vont ensemble ?</em></h1>
+      <p class="tagline">
+        <code>haw</code> épingle toute ta stack multi-dépôts dans un seul lockfile — pour que toi,
+        ta CI et tes coéquipiers récupériez l'arbre <strong>identique</strong>, à chaque fois.
+        Un seul binaire, en Rust.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="/hawser/docs/fr/learn/00-what-is-hawser.html">Commencer →</a>
+        <a class="btn" href="/hawser/docs/fr/">Documentation</a>
+        <a class="btn" href="/hawser/try/">Essayer le TUI</a>
+        <a class="btn btn-ghost" href="https://github.com/Nastwinns/hawser" rel="noopener">GitHub</a>
+      </div>
+      <p class="hero-note">Pas de submodules · pas de HEAD détachées · pas de symlinks · pas de runtime Python.</p>
+    </div>
+    <div class="hero-art">
+      <video
+        src="/hawser/docs/assets/hawser-promo.mp4"
+        poster="/hawser/hawser-comic.jpeg"
+        autoplay loop muted playsinline controls
+        width="720"
+        style="width:100%;max-width:720px;border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.45)">
+        <img src="/hawser/hawser-comic.jpeg" alt="hawser — la poutre qui relie les dépôts" width="720" height="720">
+      </video>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WHAT IS HAWSER (5 PILLARS) ============ -->
+<section id="what" class="section">
+  <div class="section-head">
+    <h2>Qu'est-ce que hawser</h2>
+    <p class="lede">
+      <code>haw</code> est une plateforme multi-dépôts pour les équipes qui livrent un produit réparti
+      sur de nombreux dépôts Git. Cinq capacités, un seul binaire — chacune résolvant une facette
+      du problème multi-dépôts.
+    </p>
+  </div>
+  <div class="grid cards-5">
+    <article class="card">
+      <span class="card-icon">🧱</span>
+      <h3>Composer</h3>
+      <p>Une stack reproductible à partir de plusieurs dépôts : un manifeste <code>haw.toml</code> et un <code>haw.lock</code> commité épinglent chaque dépôt sur un SHA exact. Stacks &amp; overlays, clone superficiel et partiel.</p>
+    </article>
+    <article class="card">
+      <span class="card-icon">⚙️</span>
+      <h3>Orchestrer</h3>
+      <p>Exécute le travail sur toute la flotte : <code>run</code>/<code>build</code>/<code>test</code> en parallèle, un <code>grep</code> à l'échelle de la flotte, et une passerelle <code>verify</code> qui sort en 3 en cas de dérive — à brancher directement dans la CI.</p>
+    </article>
+    <article class="card">
+      <span class="card-icon">🔀</span>
+      <h3>Collaborer</h3>
+      <p>Un flux de changements inter-dépôts, inter-forges : une fonctionnalité = une branche sur N dépôts, avec des PR/MR liées sur GitHub, GitLab &amp; Bitbucket, et <code>land</code> pour merger dans l'ordre des dépendances.</p>
+    </article>
+    <article class="card">
+      <span class="card-icon">🚁</span>
+      <h3>Piloter</h3>
+      <p>Un cockpit TUI façon k9s (simplement <code>haw</code>) : lire → creuser → agir. Grille de flotte en direct, checks de PR, avancement CI — puis merger, approuver ou checkout au clavier.</p>
+    </article>
+    <article class="card">
+      <span class="card-icon">🛡️</span>
+      <h3>Gouverner</h3>
+      <p>Chaîne d'approvisionnement &amp; audit, intégrés : plugins, SBOM (CycloneDX + SPDX), provenance SLSA/in-toto, signature cosign/minisign, et bundles <code>evidence</code> pour la qualification.</p>
+    </article>
+  </div>
+  <p class="not-a-wrapper">
+    Ce n'est pas un wrapper git. C'est la couche au-dessus de git : le manifeste, le lockfile, le
+    build/test/CI à l'échelle de la flotte, le flux de changements inter-forges, et la piste d'audit.
+  </p>
+</section>
+
+<!-- ============ QUICK START ============ -->
+<section id="quickstart" class="section section-alt">
+  <div class="section-head">
+    <h2>Démarrage rapide</h2>
+    <p class="lede">Trois commandes, de l'installation au cockpit.</p>
+  </div>
+  <div class="code-block">
+    <button class="copy-btn" data-copy="cargo install hawser
+haw sync
+haw" aria-label="Copier les commandes">Copier</button>
+    <pre><code><span class="c-comment"># installe le binaire unique</span>
+<span class="c-prompt">$</span> cargo install hawser
+<span class="c-comment"># clone chaque dépôt, écrit haw.lock</span>
+<span class="c-prompt">$</span> haw sync
+<span class="c-comment"># ouvre le cockpit</span>
+<span class="c-prompt">$</span> haw</code></pre>
+  </div>
+  <p class="lede center">
+    Nouveau ici ? Lance le cours guidé ci-dessous, ou explore des manifestes exécutables dans
+    <a href="https://github.com/Nastwinns/hawser/tree/main/examples" rel="noopener"><code>examples/</code></a>.
+  </p>
+</section>
+
+<!-- ============ LEARN (COURSE) ============ -->
+<section id="learn" class="section">
+  <div class="section-head">
+    <h2>Apprendre hawser</h2>
+    <p class="lede">Un cours guidé, de zéro à opérationnel. Neuf chapitres courts — à lire dans l'ordre.</p>
+  </div>
+  <ol class="course">
+    <li class="course-step">
+      <a href="/hawser/docs/fr/learn/00-what-is-hawser.html">
+        <span class="step-num">00</span>
+        <span class="step-body"><strong>Qu'est-ce que hawser</strong><span>Le problème, le modèle, et où haw se place au-dessus de git.</span></span>
+      </a>
+    </li>
+    <li class="course-step">
+      <a href="/hawser/docs/fr/learn/01-install-and-first-run.html">
+        <span class="step-num">01</span>
+        <span class="step-body"><strong>Installation &amp; premier lancement</strong><span>Récupère le binaire, lance <code>haw</code>, et découvre le cockpit.</span></span>
+      </a>
+    </li>
+    <li class="course-step">
+      <a href="/hawser/docs/fr/learn/02-the-manifest.html">
+        <span class="step-num">02</span>
+        <span class="step-body"><strong>Le manifeste</strong><span>Déclare les dépôts et compose-les en stacks avec <code>haw.toml</code>.</span></span>
+      </a>
+    </li>
+    <li class="course-step">
+      <a href="/hawser/docs/fr/learn/03-sync-and-the-lockfile.html">
+        <span class="step-num">03</span>
+        <span class="step-body"><strong>Sync &amp; le lockfile</strong><span>Épingle chaque dépôt sur un SHA exact pour un arbre reproductible.</span></span>
+      </a>
+    </li>
+    <li class="course-step">
+      <a href="/hawser/docs/fr/learn/04-the-tui-cockpit.html">
+        <span class="step-num">04</span>
+        <span class="step-body"><strong>Le cockpit TUI</strong><span>Lire → creuser → agir sur toute la flotte, au clavier d'abord.</span></span>
+      </a>
+    </li>
+    <li class="course-step">
+      <a href="/hawser/docs/fr/learn/05-changesets-across-repos.html">
+        <span class="step-num">05</span>
+        <span class="step-body"><strong>Changesets inter-dépôts</strong><span>Une fonctionnalité, une branche sur N dépôts, PR/MR liées.</span></span>
+      </a>
+    </li>
+    <li class="course-step">
+      <a href="/hawser/docs/fr/learn/06-build-test-and-verify.html">
+        <span class="step-num">06</span>
+        <span class="step-body"><strong>Build, test &amp; verify</strong><span>Exécute la flotte en parallèle et bloque la dérive en CI.</span></span>
+      </a>
+    </li>
+    <li class="course-step">
+      <a href="/hawser/docs/fr/learn/07-going-to-production.html">
+        <span class="step-num">07</span>
+        <span class="step-body"><strong>Passer en production</strong><span>Gouvernance, signature, evidence, et intégration CI/CD.</span></span>
+      </a>
+    </li>
+    <li class="course-step">
+      <a href="/hawser/docs/fr/learn/08-build-a-plugin-mcp.html">
+        <span class="step-num">08</span>
+        <span class="step-body"><strong>Écrire un plugin (MCP pour Claude)</strong><span>Livre un plugin haw qui fait aussi office de serveur MCP pour que Claude rédige tes commits &amp; PR.</span></span>
+      </a>
+    </li>
+  </ol>
+  <div class="center">
+    <a class="btn btn-primary" href="/hawser/docs/fr/learn/00-what-is-hawser.html">Commencer le cours →</a>
+  </div>
+</section>
+
+<!-- ============ WHY / WHO IT'S FOR ============ -->
+<section id="why" class="section section-alt">
+  <div class="section-head">
+    <h2>Pourquoi hawser · pour qui</h2>
+    <p class="lede">
+      Répartir un produit sur plusieurs dépôts est courant — et indépendant du domaine. Le
+      manifeste, le lockfile, le flux de changesets, le build/test de la flotte et les hooks de
+      gouvernance sont les mêmes dans chaque domaine ; seuls les dépôts et les commandes changent.
+    </p>
+  </div>
+  <div class="grid cards-domains">
+    <article class="card">
+      <h3>Embarqué &amp; automobile</h3>
+      <p>HAL/BSP/MCAL partagés et réutilisés sur de nombreux ECU ; dépôts de config AUTOSAR/ARXML épinglés à côté du code.</p>
+    </article>
+    <article class="card">
+      <h3>Microservices backend</h3>
+      <p>Une fonctionnalité couvrant N services plus un proto/lib partagé — branchés, en PR, et landés ensemble.</p>
+    </article>
+    <article class="card">
+      <h3>Plateformes ML / data</h3>
+      <p>Dépôt de modèle + dépôt de pipeline de données + infra de serving, épinglés comme une seule baseline reproductible.</p>
+    </article>
+    <article class="card">
+      <h3>Plateforme / infra</h3>
+      <p>Dépôts Terraform, Helm et modules réutilisables composés et versionnés comme un tout.</p>
+    </article>
+    <article class="card">
+      <h3>Mobile</h3>
+      <p>Un dépôt d'app et son ou ses dépôts SDK, modifiés de concert dans un seul changeset.</p>
+    </article>
+    <article class="card card-quote">
+      <p>« Ce <strong>n'est pas un wrapper git</strong>. haw orchestre Git et les API des forges — il ne réimplémente pas le moteur de merge de Git, ne remplace pas une forge, ni ta toolchain. »</p>
+    </article>
+  </div>
+</section>
+
+<!-- ============ DOCS INDEX ============ -->
+<section id="docs" class="section">
+  <div class="section-head">
+    <h2>Documentation</h2>
+    <p class="lede">Tout, publié sous forme de mdBook dans <code>/hawser/docs/fr/</code>.</p>
+  </div>
+  <div class="grid docs-grid">
+    <a class="doc-link" href="/hawser/docs/fr/learn/00-what-is-hawser.html">
+      <h3>Prise en main →</h3><p>Le cours d'apprentissage guidé, chapitre par chapitre.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/EXAMPLES.html">
+      <h3>Exemples →</h3><p>Manifestes exécutables par domaine + vraies flottes embarquées à compiler.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/INTEGRATION.html">
+      <h3>Recettes d'intégration →</h3><p>Cross-compile Docker, QEMU/FreeRTOS, câblage tresos/Vector/IAR.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/CLI-DESIGN.html">
+      <h3>CLI &amp; keymap TUI →</h3><p>Le lexique complet des verbes et le keymap du cockpit.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/PLUGINS.html">
+      <h3>Plugins →</h3><p>Écrire des plugins <code>haw-&lt;nom&gt;</code> et le contrat de dispatch.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/EXTENDING.html">
+      <h3>Étendre →</h3><p>Plugins, hooks, auth, et intégration CI/CD.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/ARCHITECTURE.html">
+      <h3>Architecture →</h3><p>Organisation des crates, modèle de concurrence, abstraction des forges, flux de données.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/DOMAINS.html">
+      <h3>Domaines →</h3><p>Comment la boucle manifeste/lock/changeset se projette sur chaque domaine.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/INSTALL.html">
+      <h3>Installation →</h3><p>Matrice d'installation complète + vérification des signatures.</p>
+    </a>
+    <a class="doc-link" href="https://github.com/Nastwinns/hawser/blob/main/docs/DISTRIBUTION.md" rel="noopener">
+      <h3>Distribution →</h3><p>Canaux de release et packaging.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/COMPLIANCE.html">
+      <h3>Conformité →</h3><p>Qualification d'outil, SBOM/CRA, crypto/signature, RGPD.</p>
+    </a>
+    <a class="doc-link" href="/hawser/docs/fr/SECURITY.html">
+      <h3>Sécurité →</h3><p>Le modèle de confiance — ce que haw exécute, la confiance des plugins, les tokens.</p>
+    </a>
+  </div>
+</section>
+
+<!-- ============ INSTALL ============ -->
+<section id="install" class="section section-alt">
+  <div class="section-head">
+    <h2>Installer</h2>
+    <p class="lede">Choisis un gestionnaire de paquets — tous installent le même binaire <code>haw</code> <span class="badge">v0.1.3</span>.</p>
+  </div>
+  <div class="tabs" role="tablist">
+    <button class="tab active" role="tab" data-tab="cargo">cargo</button>
+    <button class="tab" role="tab" data-tab="brew">brew</button>
+    <button class="tab" role="tab" data-tab="scoop">scoop</button>
+    <button class="tab" role="tab" data-tab="musl">musl (statique)</button>
+  </div>
+
+  <div class="tab-panel active" data-panel="cargo">
+    <div class="code-block">
+      <button class="copy-btn" data-copy="cargo install hawser" aria-label="Copier la commande">Copier</button>
+      <pre><code><span class="c-comment"># Rust / crates.io (canonique)</span>
+<span class="c-prompt">$</span> cargo install hawser</code></pre>
+    </div>
+  </div>
+  <div class="tab-panel" data-panel="brew">
+    <div class="code-block">
+      <button class="copy-btn" data-copy="brew install nastwinns/tap/hawser" aria-label="Copier la commande">Copier</button>
+      <pre><code><span class="c-comment"># macOS + Linux (Homebrew)</span>
+<span class="c-prompt">$</span> brew install nastwinns/tap/hawser</code></pre>
+    </div>
+  </div>
+  <div class="tab-panel" data-panel="scoop">
+    <div class="code-block">
+      <button class="copy-btn" data-copy="scoop bucket add nastwinns https://github.com/Nastwinns/scoop-bucket
+scoop install hawser" aria-label="Copier la commande">Copier</button>
+      <pre><code><span class="c-comment"># Windows (Scoop)</span>
+<span class="c-prompt">$</span> scoop bucket add nastwinns https://github.com/Nastwinns/scoop-bucket
+<span class="c-prompt">$</span> scoop install hawser</code></pre>
+    </div>
+  </div>
+  <div class="tab-panel" data-panel="musl">
+    <div class="code-block">
+      <button class="copy-btn" data-copy="curl -sSL https://github.com/Nastwinns/hawser/releases/download/v0.1.3/haw-0.1.3-x86_64-unknown-linux-musl.tar.gz | tar xz && sudo install haw /usr/local/bin/" aria-label="Copier la commande">Copier</button>
+      <pre><code><span class="c-comment"># Entièrement statique — pas de glibc, pas de runtime ; idéal serveurs, conteneurs, air-gap</span>
+<span class="c-prompt">$</span> curl -sSL https://github.com/Nastwinns/hawser/releases/download/v0.1.3/\
+haw-0.1.3-x86_64-unknown-linux-musl.tar.gz | tar xz \
+  &amp;&amp; sudo install haw /usr/local/bin/</code></pre>
+    </div>
+  </div>
+  <p class="lede center">
+    Chaque release est signée (cosign <code>.sig</code>/<code>.pem</code> + <code>.sha256</code>).
+    Matrice complète &amp; vérification : <a href="/hawser/docs/fr/INSTALL.html">docs/INSTALL</a>.
+  </p>
+</section>
+
+<!-- ============ FOOTER ============ -->
+<footer class="footer">
+  <div class="footer-grid">
+    <div class="footer-col">
+      <span class="brand"><span class="brand-mark">🪢</span><span class="brand-name">hawser</span></span>
+      <p class="footer-tag">Composer · Orchestrer · Collaborer · Piloter · Gouverner. Un seul binaire, en Rust.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Apprendre</h4>
+      <a href="/hawser/docs/fr/learn/00-what-is-hawser.html">Commencer</a>
+      <a href="/hawser/docs/fr/">Documentation</a>
+      <a href="/hawser/try/">Essayer le TUI</a>
+    </div>
+    <div class="footer-col">
+      <h4>Projet</h4>
+      <a href="https://github.com/Nastwinns/hawser" rel="noopener">GitHub</a>
+      <a href="https://crates.io/crates/hawser" rel="noopener">crates.io</a>
+      <a href="https://github.com/Nastwinns/hawser/blob/main/AWESOME-HAW-PLUGINS.md" rel="noopener">Awesome plugins</a>
+    </div>
+    <div class="footer-col">
+      <h4>Licence</h4>
+      <a href="https://github.com/Nastwinns/hawser/blob/main/LICENSE-MIT" rel="noopener">MIT</a>
+      <a href="https://github.com/Nastwinns/hawser/blob/main/LICENSE-APACHE" rel="noopener">Apache-2.0</a>
+      <p class="footer-small">Double licence, à ton choix.</p>
+    </div>
+  </div>
+  <p class="footer-bottom">Construit avec <code>haw</code> · © les contributeurs de hawser</p>
+</footer>
+
+<script src="/hawser/app.js"></script>
+</body>
+</html>
