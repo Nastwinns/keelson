@@ -162,6 +162,21 @@ and `r`/`:run` act on just the marked set.
 `a` (actions) and `d` are also available from within a PR/MR drill-in. Refetch is now just
 `F5` / `ctrl-r`.
 
+**Files view (`f` from a repo)**
+
+| Key | Action |
+|-----|--------|
+| `enter` | open a directory, or view a file's content (scrollable) |
+| `e` | edit the file under the cursor in `$EDITOR` (local files only) |
+| `R` | toggle between the local-disk tree and the forge view |
+| `b` / `esc` | up a directory, then back to the fleet |
+| `x` | drop into a shell in the repo |
+
+`e` suspends the cockpit, hands the current TTY to `$VISUAL`/`$EDITOR` (falling back to
+`nvim`/`vim`/`vi`) on the file's absolute path, then resumes and reloads the listing. It is
+declined on the forge view (`R`) and on directories; if the repo isn't on disk it prompts to
+sync.
+
 **Errors view, Plugins view, Governance view**
 
 Reach them from a list view (Errors via `:errors`/`:err`, Plugins via `7`/`:plugins`,
