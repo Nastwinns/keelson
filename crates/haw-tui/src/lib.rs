@@ -7632,6 +7632,8 @@ mod tests {
         let picked = pick_editor(None, None, &["definitely-not-a-real-binary", "sh"]);
         #[cfg(unix)]
         assert_eq!(picked, Some("sh".to_string()));
+        #[cfg(not(unix))]
+        let _ = picked;
         // No candidate resolvable → None (the caller adds the `vi` last resort).
         assert_eq!(
             pick_editor(None, None, &["definitely-not-a-real-binary"]),
