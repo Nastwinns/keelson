@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: demos
+  cancel-in-progress: false
+
 jobs:
   render:
     runs-on: ubuntu-latest
@@ -37,8 +41,20 @@ jobs:
             echo "── rendering $tape ──"
             vhs "$tape"
           done
-      - name: Commit rendered GIFs
-        uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7.2.0
-        with:
-          commit_message: "demos: re-render VHS GIFs"
-          file_pattern: "demo/*.gif"
+      - name: Commit rendered GIFs (rebase + retry to survive concurrent pushes)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add demo/*.gif
+          if git diff --cached --quiet; then
+            echo "no GIF changes — nothing to commit"
+            exit 0
+          fi
+          git commit -m "demos: re-render VHS GIFs"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase origin main && git push origin main; then
+              echo "pushed on attempt $attempt"; exit 0
+            fi
+            echo "push race, retrying ($attempt)…"; sleep 7
+          done
+          echo "::error::could not push rendered GIFs after retries"; exit 1
