@@ -231,6 +231,30 @@ jobs:
             dist/hawser.rb
             dist/hawser.json
 
+      - name: Bump install version in README on default branch
+        continue-on-error: true
+        env:
+          VER: ${{ steps.v.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH="${{ github.event.repository.default_branch }}"
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          # Rewrite both version fields in the release-download install line.
+          sed -i -E \
+            "s#releases/download/v[0-9]+\.[0-9]+\.[0-9]+/haw-[0-9]+\.[0-9]+\.[0-9]+-#releases/download/v${VER}/haw-${VER}-#g" \
+            README.md
+          if git diff --quiet -- README.md; then
+            echo "README already at v${VER}, nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs(readme): bump install version to v${VER}"
+          git push origin "HEAD:${BRANCH}"
+
   distribute:
     name: distribute to private registries
     needs: [release]
