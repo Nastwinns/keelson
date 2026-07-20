@@ -534,20 +534,7 @@ on a background worker, so the UI never freezes.
 
 ![The hawser TUI cockpit — live fleet grid; drill into a repo's git detail, a PR's reviewers and checks, or a CI run's live progress, then merge or approve without leaving the terminal](demo/haw-tui.gif)
 
-<sub>Real VHS capture of `haw dash --demo` (rendered from [`demo/tui.tape`](demo/tui.tape); CI re-renders on every TUI change). Annotated static view of the same grid:</sub>
-
-```text
- haw ▸ ~/work/gateway ───────────────────────── stack: gateway   lock: ✓   repos: 3/3
-──────────────────────────────────────────────────────────────────────────────────────
-   REPO        BRANCH ▲      HEAD       DIRTY   DRIFT   ↑ / ↓    MERGE
-   kernel      v6.1.2        a1b2c3d4     ·       ·      0 / 0     —
- ◉ hal         main          9f8e7d6c    yes      ·      2 / 0     —
-▸⚠ app-mqtt    release/2.x   4d5e6f7a     ·      DRIFT   0 / 5     —
-──────────────────────────────────────────────────────────────────────────────────────
- hal  ›  path hal/   branch main (ahead 2)   dirty   locked 9f8e7d6c   grp firmware
-──────────────────────────────────────────────────────────────────────────────────────
- [s]ync [f]iles [x]shell [!]exec [/]filter [p]roblems [:]cmd [Enter]drill [?]help
-```
+<sub>Real VHS capture of `haw dash --demo` (rendered from [`demo/tui.tape`](demo/tui.tape); CI re-renders on every TUI change).</sub>
 
 The grid auto-refreshes (~5s idle, or `F5`/`ctrl-r`) without disturbing your input;
 network views (PR/MR, CI, governance) stay on-demand. The essentials:
