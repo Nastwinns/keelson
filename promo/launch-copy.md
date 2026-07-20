@@ -65,16 +65,24 @@ Happy to answer questions on the lockfile format, the cockpit, or how it compare
 west / repo / meta / RepoFleet.
 ```
 
-Timing: post Tue-Thu, ~08:00-10:00 ET. Reply fast to every comment in the first 2h.
+**Title A/B options** (pick one, keep ≤ 80 chars, no hype/AI words):
+- A (problem-first): `Show HN: Hawser – pin your multi-repo stack to one lockfile (Rust)`
+- B (submodules hook): `Show HN: Hawser – a git-submodules alternative for reproducible stacks`
+- C (cockpit angle): `Show HN: Hawser – a TUI cockpit to orchestrate many git repos as one`
+Recommended: **A** (clearest value, ranks on "lockfile"/"multi-repo").
+
+Timing: Tue-Thu, 08:00-10:00 ET (13:00-15:00 Paris). Avoid Mon/Fri + weekends.
+First 2h are decisive: reply to every comment, stay factual, no defensiveness.
+Do NOT ask for upvotes (HN auto-flags it).
 
 ---
 
 ## 3. r/rust
 
-**Title**:
-```
-Hawser: reproducible multi-repo git stacks + cross-repo PR orchestration, in one Rust binary
-```
+**Title A/B options**:
+- A: `Hawser: reproducible multi-repo git stacks + cross-repo PR orchestration, in one Rust binary`
+- B: `I built a git-submodules alternative in Rust: one lockfile for your whole multi-repo stack`
+Recommended: **B** (r/rust likes "I built", personal + problem framing).
 
 **Body**:
 ```
@@ -108,3 +116,26 @@ Lobsters (needs invite), and the This Week in Rust "call for participation" / pr
 1. awesome-lists PRs (durable backlinks, evergreen).
 2. Show HN + r/rust same-day (traffic spike + more backlinks).
 3. Reply to every thread — engagement drives both ranking signals and stars.
+
+---
+
+## Launch-day checklist (single Tue-Thu morning, ET)
+
+- [ ] 08:00 — Post **Show HN** (title A). Immediately post the author first-comment.
+- [ ] 08:05 — Post **r/rust** (title B). Flair: "project" if available.
+- [ ] 08:10 — Cross-post link-only to r/commandline + r/git (short native comment each).
+- [ ] 08:00-10:00 — Reply to EVERY comment within minutes. Factual, no hype, no defensiveness.
+- [ ] Midday — Submit to Lobsters (if you have an invite) + This Week in Rust CFP.
+- [ ] End of day — Note the star count.
+
+## Star gates to re-check after launch
+
+- **> 20 stars** → ping me: I open the **awesome-cli-apps** PR (Development → Version Control).
+- **≥ 50 stars OR ≥ 2000 crates downloads** → ping me: I open the **awesome-rust** PR.
+
+## Anti-toxicity guardrails (r/rust + HN)
+
+- Lead with the problem and Rust, never with "AI". The MCP plugin is a feature, not the pitch.
+- Don't argue "why not a monorepo" — acknowledge trade-offs, link the compare section.
+- No emojis, no marketing adjectives, no "revolutionary". Let the lockfile demo speak.
+- If downvoted early, keep answering technically — substance turns threads around.
