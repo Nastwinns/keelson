@@ -183,7 +183,7 @@ scoop bucket add nastwinns https://github.com/Nastwinns/scoop-bucket && scoop in
 is fully static — no glibc, no runtime — so one file runs on any Linux host:
 
 ```bash
-curl -sSL https://github.com/Nastwinns/hawser/releases/download/v0.1.7/haw-0.1.7-x86_64-unknown-linux-musl.tar.gz \
+curl -sSL https://github.com/Nastwinns/hawser/releases/download/v0.1.16/haw-0.1.16-x86_64-unknown-linux-musl.tar.gz \
   | tar xz && sudo install haw /usr/local/bin/
 ```
 
@@ -531,6 +531,10 @@ Keyboard-first and modal, in the spirit of k9s. The loop is **read → drill in 
 see a repo's branch, SHA, and status; open a PR's reviewers and checks; watch a CI run's
 progress — then merge or approve it, without leaving the terminal. Everything heavy runs
 on a background worker, so the UI never freezes.
+
+![The hawser TUI cockpit — live fleet grid; drill into a repo's git detail, a PR's reviewers and checks, or a CI run's live progress, then merge or approve without leaving the terminal](demo/haw-tui.gif)
+
+<sub>Real VHS capture of `haw dash --demo` (rendered from [`demo/tui.tape`](demo/tui.tape); CI re-renders on every TUI change). Annotated static view of the same grid:</sub>
 
 ```text
  haw ▸ ~/work/gateway ───────────────────────── stack: gateway   lock: ✓   repos: 3/3
